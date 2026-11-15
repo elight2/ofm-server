@@ -13,6 +13,8 @@
 |`.env.electron`|全部服务地址、各 API 前缀|
 |`build/electron/main/api/config.js`|`BASE_URL`(内网测试地址，勿用)|
 |`build/electron/main/account/desktopLogin.js`|桌面深链登录 + code 换 token|
+|`build/electron/main/client/account/webLogin.js`|登录状态机(深链 / loopback 兼容登录)|
+|`build/electron/main/client/account/webLoginLoopback.js`|本地回连登录服务(127.0.0.1 一次性)|
 |`build/electron/main/schedules/scheduleAuth.js`|token 刷新(300s 提前窗口)|
 |`build/electron/main/agent/boxAgentConfig.js`|把 token 写进 `auth.json`、生成 LLM 配置|
 |`build/electron/main/client/models/hostedModels.js`|模型目录、内置模型预设|
@@ -28,12 +30,13 @@
   唯一有效通道是 `extra_body.thinking.type = enabled|disabled`(两态，见参考插件实测)
 
 ### 本协议与官方客户端的出入
-* 官方桌面端登录靠深链 `office-raccoon://auth/callback?code=`，服务器无法接收回调；
-  须自行构造 code(网页授权页回调地址写死，改不成 localhost)
+* 官方桌面端登录有两条可用路径(深链 / loopback)。深链需 OS 注册协议，服务器收不到；
+  **loopback 兼容登录可服务器复用**(见 §1)。旧插件“回调地址写死改不成 localhost”的结论只对旧版网页成立
 * 官方对话由 `box-agent-acp`(Python)发起，主进程只负责下发 `api_base`/`api_key`/`auth.json`；
   服务器直接按 OpenAI 格式打 `/api/web/llm/v2/chat/completions` 即可
 * `dist/electron/main.cjs` 的本地 relay 是受限版本(只允许单一 model、`tools` 必须为空)，**不能照抄**
-* 官方**没有签到**：每日积分由服务端 `daily_grant` 自动发放，无端点
+* 官方**没有签到端点**：每日积分 0 点服务端自动发放(`daily_grant`)，
+  当天登录会把有效期从「当日 24:00」延长到 7 天(见 §7)
 
 ### 域名
 |域名和端点|功能|
@@ -54,7 +57,7 @@
 |`https://sta-volc.xiaohuanxiong.com`|更新与 runtime 下载 CDN|
 
 ## 1. 登录方式
-三种，服务器侧建议用「授权码」方式：
+共四种，服务器侧可用「loopback 兼容登录」或自行取「授权码」：
 
 1. **桌面深链**(官方主路径)
    * 浏览器打开 `https://xiaohuanxiong.com/authorize?login_source=desktop&appname=办公小浣熊客户端`
@@ -68,6 +71,31 @@
    (key=UTF8(`senseraccoon2023`)，iv=随机16B，输出 `base64(iv‖ct)`)，并需阿里云滑块验证码
 3. **IAM**(SSO)：`access_token` 为 JWT 且 `iss` 以 `/iam` 结尾时走 `iam/confirm`、`iam/logout`，
    无 `refresh_token`，只能重新登录
+
+### loopback 兼容登录(1.2.0 新增，服务器可复用)
+实现：`client/account/webLoginLoopback.js` + `webLogin.js`
+1. 本地起一次性 HTTP 服务：`listen(0, '127.0.0.1')`，回调路径 `/auth/callback`
+   (OAuth 模式则为 `/oauth/callback/<state>`)，`state = randomBytes(32).hex`(64 位小写 hex)
+2. 浏览器打开授权页，在 `desktopLoginUrl` 基础上追加三项后再打开：
+   ```
+   https://xiaohuanxiong.com/authorize?login_source=desktop&appname=<appName>
+     &desktop_callback=loopback
+     &redirect=http://127.0.0.1:<port>/auth/callback
+     &state=<64位小写hex>
+   ```
+   (`appname` 取自 `webLoginResources[lang].appName`；`desktop_callback=loopback` **必需**，否则网页走深链)
+3. 浏览器回连 `127.0.0.1:<port>/auth/callback?code=xxx&state=xxx`
+4. 校验后调 `login_with_authorization_code` 换 token
+
+服务端严格校验(以下任一不符即拒)：
+* `Host` 必须等于 `127.0.0.1:<port>`；`remoteAddress` 必须为 `127.0.0.1`
+* 仅 `GET`；`Origin` 若存在必须等于授权页 origin；`Sec-Fetch-Dest` 若存在必须为 `document`
+* 路径必须为 `/auth/callback`，query 只允许 `code` 和 `state` 且各仅一个，`state` 必须 `^[a-f0-9]{64}$` 且与本地值 timing-safe 相等
+* `code` 非空、长度 ≤ 4096、不含控制字符；单次消费(重复→409)
+* 超时 300s，`maxConnections=8`
+
+⚠️ **待实测**：授权页是否真的会回连 loopback(`redirect` 参数由服务端能否接受未经抓包验证)。
+若服务端不支持，则回到方式 1 自行取 code。
 
 存储(官方)：`<BOX_AGENT_CONFIG_DIR>/config/auth.json`，权限 0600
 ```json
@@ -152,8 +180,36 @@
 |请求体过大|`HTTP 413`，客户端文案 `request body exceeds 10MB`|
 
 ## 7. 签到协议
-**无签到**。每日 300 积分由服务端自动发放(`daily_grant`)，无对应端点。
-唯一与「登录奖励」相关的是 `POST /api/web/desktop/v1/login/points/grant`
+**无签到端点**。每日积分由服务端在 **每天 0 点自动发放**(账单 `biz_type: 'daily_grant'`)，
+客户端无任何可调用的签到接口，故**不可**实现成签到按钮(按钮必然失败)。
+
+### 每日积分的有效期与续期(官方文案原文)
+客户端积分明细页文案 `setting.resource.points.dailyGrantRule`：
+
+> **每日积分每天 00:00 发放，默认当日 24:00 清零，当天登录后有效期延长至 7 天。**
+
+英/日文同义(`Daily points are granted at 00:00 each day and expire at 24:00 that day by default. Logging in that day extends their validity to 7 days.`)。
+
+要点：
+* 发放：服务端 0 点主动发，**无接口**
+* 默认有效期：**当日 24:00 清零**
+* 续期：**当天登录**即把该批每日积分的有效期延长至 **7 天**
+  * 延期由**登录行为**(`login_with_authorization_code` / `refresh` 成功)触发，非独立接口
+  * 故服务器若保持 token 长期有效、多日不重新登录，可能不触发延期
+  * ⚠️ **待实测**：延期到底由「登录」还是「任何携带 token 的请求」触发，未抓包验证
+
+账单相关字段与文案(`GET /api/web/points/v2/bills`)：
+|字段/类型|含义|
+|-|-|
+|`biz_type: 'daily_grant'`|每日积分发放；展示 `grant_at · 有效期至 <grant_at+1天> 24:00`|
+|`biz_type: 'daily_expire'`|每日积分过期；`当日未登录` 表示当天没登录导致作废|
+|`grant_at` / `expire_at`|发放时间 / 失效时间；二者同一天时显示「当日 24:00」|
+|`event_name` / `points` / `client_type`|事件名 / 变动积分(带符号) / 消耗来源|
+
+余额分池(`GET /api/web/points/v1/balance`)：`available_points`(总)、`daily_points`、`monthly_points`、
+`reward_points`、`topup_points`、`topup_frozen`。消耗顺序：每日额度 → 每月额度 → 奖励积分 → 加油包。
+
+唯一与「登录」相关的写接口是 `POST /api/web/desktop/v1/login/points/grant`
 (需 `X-Client-Platform: desktop-linux`、`X-Client-Version: v1.2.0`，
-返回 `{code:0, data:{granted:bool, popup?:...}}`)，仅在桌面客户端登录后调用一次，
-**不是每日签到**，且不是每日可重复领。
+返回 `{code:0, data:{granted:bool, popup?:...}}`)，**幂等一次性**(已领过返回 `granted:false`)，
+**不是每日签到**。
