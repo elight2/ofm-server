@@ -11,7 +11,7 @@
 * `ofm-server`: 启动服务
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商
-* `ofm-server status 供应商id`: 获取供应商当前信息(接入状态, 余额, 最后一次签到时间, 令牌到期时间)
+* `ofm-server status 供应商id`: 获取供应商当前信息（目前只输出余额；接入状态、最后签到时间、令牌到期时间为规划项）
 * 配置文件: `运行目录/config.toml`
 
 ## 供应商信息

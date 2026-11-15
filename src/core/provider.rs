@@ -103,6 +103,13 @@ pub trait Provider: Send + Sync {
 
     /// 签到。返回 `skipped=true` 表示今日无需领取。
     async fn claim(&self) -> Result<ClaimReport, ProviderError>;
+
+    /// 当前余额。上游不提供余额时返回 `None`。
+    ///
+    /// 默认实现返回 `None`，供应商按需覆盖。
+    async fn balance(&self) -> Result<Option<f64>, ProviderError> {
+        Ok(None)
+    }
 }
 
 /// 模型对外展示名后缀：` (x<倍率>)`，见 README「转发出的模型名称」。

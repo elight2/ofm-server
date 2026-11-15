@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => cli::serve::run(root).await,
         Command::Login { provider } => cli::login::run(root, &provider).await,
         Command::Claim => cli::claim::run(root).await,
+        Command::Status { provider } => cli::status::run(root, &provider).await,
     }
 }
 

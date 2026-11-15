@@ -201,7 +201,7 @@ impl TraeProvider {
     }
 
     /// 读总余额，仅用于报告签到带来的增量。
-    async fn balance(&self, token: &str, cred: &Credential) -> Result<f64, ProviderError> {
+    async fn fetch_balance(&self, token: &str, cred: &Credential) -> Result<f64, ProviderError> {
         let u: checkin::Usage = self
             .checkin_post(
                 checkin::PATH_USAGE,
@@ -374,6 +374,13 @@ impl Provider for TraeProvider {
         Ok(Box::pin(out))
     }
 
+    /// 读当前余额（`pay/ide_user_ent_usage` 的 `total_balance`）。
+    async fn balance(&self) -> Result<Option<f64>, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        Ok(Some(self.fetch_balance(&token, &cred).await?))
+    }
+
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
         let cred = self.credential()?;
         let token = self.access_token().await?;
@@ -400,7 +407,7 @@ impl Provider for TraeProvider {
         debug_assert!(status.claimable(), "走到这里应可领取");
 
         // 领取前记一次余额，仅用于报告增量（不参与成败判定）。
-        let before = self.balance(&token, &cred).await.ok();
+        let before = self.fetch_balance(&token, &cred).await.ok();
         self.checkin_claim(&token, &cred).await?;
 
         // claim 的返回值无法区分「真领到」与「今日已签过」，只能复读 status 复核。
@@ -412,7 +419,7 @@ impl Provider for TraeProvider {
             ));
         }
 
-        let delta = match (before, self.balance(&token, &cred).await.ok()) {
+        let delta = match (before, self.fetch_balance(&token, &cred).await.ok()) {
             (Some(b), Some(a)) => Some(a - b),
             _ => None,
         };
