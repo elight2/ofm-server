@@ -5,11 +5,13 @@
 * 把各家llm免费额度聚合到一起, 作为一个provider对外提供api
 * 自动签到: 每过`1h`检查所有供应商是否可以领取积分, 如果有就领取
 * [新供应商资讯获取](https://freeegg.top/)
+* 转发出的模型名称: `供应商id/模型名 (x供应商标的倍率)`
 
 ## 使用方式
 * `ofm-server`: 启动服务
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商
+* `ofm-server status 供应商id`: 获取供应商当前信息(接入状态, 余额, 最后一次签到时间, 令牌到期时间)
 * 配置文件: `运行目录/config.toml`
 
 ## 供应商信息
@@ -22,6 +24,6 @@
 * 端口: 默认`3060`, 可以使用配置文件修改
 * 供应商的登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 使用Rust语言
-* 模型名称: `供应商id/模型名`
 * 导出api使用`OpenAI Chat Completions`格式
+* 日志可适配systemd, 也支持独立运行
 * 无需api key校验
