@@ -238,10 +238,63 @@
 要点：
 * 发放：服务端 0 点主动发，**无接口**
 * 默认有效期：**当日 24:00 清零**
-* 续期：**当天登录**即把该批每日积分的有效期延长至 **7 天**
-  * 延期由**登录行为**(`login_with_authorization_code` / `refresh` 成功)触发，非独立接口
-  * 故服务器若保持 token 长期有效、多日不重新登录，可能不触发延期
-  * ⚠️ **待实测**：延期到底由「登录」还是「任何携带 token 的请求」触发，未抓包验证
+* 续期：当天的某个动作会把该批每日积分的有效期延长至 **7 天**
+  * ⚠️ **触发动作未确认**，见下「实测」节
+
+### 每日积分发放/过期的实测(2025-11-15，本机真实账号)
+数据源：`GET /api/web/points/v2/bills?paging.limit=20&type=all[&cursor=]`
+
+响应结构：`{code:0, data:{items:[...], has_more, next_cursor}}`，翻页用 `cursor`。
+单条记录字段：
+|字段|说明|
+|-|-|
+|`bill_id` / `group_id`|记录 id / 分组 id|
+|`bill_count`|同组条数|
+|`client_type`|`web` 或 `desktop`(消耗来源)|
+|`event_name`|中文事件名，如「每日积分发放」「每日积分过期清零」「任务消耗 · dsh-ofm-ng」|
+|`biz_type`|`daily_grant` / `daily_expire` / `desktop`(消费)|
+|`biz_id`|业务 id；过期记录形如 `20261114:free:300`|
+|`points`|变动分值，**开销为负**|
+|`created_at`|记账时间(ISO8601 带 +08:00)|
+|`grant_at`|发放时间(仅 daily_* 有)|
+|`expire_at`|失效时间(仅 daily_* 有)|
+
+近 7 天 `daily_grant` 的 `grant_at` → `expire_at` 对照：
+|日期|grant_at|expire_at|实际有效期|
+|-|-|-|-|
+|11-15|11-15 00:00|**11-21 23:59**|**7 天**|
+|11-14|11-14 00:00|11-14 23:59|当天|
+|11-13|11-13 00:00|11-13 23:59|当天|
+|11-12|11-12 00:00|11-12 23:59|当天|
+|11-11|11-11 00:00|11-11 23:59|当天|
+|11-10|11-10 00:00|11-10 23:59|当天|
+|11-09|11-09 00:00|11-09 23:59|当天|
+
+⇒ 延期机制确实存在(11-15 延到 7 天)，但**仅 11-15 发生**，之前每天当天清零。
+⇒ 延期**不是自动**生效，需要某种触发。
+
+#### 延期触发条件的排查(未定论)
+11-15 当天事件时间线：
+|时间|事件|
+|-|-|
+|22:00:17|官方客户端启动(日志)；`auth.json` **不存在**，即**未登录**；日志无 login/authorize|
+|22:04:18|`daily_grant` 记账，**此时 `expire_at` 已是 11-21**(client_type=`web`)|
+|22:24:26|我们用 `login raccoon` 完成授权登录|
+
+推断与旁证：
+* 延期在 22:04:18 已生效 → **不是**我们 22:24 的登录触发
+* 官方客户端启动但未登录 → **不是**官方客户端登录触发
+* 该条 `client_type: web` → 大概率是网页端某次动作
+* **但无法从流水/日志确认具体是哪个动作**
+
+⚠️ **待实测**：以下三种假设均未被证实或否定：
+1. 调 `/refresh`
+2. 任何带 token 的请求(如拉余额/目录)
+3. 完成一次授权(`login_with_authorization_code`)
+
+**警示**：在触发条件确认前，**不要**实现“定时刷新代替签到”类逻辑——
+既无收益依据(每日 300 分与是否签到无关)，也可能白打请求。
+次日再查一次流水对比 `expire_at` 是成本最低的验证方式。
 
 ### 换 token 端点实测(本机，2025-11)
 `POST /api/web/auth/v1/login_with_authorization_code` 以假 code 实测，返回：
@@ -262,6 +315,11 @@ HTTP 400 {"code":200035,"message":"authorization_code_not_found_error","details"
 
 余额分池(`GET /api/web/points/v1/balance`)：`available_points`(总)、`daily_points`、`monthly_points`、
 `reward_points`、`topup_points`、`topup_frozen`。消耗顺序：每日额度 → 每月额度 → 奖励积分 → 加油包。
+
+**余额接口不带任何到期字段**(实测全字段已核对)，到期信息只能从账单的 `expire_at` 取。
+实测样例(11-15)：`available_points: 7713 = daily 300 + reward 7413`，
+`topup_points: 0`、`enterprise_reserved: false`、`owner_type: users`。
+注意 `reward_points` 无到期字段，与每日 300 分是不同池子。
 
 唯一与「登录」相关的写接口是 `POST /api/web/desktop/v1/login/points/grant`
 (需 `X-Client-Platform: desktop-linux`、`X-Client-Version: v1.2.0`，
