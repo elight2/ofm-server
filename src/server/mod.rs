@@ -1,0 +1,226 @@
+//! HTTP 服务：`/v1/chat/completions`、`/v1/models`、`/health`。
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use futures_util::StreamExt;
+
+pub mod openai;
+
+use crate::config::Config;
+use crate::core::registry::Registry;
+use crate::server::openai::{request as reqconv, translate, types};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub registry: Arc<Registry>,
+}
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/v1/models", get(list_models))
+        .route("/v1/chat/completions", post(chat_completions))
+        .with_state(state)
+}
+
+async fn health() -> impl IntoResponse {
+    axum::Json(serde_json::json!({"status": "ok"}))
+}
+
+async fn list_models(State(app): State<AppState>) -> Response {
+    let created = now_secs();
+    let mut data = Vec::new();
+    for (provider_id, models) in app.registry.list_models().await {
+        for m in models {
+            data.push(types::ModelCard {
+                id: format!("{provider_id}/{}", m.model),
+                object: "model",
+                created,
+                owned_by: provider_id.to_string(),
+            });
+        }
+    }
+    axum::Json(types::ModelList {
+        object: "list",
+        data,
+    })
+    .into_response()
+}
+
+async fn chat_completions(State(app): State<AppState>, body: String) -> Response {
+    let req: types::ChatRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return openai::error_response(
+                StatusCode::BAD_REQUEST,
+                format!("请求体解析失败: {e}"),
+                "invalid_request_error",
+                None,
+            );
+        }
+    };
+
+    // 路由 `供应商id/模型名`。
+    let (provider_id, model) = match Registry::route(&req.model) {
+        Some(r) => (r.provider.to_string(), r.model.to_string()),
+        None => {
+            return openai::error_response(
+                StatusCode::BAD_REQUEST,
+                format!("模型名须为 `供应商id/模型名`，收到 `{}`", req.model),
+                "invalid_request_error",
+                Some("model_not_found".into()),
+            );
+        }
+    };
+    let Some(provider) = app.registry.get(&provider_id) else {
+        return openai::error_response(
+            StatusCode::BAD_REQUEST,
+            format!("未知供应商 `{provider_id}`"),
+            "invalid_request_error",
+            Some("model_not_found".into()),
+        );
+    };
+
+    let stream = req.stream;
+    let include_usage = req.stream_options.map(|o| o.include_usage).unwrap_or(false);
+    let requested_model = req.model.clone();
+
+    let preq = match reqconv::to_provider_request(model, req) {
+        Ok(p) => p,
+        Err(e) => {
+            return openai::error_response(
+                StatusCode::BAD_REQUEST,
+                e.to_string(),
+                "invalid_request_error",
+                None,
+            );
+        }
+    };
+
+    let ctx = translate::Ctx {
+        id: gen_id(),
+        created: now_secs(),
+        model: requested_model,
+        include_usage,
+    };
+
+    // 拿流；供应商层整体失败（未进入事件流）时直接映射 HTTP 错误。
+    let events = match provider.chat(preq).await {
+        Ok(s) => s,
+        Err(e) => {
+            let status = StatusCode::from_u16(translate::provider_err_status(&e))
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let body = translate::provider_err_body(e);
+            return (status, axum::Json(body)).into_response();
+        }
+    };
+
+    // peek 首帧：错误且在内容之前 → 仍可返回 HTTP 错误。
+    let (first, rest) = {
+        let mut s = events;
+        let first = s.next().await;
+        (first, s)
+    };
+
+    if let Some(ev) = &first
+        && let Some((status, body)) = translate::classify_first(ev)
+    {
+        let code = status_from_u16(status);
+        return (code, axum::Json(body)).into_response();
+    }
+
+    if !stream {
+        return match translate::aggregate(ctx, first, rest).await {
+            Ok(completion) => axum::Json(completion).into_response(),
+            Err(body) => {
+                let status = translate::status_for_error_type(&body.error.kind);
+                (status, axum::Json(body)).into_response()
+            }
+        };
+    }
+
+    // 流式：SSE 编码。`[DONE]` 统一在流末尾发一次（含错误帧之后）。
+    let out = translate::stream(ctx, first, rest);
+    let frames = out.map(|item| -> Result<bytes::Bytes, std::io::Error> {
+        let frame = match item {
+            translate::Out::Chunk(chunk) => {
+                let data = serde_json::to_string(&chunk).unwrap_or_else(|_| "{}".into());
+                format!("data: {data}\n\n")
+            }
+            translate::Out::Abort(body) => {
+                let data = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+                format!("data: {data}\n\n")
+            }
+        };
+        Ok(bytes::Bytes::from(frame))
+    });
+
+    let tail = futures_util::stream::once(async {
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"data: [DONE]\n\n"))
+    });
+    let body = axum::body::Body::from_stream(frames.chain(tail));
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+        .header(axum::http::header::CACHE_CONTROL, "no-cache")
+        .header(axum::http::header::CONNECTION, "keep-alive")
+        .body(body)
+        .expect("SSE 响应构造失败")
+}
+
+fn status_from_u16(code: u16) -> StatusCode {
+    StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 请求 id：`chatcmpl-` + 12 位十六进制随机串。
+fn gen_id() -> String {
+    let mut buf = [0u8; 6];
+    let _ = getrandom::fill(&mut buf);
+    let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    format!("chatcmpl-{hex}")
+}
+
+/// 启动服务并阻塞。自动签到任务由 `cli::serve` 负责编排。
+pub async fn run(state: AppState, config: &Config) -> std::io::Result<()> {
+    let addr = config.socket_addr();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("ofm-server 监听 http://{addr}");
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sig.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("收到退出信号，正在关闭");
+}
