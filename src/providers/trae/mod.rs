@@ -389,19 +389,23 @@ impl Provider for TraeProvider {
         status.check().map_err(ProviderError::Protocol)?;
 
         if !status.enable {
+            let balance = self.fetch_balance(&token, &cred).await.ok();
             return Ok(ClaimReport {
                 skipped: true,
                 message: "签到活动未开启".to_string(),
                 credits_delta: None,
+                balance,
             });
         }
         if status.checked_in {
             // 已签到就不调 claim：上游对重复领取也回 success，会把「已签到」
             // 误报成「本次领到」（实测余额不变、无副作用）。
+            let balance = self.fetch_balance(&token, &cred).await.ok();
             return Ok(ClaimReport {
                 skipped: true,
                 message: "今日已签到".to_string(),
                 credits_delta: None,
+                balance,
             });
         }
         debug_assert!(status.claimable(), "走到这里应可领取");
@@ -419,7 +423,8 @@ impl Provider for TraeProvider {
             ));
         }
 
-        let delta = match (before, self.fetch_balance(&token, &cred).await.ok()) {
+        let after_balance = self.fetch_balance(&token, &cred).await.ok();
+        let delta = match (before, after_balance) {
             (Some(b), Some(a)) => Some(a - b),
             _ => None,
         };
@@ -431,6 +436,7 @@ impl Provider for TraeProvider {
                 None => format!("签到成功，额度 {credits}"),
             },
             credits_delta: delta,
+            balance: after_balance,
         })
     }
 }

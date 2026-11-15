@@ -71,6 +71,8 @@ pub struct ClaimReport {
     pub message: String,
     /// 本次签到带来的余额变化（若可观测）。
     pub credits_delta: Option<f64>,
+    /// 签到后的当前余额（若可观测）。
+    pub balance: Option<f64>,
 }
 
 #[derive(Debug, thiserror::Error)]
