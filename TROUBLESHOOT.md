@@ -24,3 +24,10 @@
   它按 `CheckLogin.Result.ExpiredAt`（= refreshToken 到期，180 天）记账，
   JWT 只在临近自身 `exp` 时惰性续期。要抓续期只能等 `exp`(2026-11-28) 附近
 * `GetThirdPartyToken` 看着像续期，实为 `{"Types":["feishu","lark"]}` 飞书集成周期请求
+* reqwest 的 `.timeout()` 是**整个请求**超时（含读 body），SSE 长响应会被中途断流，
+  表现为「上游帧只收到 metadata/timing_cost/output 一部分，缺 token_usage 和 done，
+  但我方不报错」。改用 `.connect_timeout()` + `.read_timeout()`（仅限制两次数据间隔）
+* reqwest `.json()` 与手动 `content-type` 头并存 → 发两个 `Content-Type`，
+  上游回 `400 expr_path=app_id missing required parameter`（报错字段与真实原因无关）
+* 调试 SSE 时勿用 `curl ... >/dev/null` 或 `| head`：curl 提前退出会断开连接，
+  上游随之截断，看起来像「上游不发 token_usage/done」，实为客户端自己中断

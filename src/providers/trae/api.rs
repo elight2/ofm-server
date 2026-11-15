@@ -196,9 +196,13 @@ pub fn os_name() -> String {
 pub const REQ_SOURCE: &str = "IDE";
 
 /// 共享的 HTTP 客户端（连接复用）。
+///
+/// 只设 `read_timeout`（两次数据到达的最大间隔）而非整体 `timeout`：
+/// 对话是 SSE 长连接，长思考响应整体耗时可能远超 60s，用整体超时会中途断流。
 pub fn client() -> Result<reqwest::Client, HttpError> {
     Ok(reqwest::Client::builder()
         .user_agent(UA_TTNET)
-        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300))
         .build()?)
 }

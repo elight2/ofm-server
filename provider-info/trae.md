@@ -208,13 +208,22 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 
 `POST https://api5-normal.mchost.guru/api/agent/v3/llm_utils_chat`
 
+**实测更正（2026-11-15，Go/Rust 实现）**：`x-ide-version` 实际值 = `3.4.18`（与 `x-app-version` 同值，
+抓包 `requests.old.log` 全部 48 处一致），不是 `1.107.1`；`x-device-type` = `linux`（即 `std::env::consts::OS`），
+不是 `PC`（`PC` 是 `DeviceInfo.PlatformCode` 里的 `DeviceType`，两者不同）。
+
+**实现陷阱**：若用 HTTP 库的便捷 JSON 方法（如 reqwest 的 `.json()`）**同时**又手动设 `content-type: application/json`，
+会发出两个 `Content-Type` 头，上游把它判为 body 非法，返回
+`400 {"code":4001,"message":"bad request: binding: expr_path=app_id, cause=missing required parameter"}`
+——**报错字段是 app_id，但真实原因是重复 Content-Type 头**，极易误判成 body 缺字段。应手动序列化后只设一次头。
+
 准入条件（curl 逐个删头实测，缺一即失败）：
 
 | 头 | 必需性 | 缺失后果 `[curl]` |
 |-|-|-|
 | `user-agent: TraeClient/TTNet` | **强制** | curl 默认 UA → HTTP 200 流内 `event:error` `code:4011` rate limit；同请求换 TTNet 立即放行 → **限流按 UA 分桶，UA 是准入标签不是标识** |
 | `authorization: Cloud-IDE-JWT <jwt>` | 强制 | `401 {"code":1001}` |
-| `x-app-version` + `x-app-version-code` + `x-ide-version` + `x-ide-version-code` | 四者齐全 | 缺一律 `400 {"code":4001,"message":"bad request: binding: expr_path=app_version_code, cause=missing required parameter"}` |
+| `x-app-version`(`3.4.18`) + `x-app-version-code`(`20261110`) + `x-ide-version`(`3.4.18`) + `x-ide-version-code`(`20261110`) | 四者齐全 | 缺一律 `400 {"code":4001,"message":"bad request: binding: expr_path=app_version_code, cause=missing required parameter"}` |
 | `content-type: application/json` | 强制 | — |
 | `x-machine-id` / `x-device-id` | 实测不强制 | 但为维护标准一致仍整套发送 `[抓包]` |
 | `accept: */*`、`x-device-cpu`、`x-device-type`、`x-os-version`、`x-flow-traceparent` | 照抄官方 | 未单独验证必需性 `[未验证]` |

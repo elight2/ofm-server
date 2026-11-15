@@ -131,7 +131,7 @@ fn device_name() -> String {
         .unwrap_or_else(|_| "ofm-server".to_string())
 }
 
-fn os_version() -> String {
+pub fn os_version() -> String {
     // 优先 PRETTY_NAME，退化为内核版本。
     if let Ok(s) = std::fs::read_to_string("/etc/os-release") {
         for line in s.lines() {
@@ -146,7 +146,7 @@ fn os_version() -> String {
     std::env::consts::OS.to_string()
 }
 
-fn cpu_model() -> String {
+pub fn cpu_model() -> String {
     if let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") {
         for line in s.lines() {
             if let Some(v) = line.strip_prefix("model name") {
