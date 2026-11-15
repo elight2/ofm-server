@@ -95,6 +95,9 @@ pub struct ConfigInfo {
     /// 字符串化 JSON，仅在存在时才解析（2.7 MB 里大部分条目用不到）。
     #[serde(default)]
     pub display_config: Option<serde_json::Value>,
+    /// 字符串化 JSON：`access` / `consumption_rate` / `multimodal` / `reasoning`（§4.2）。
+    #[serde(default)]
+    pub display_contact_config: Option<serde_json::Value>,
 }
 
 impl Catalog {
@@ -137,9 +140,31 @@ pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
         .map(|c| ModelInfo {
             model: c.config_name.clone(),
             display_name: display_name(c),
+            rate: consumption_rate(c),
         })
         .collect()
 }
+
+/// `display_contact_config` 可能是对象也可能是字符串化 JSON（§4.2），两种都取。
+fn contact_value(info: &ConfigInfo) -> Option<serde_json::Value> {
+    match info.display_contact_config.as_ref()? {
+        obj @ serde_json::Value::Object(_) => Some(obj.clone()),
+        serde_json::Value::String(s) => serde_json::from_str(s).ok(),
+        _ => None,
+    }
+}
+
+/// 计费倍率：`display_contact_config.consumption_rate.data.rate`（§4.2）。
+///
+/// `consumption_rate.enable == false` 时视为未提供。
+fn consumption_rate(info: &ConfigInfo) -> Option<f64> {
+    let cr = contact_value(info)?.get("consumption_rate")?.clone();
+    if cr.get("enable").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+    cr.get("data")?.get("rate")?.as_f64()
+}
+
 
 /// `display_config` 可能是对象也可能是字符串化 JSON（§4.2），两种都取。
 fn display_name(info: &ConfigInfo) -> Option<String> {
@@ -221,6 +246,32 @@ mod tests {
     }
 
     #[test]
+    fn 解析计费倍率() {
+        let c = catalog_with(
+            r#"{"function_configs":[{"function":"solo_agent","config_info_list":[
+              {"config_name":"a","usage":"chat_completion",
+               "display_contact_config":"{\"consumption_rate\":{\"enable\":true,\"data\":{\"rate\":0.78}}}"},
+              {"config_name":"b","usage":"chat_completion",
+               "display_contact_config":{"consumption_rate":{"enable":true,"data":{"rate":0.2}}}},
+              {"config_name":"c","usage":"chat_completion",
+               "display_contact_config":"{\"consumption_rate\":{\"enable\":false,\"data\":{\"rate\":0.5}}}"},
+              {"config_name":"d","usage":"chat_completion"}]}]}"#,
+        );
+        let m = to_models(&c);
+        assert_eq!(m[0].rate, Some(0.78));
+        assert_eq!(m[1].rate, Some(0.2));
+        assert_eq!(m[2].rate, None, "enable=false 视为未提供");
+        assert_eq!(m[3].rate, None, "缺字段视为未提供");
+    }
+
+    #[test]
+    fn 倍率后缀格式() {
+        assert_eq!(crate::core::provider::rate_suffix(Some(0.78)), " (x0.78)");
+        assert_eq!(crate::core::provider::rate_suffix(Some(1.0)), " (x1)");
+        assert_eq!(crate::core::provider::rate_suffix(None), "");
+    }
+
+    #[test]
     fn 缺少_solo_agent_时返回空列表() {
         let c = catalog_with(r#"{"function_configs":[]}"#);
         assert!(to_models(&c).is_empty());
@@ -276,5 +327,10 @@ mod tests {
         );
         let glm = models.iter().find(|m| m.model == "glm-5.2").unwrap();
         assert_eq!(glm.display_name.as_deref(), Some("GLM-5.2"));
+        assert_eq!(glm.rate, Some(0.78), "§4.2 实测 glm-5.2 倍率 0.78");
+        assert!(
+            models.iter().all(|m| m.rate.is_some()),
+            "真实目录 56 条均带 consumption_rate"
+        );
     }
 }

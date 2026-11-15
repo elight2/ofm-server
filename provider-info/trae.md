@@ -464,6 +464,7 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 | `display_config.display_name` | 无标准位，可选放扩展 |
 | `context_window_tokens.dev` | 无 CC 标准位（丢弃）|
 | `is_invisible_to_user` | **不过滤**，见上方实测（`glm-5.2` 标 true 但实测可用）|
+| `display_contact_config.consumption_rate.data.rate` | 拼进 `id`：`id = "trae/"+config_name+" (x"+rate+")"`（README 格式）|
 | — | `created` 上游无来源，取本地时间 |
 | — | `object = "model"` |
 

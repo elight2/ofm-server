@@ -37,8 +37,10 @@ async fn list_models(State(app): State<AppState>) -> Response {
     let mut data = Vec::new();
     for (provider_id, models) in app.registry.list_models().await {
         for m in models {
+            // 格式见 README：`供应商id/模型名 (x倍率)`；无倍率时省略后缀。
+            let suffix = crate::core::provider::rate_suffix(m.rate);
             data.push(types::ModelCard {
-                id: format!("{provider_id}/{}", m.model),
+                id: format!("{provider_id}/{}{suffix}", m.model),
                 object: "model",
                 created,
                 owned_by: provider_id.to_string(),

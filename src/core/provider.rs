@@ -60,6 +60,9 @@ pub struct ToolSpec {
 pub struct ModelInfo {
     pub model: String,
     pub display_name: Option<String>,
+    /// 供应商标的计费倍率（`display_contact_config.consumption_rate.data.rate`）。
+    /// 上游未给出时为 `None`。
+    pub rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,4 +103,14 @@ pub trait Provider: Send + Sync {
 
     /// 签到。返回 `skipped=true` 表示今日无需领取。
     async fn claim(&self) -> Result<ClaimReport, ProviderError>;
+}
+
+/// 模型对外展示名后缀：` (x<倍率>)`，见 README「转发出的模型名称」。
+///
+/// 倍率按最短表示输出（`0.2` → `0.2`），无倍率时返回空串。
+pub fn rate_suffix(rate: Option<f64>) -> String {
+    match rate {
+        Some(r) => format!(" (x{r})"),
+        None => String::new(),
+    }
 }
