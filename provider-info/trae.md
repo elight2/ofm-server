@@ -146,7 +146,32 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 * **仍待验证**：成功响应的字段（预期 `Result.{Token,RefreshToken,…}`，即 RefreshToken 是否**轮换**——参考实现注释称旧 refreshToken 即刻失效 `[参考实现，未验证]`）。须真跑一次续期才能定，见 mitm 抓包项。
 * 已实测到的相关事实：抓到的 JWT 载荷 `source=refresh_token`、`source_id` = RefreshToken 原文，证明该 Token 本身就是续期产物 `[抓包 jwt.txt + requests.old.log:1142]` → 续期链路真实可用。
 * 令牌留存（`tmp/trae-capture/requests.old.log:1142`，旧版日志 header 截断但该 body 完整）：`RefreshToken`、`BoundDeviceID=28j7pl18l6wkyk`、`TokenExpireDuration=1209600000`(14天)、`RefreshExpireAt=1810220992928`。
-* `Token` 过期时的行为 = `401 {"code":1001,…}`（§5）`[curl e1/e3]`；策略：`exp` 前主动续期，`1001` 作为兜底触发续期后重试一次。
+* `Token` 过期时的行为 = `401 {"code":1001,…}`（§5）`[curl e1/e3]`；**我方策略**：`exp` 前主动续期，`1001` 兜底触发续期后重试一次。
+  这是**我方设计，不是官方行为**。
+
+**官方客户端不会因 401 而续期** `[抓包 flows2 2026-11-15，用 mitmdump request 钩子伪造 401]`：
+
+* 手段：`TRAE_FORCE_401=1` 启动，把第一条 `llm_utils_chat` 短路成
+  `401 {"code":1001,…}`（不发上游、不消耗额度）。伪造成功（抓包记录到该 401）。
+* 结果：随后 **0 次** `ExchangeToken`、**0 次** `GetUserToken`、**0 次** 登录链请求；
+  401 后 6 秒客户端直接改发 `create_agent_task` 并成功（200），
+  全程 246 个带令牌的请求**用的是同一个 JWT**（`iat 1794668992` / `exp 1795878592`）。
+* 判读：Token 远未过期（`exp` 2026-11-28），客户端按本地 `exp` 判断是否续期，
+  收到 401 只当业务失败、不触发认证重取。→ **重启客户端同样无效**（重启不改 `exp`）。
+* 且这次 401 被伪造在 `llm_utils_chat`（标题/图标生成，非主对话）上：该请求 401 后
+  **客户端一次都没重试**（全程 `llm_utils_chat` 仅 2 次），主对话 `create_agent_task` 照常 200。
+  即客户端把这个端点的认证失败当可忽略错误，连业务重试都没有 —— 更不可能触发续期。
+* 误判更正：`POST /trae/api/v3/GetThirdPartyToken` 看似续期，实为
+  `{"Types":["feishu","lark"]}` 飞书集成周期请求，与认证无关（每 ~5s 一次，401 前后都有）。
+* 客户端 Electron 侧存储（`~/.config/Trae CN/User/globalStorage/state.vscdb`，57 个 key）
+  **无任何认证相关 key、无 refresh 字样** `[自查后已删除副本]` → RefreshToken 不在明面库里，
+  应在 Rust agent 侧加密存储；`~/.trae-cn` 下也无。
+
+→ **§2 的缺口实际已缩小**：`ExchangeToken` 是同一个 URL，其 AuthCode 交换的成功响应结构
+`[抓包 requests.old.log:1142]` 已知 = `Result.{Token, RefreshToken, RefreshExpireAt, BoundDeviceID,
+   ClientID, DeviceBindStatus}`（外层 `ResponseMetadata`）。续期调用**几乎必然回同一结构**，
+   字段名可直接实现 `[推断，未验证]`。唯一真正未知的是 **RefreshToken 是否轮换**（若轮换，
+   我方必须持久化新值，旧值作废）。→ 不阻塞实现，留 TODO；要定案见 §7.1。
 
 ## 3. Chat Completions协议转换
 
@@ -491,8 +516,13 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 
 **须抓官方客户端才能定（唯一剩余阻塞项）**
 
-1. **RefreshToken 续期的成功响应体**（§2）。必填请求体已用假令牌探测确认；
-   「是否轮换 refreshToken」须真跑一次续期 → `TRAE_FORCE_401=1` 抓（本轮未跑）。
+1. **RefreshToken 续期的成功响应体**（§2）。必填请求体已用假令牌探测确认。
+   「伪造 401 逼客户端续期」这条路**已证伪**（§2：客户端不因 401 续期，重启也无效）。
+   剩余两个选项，需用户决定：
+   a) 用真实 RefreshToken 直接 `curl` 一次 ExchangeToken —— 能拿到成功响应，
+      但**旧 refreshToken 可能被轮换作废**（参考实现称即刻失效，未验证），
+      届时客户端与 `jwt.txt` 的凭证一起失效，用户须重新登录一次；
+   b) 等到 `exp` 2026-11-28 临近，抓客户端自然续期 —— 无副作用，但要等两周。
 
 **已由 2026-11-15 抓包/实测定案**
 
