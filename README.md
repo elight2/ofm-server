@@ -1,7 +1,7 @@
 # ofm-server
 
 ## 介绍
-* ofm插件的服务器版本
+* [ofm插件](https://github.com/Ebony-Vinyl/dsh-our-free-model)的服务器重写版本
 * 把各家llm免费额度聚合到一起, 作为一个provider对外提供api
 * 自动签到: 每过`1h`检查所有供应商是否可以领取积分, 如果有就领取
 * [新供应商资讯获取](https://freeegg.top/)
