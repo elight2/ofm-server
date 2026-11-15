@@ -12,6 +12,7 @@
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
 * `ofm-server status 供应商id`: 获取供应商当前信息(输出接入状态, 当前余额, 最近一次成功签到的时间与增量, 凭证到期时间, 模型列表)
+* `ofm-server config`: 打印默认配置文件
 
 ## 供应商信息
 |名称|id|厂家|
