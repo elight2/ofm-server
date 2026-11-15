@@ -22,12 +22,13 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
 /// 启动时先跑一轮，之后按间隔重复。
 fn spawn_claim_loop(registry: Arc<Registry>, interval_secs: u64) {
     tokio::spawn(async move {
-        // 最小 60s，防止配置写 0 导致忙等。
+        // 启动时立刻跑一轮；之后每 `interval_secs` 一轮。
+        // （`interval` 的首次 `tick()` 立即就绪，故先 tick 再签到，避免启动时连跑两轮。）
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(60)));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            crate::cli::claim::claim_all(&registry).await;
             ticker.tick().await;
+            crate::cli::claim::claim_all(&registry).await;
         }
     });
 }
