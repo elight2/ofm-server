@@ -57,7 +57,6 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 8. **图片不走官方上传链路** `[curl vs 抓包]` — A 类，**已批准（2026-11-15）**。官方四步：附件落本地 → `get_resource_upload_url` → 传 TOS → `commit_resource_upload_result` → `Read` 工具交独立多模态模型转描述（§3.7）。我方：CC 的 `image_url`（含 `data:` URL）内联直发，一步完成。理由：内联实测有效；上传链路要复刻 TOS 分片协议 + 凭证信封，成本高，且走完拿到的只是**图片的文字描述**，能力并不等价。
 9. **流内错误映射为 HTTP 状态码 + 裁剪 message** `[curl e4/e5/3003]` — A 类，**已批准（2026-11-15）**。详见 §6.2。
 10. **上游独有、CC 无法表达因而放弃的能力** `[抓包]` — B 类后果。`create_agent_task` 自主 agent 循环（多轮工具自执行、记忆、plan_item）、服务端 PE 与 `extra_config`/`model_extra_config` 行为开关、`reasoning_effort_config`（目录有 `support_thinking`/`options`/`default_level`；我方入参能否映射过去已实测为**不能**，见 §3.2）、`access.identity_list` 准入身份、`model_entitlement_usage_cost` 计费倍率。
-11. **不过滤 `is_invisible_to_user`** `[抓包 + 用户客户端核对 2026-11-15]` — A 类，**待批准**。官方客户端 UI 按该标志过滤，**恰好只展示 18 个**（与用户实际所见完全一致）；本实现不过滤，`/v1/models` 暴露 56 个（多 38 个）。保留理由：这些条目 API 层实测可用（`glm-5.2` `[curl]` 正常回答），过滤会砍掉已验证能力；代价是 `list_models` 比官方多 38 项。若要 1:1 复刻 UI 行为，改为 `is_invisible_to_user != Some(true)` 即可。详见 §4.3。
 
 ### 域名
 
@@ -441,7 +440,8 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 ### 4.3 映射到 `/v1/models`
 
 取 **`function == "solo_agent"`**（与本实现 §3.2 `function` 定稿一致 `[curl 实测门控]`）
-且 `usage == "chat_completion"` 的条目 → **56 个**。
+且 `usage == "chat_completion"` 的条目 → 目录 **56 个**；
+再按 `is_invisible_to_user != true` 过滤 → **最终下发 18 个**（与官方客户端 UI 一致）。
 
 两个候选的完整代价 `[抓包，由 flows.jsonl 的 2757110 字节全量目录实测统计]`：
 
@@ -464,15 +464,21 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 但**它不表示不可用**：`glm-5.2` 标 true，我方 `[curl f1/f2/g1]` 实测正常出中文回答（`provider_model_name=glm-5.2`）；
 同组还有 `deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.1/5/4.7/4.6`、`qwen-3.7-plus` 等。
 
-**本实现的取舍：不过滤**（与官方 UI 行为不同，属 `[有意偏差]`）。理由见 §0 出入 11。
-若要 1:1 复刻官方 UI，应改为 `filter(|c| c.is_invisible_to_user != Some(true))`，模型数 56 → 18。
+**本实现：过滤** `[实现 2026-11-15]`。`to_models()` 在 `usage` / 空名 / 去重之外增加
+`.filter(|c| c.is_invisible_to_user != Some(true))`，模型数 **56 → 18**，与官方客户端展示集合一致。
+`is_invisible_to_user` 缺失或 `false` 均保留（实测该字段值为原生 `bool` 或缺失，共 170 true / 112 false / 132 缺失，跨全 11 个 function）。
+回归测试 `真实抓包过滤后得到_18_个可见模型` 与 `真实抓包未过滤为_56_个可对话模型` 双向锁定该口径。
+
+注意副作用：被过滤的 38 个在 **API 层仍可调用**（`glm-5.2` 已 `[curl]` 实测可用），
+过滤只是复刻 UI 行为。若下游需要这些模型，须手动把 `config_name` 写进配置 —— 而 `llm_utils_chat`
+本身接受任意 `config_name`（`function` 才是准入闸门，§3.2）。
 
 | 上游 | CC `/v1/models` |
 |-|-|
 | `config_name` | `id = "trae/"+config_name`、`owned_by = "trae"` |
 | `display_config.display_name` | 无标准位，可选放扩展 |
 | `context_window_tokens.dev` | 无 CC 标准位（丢弃）|
-| `is_invisible_to_user` | **不过滤**（有意偏差，见 §0 出入 11；官方 UI 按此过滤到 18 个）|
+| `is_invisible_to_user` | `!= true` 才保留（56 → 18，与官方 UI 一致）|
 | `display_contact_config.consumption_rate.data.rate` | 拼进 `id`：`id = "trae/"+config_name+" (x"+rate+")"`（README 格式）|
 | — | `created` 上游无来源，取本地时间 |
 | — | `object = "model"` |

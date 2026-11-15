@@ -1,11 +1,14 @@
 //! 模型目录（`/v1/models` 的数据来源）。
 //!
 //! 协议见 `provider-info/trae.md` §4：请求体是固定常量（11 个 function），
-//! 响应约 2.7 MB，只需从中取 `function == "solo_agent"` 且
-//! `usage == "chat_completion"` 的 `config_name`。
+//! 响应约 2.7 MB，只需从中取 `function == "solo_agent"`、
+//! `usage == "chat_completion"` 且对用户可见的 `config_name`。
 //!
-//! **不过滤 `is_invisible_to_user`**：该标志只表示客户端 UI 不展示
-//! （56 个可对话条目里有 38 个为 true，含实测可用的 `glm-5.2`）。
+//! **过滤 `is_invisible_to_user == true`**（§4.3）：该标志精确界定官方客户端 UI
+//! 的展示集合 —— `solo_agent` 下 56 个可对话条目里 38 个为 true，剩余 18 个与
+//! 官方客户端实际列出的模型完全一致。为与官方客户端行为对齐，这里同样过滤。
+//! 注意：被过滤的条目在 API 层仍可调用（如 `glm-5.2` 实测可用），
+//! 过滤只是复刻 UI 行为，不代表上游不可用。
 
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +95,9 @@ pub struct ConfigInfo {
     pub config_name: String,
     #[serde(default)]
     pub usage: String,
+    /// `true` = 官方客户端 UI 不展示（§4.3）。缺省视为可见。
+    #[serde(default)]
+    pub is_invisible_to_user: Option<bool>,
     /// 字符串化 JSON，仅在存在时才解析（2.7 MB 里大部分条目用不到）。
     #[serde(default)]
     pub display_config: Option<serde_json::Value>,
@@ -122,6 +128,7 @@ impl Catalog {
 /// 从目录里挑出可用于对话的模型。
 ///
 /// 顺序保持上游返回顺序，`config_name` 去重（实测无重复，防御性处理）。
+/// 只保留官方客户端 UI 可见的条目（`is_invisible_to_user != true`，§4.3）。
 pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
     let Some(func) = catalog
         .function_configs
@@ -136,6 +143,7 @@ pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
         .iter()
         .filter(|c| c.usage == USAGE_CHAT)
         .filter(|c| !c.config_name.is_empty())
+        .filter(|c| c.is_invisible_to_user != Some(true))
         .filter(|c| seen.insert(c.config_name.as_str()))
         .map(|c| ModelInfo {
             model: c.config_name.clone(),
@@ -208,11 +216,25 @@ mod tests {
     }
 
     #[test]
-    fn 不过滤_is_invisible_to_user() {
-        // 该标志只影响 UI 展示，过滤会砍掉实测可用的 glm-5.2。
+    fn 过滤_is_invisible_to_user() {
+        // 该标志精确界定官方客户端 UI 的展示集合（§4.3），为与官方行为对齐而过滤。
+        // 缺省（字段缺失）视为可见。
         let c = catalog_with(
             r#"{"function_configs":[{"function":"solo_agent","config_info_list":[
-              {"config_name":"glm-5.2","usage":"chat_completion","is_invisible_to_user":true}]}]}"#,
+              {"config_name":"glm-5.2","usage":"chat_completion","is_invisible_to_user":true},
+              {"config_name":"deepseek-v4.1-flash","usage":"chat_completion","is_invisible_to_user":false},
+              {"config_name":"qwen3.8-flash","usage":"chat_completion"}]}]}"#,
+        );
+        let names: Vec<_> = to_models(&c).into_iter().map(|m| m.model).collect();
+        assert_eq!(names, ["deepseek-v4.1-flash", "qwen3.8-flash"]);
+    }
+
+    #[test]
+    fn is_invisible_to_user_为_false_时保留() {
+        // 只有字面 true 才过滤；false / 缺失均保留。
+        let c = catalog_with(
+            r#"{"function_configs":[{"function":"solo_agent","config_info_list":[
+              {"config_name":"a","usage":"chat_completion","is_invisible_to_user":false}]}]}"#,
         );
         assert_eq!(to_models(&c).len(), 1);
     }
@@ -303,7 +325,7 @@ mod tests {
 
     /// 真实抓包回归：`tmp/trae-capture/flows.jsonl` 的 2757110 字节响应。
     #[test]
-    fn 真实抓包得到_56_个模型() {
+    fn 真实抓包过滤后得到_18_个可见模型() {
         let Ok(text) = std::fs::read_to_string("tmp/trae-capture/flows.jsonl") else {
             return;
         };
@@ -320,17 +342,62 @@ mod tests {
         };
         let catalog: Catalog = serde_json::from_str(&body).expect("真实响应解析失败");
         let models = to_models(&catalog);
-        assert_eq!(models.len(), 56, "§4.3 实测口径为 56 个可对话模型");
+        // §4.3：solo_agent 下 56 个可对话条目，过滤 `is_invisible_to_user == true`
+        // 后剩 18 个，与官方客户端 UI 实际展示的模型数一致。
+        assert_eq!(models.len(), 18, "§4.3 实测口径为 18 个可见模型");
         assert!(
-            models.iter().any(|m| m.model == "glm-5.2"),
-            "glm-5.2 已实测可用，不应被过滤"
+            !models.iter().any(|m| m.model == "glm-5.2"),
+            "glm-5.2 标 is_invisible_to_user=true，应被过滤（API 层仍可调用）"
         );
-        let glm = models.iter().find(|m| m.model == "glm-5.2").unwrap();
-        assert_eq!(glm.display_name.as_deref(), Some("GLM-5.2"));
-        assert_eq!(glm.rate, Some(0.78), "§4.2 实测 glm-5.2 倍率 0.78");
+        let ds = models
+            .iter()
+            .find(|m| m.model == "deepseek-v4.1-flash")
+            .expect("deepseek-v4.1-flash 在客户端可见列表中");
+        assert_eq!(ds.display_name.as_deref(), Some("DeepSeek-V4.1-Flash"));
+        let glm = models
+            .iter()
+            .find(|m| m.model == "glm-5.3")
+            .expect("glm-5.3 在客户端可见列表中");
+        assert_eq!(glm.display_name.as_deref(), Some("GLM-5.3"));
         assert!(
             models.iter().all(|m| m.rate.is_some()),
-            "真实目录 56 条均带 consumption_rate"
+            "可见 18 条均带 consumption_rate"
         );
+    }
+
+    /// 真实抓包：未过滤口径应为 56 条（保住 §4.3 的原始计数依据）。
+    #[test]
+    fn 真实抓包未过滤为_56_个可对话模型() {
+        let Ok(text) = std::fs::read_to_string("tmp/trae-capture/flows.jsonl") else {
+            return;
+        };
+        let Some(body) = text.lines().find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            let url = v.get("url")?.as_str()?;
+            if !url.contains("batch_get_detail_param") {
+                return None;
+            }
+            Some(v.get("resp_body")?.as_str()?.to_string())
+        }) else {
+            return;
+        };
+        let catalog: Catalog = serde_json::from_str(&body).expect("真实响应解析失败");
+        let func = catalog
+            .function_configs
+            .iter()
+            .find(|f| f.function == "solo_agent")
+            .expect("目录缺 solo_agent");
+        let chat: Vec<_> = func
+            .config_info_list
+            .iter()
+            .filter(|c| c.usage == "chat_completion" && !c.config_name.is_empty())
+            .collect();
+        assert_eq!(chat.len(), 56, "§4.3 未过滤口径为 56 个可对话条目");
+        let hidden = chat
+            .iter()
+            .filter(|c| c.is_invisible_to_user == Some(true))
+            .count();
+        assert_eq!(hidden, 38, "§4.3 其中 38 个 is_invisible_to_user=true");
+        assert_eq!(chat.len() - hidden, 18, "剩余 18 个与官方 UI 一致");
     }
 }
