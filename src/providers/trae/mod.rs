@@ -8,6 +8,7 @@ pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chat;
+pub mod checkin;
 pub mod credential;
 pub mod device;
 pub mod pkce;
@@ -26,7 +27,9 @@ use crate::core::events::{Event, EventStream, FinishReason, UpstreamError};
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 use crate::core::sse::SseDecoder;
 
-use api::{HttpError, APP_VERSION, APP_VERSION_CODE, HOST_API5, IDE_VERSION_CODE, UA_TTNET};
+use api::{
+    HttpError, APP_VERSION, APP_VERSION_CODE, HOST_API5, IDE_VERSION_CODE, UA_TTNET, UA_VSCODE,
+};
 use credential::Credential;
 
 pub const ID: &str = "trae";
@@ -145,6 +148,95 @@ impl TraeProvider {
         let models = catalog::to_models(&catalog);
         tracing::debug!("[{ID}] 模型目录共 {} 个可对话模型", models.len());
         Ok(models)
+    }
+
+    // ------------------------------------------------------------ 签到（§6）
+    //
+    // 签到走 `api.trae.cn`，用 VSCode UA 那套头，且**不带** `x-machine-id`
+    // （与对话请求的头不同，实测如此）。
+
+    fn checkin_headers(&self, token: &str, cred: &Credential) -> Vec<(&'static str, String)> {
+        vec![
+            ("user-agent", UA_VSCODE.to_string()),
+            ("authorization", format!("Cloud-IDE-JWT {token}")),
+            ("x-app-version", APP_VERSION.to_string()),
+            ("x-device-id", cred.device_id.clone()),
+            ("x-device-type", std::env::consts::OS.to_string()),
+            ("x-os-version", device::os_version()),
+            ("content-type", "application/json".to_string()),
+        ]
+    }
+
+    /// `POST /trae/api/v2/ug/checkin_credits/status`
+    async fn checkin_status(
+        &self,
+        token: &str,
+        cred: &Credential,
+    ) -> Result<checkin::Status, ProviderError> {
+        self.checkin_post(
+            checkin::PATH_STATUS,
+            &serde_json::json!({ "req_source": checkin::REQ_SOURCE }),
+            token,
+            cred,
+        )
+        .await
+    }
+
+    /// `POST /trae/api/v2/ug/checkin_credits/claim`
+    async fn checkin_claim(
+        &self,
+        token: &str,
+        cred: &Credential,
+    ) -> Result<checkin::ClaimResult, ProviderError> {
+        let r: checkin::ClaimResult = self
+            .checkin_post(
+                checkin::PATH_CLAIM,
+                &serde_json::json!({ "req_source": checkin::REQ_SOURCE }),
+                token,
+                cred,
+            )
+            .await?;
+        r.check().map_err(ProviderError::Protocol)?;
+        Ok(r)
+    }
+
+    /// 读总余额，仅用于报告签到带来的增量。
+    async fn balance(&self, token: &str, cred: &Credential) -> Result<f64, ProviderError> {
+        let u: checkin::Usage = self
+            .checkin_post(
+                checkin::PATH_USAGE,
+                &serde_json::json!({ "require_usage": true, "req_source": checkin::REQ_SOURCE }),
+                token,
+                cred,
+            )
+            .await?;
+        Ok(u.total_balance)
+    }
+
+    async fn checkin_post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        token: &str,
+        cred: &Credential,
+    ) -> Result<T, ProviderError> {
+        let url = format!("{}{path}", checkin::HOST);
+        let payload = serde_json::to_vec(body)
+            .map_err(|e| ProviderError::Other(format!("序列化签到请求体失败: {e}")))?;
+        let mut http = self.client.post(&url).body(payload);
+        for (k, v) in self.checkin_headers(token, cred) {
+            http = http.header(k, v);
+        }
+
+        let resp = http.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(map_http_error(status.as_u16(), &body));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ProviderError::Protocol(format!("解析签到响应失败: {e}")))
     }
 }
 
@@ -283,11 +375,55 @@ impl Provider for TraeProvider {
     }
 
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
-        // TODO(协议): status → claim → 复核 status/usage。
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+
+        let status = self.checkin_status(&token, &cred).await?;
+        status.check().map_err(ProviderError::Protocol)?;
+
+        if !status.enable {
+            return Ok(ClaimReport {
+                skipped: true,
+                message: "签到活动未开启".to_string(),
+                credits_delta: None,
+            });
+        }
+        if status.checked_in {
+            // 已签到就不调 claim：上游对重复领取也回 success，会把「已签到」
+            // 误报成「本次领到」（实测余额不变、无副作用）。
+            return Ok(ClaimReport {
+                skipped: true,
+                message: "今日已签到".to_string(),
+                credits_delta: None,
+            });
+        }
+        debug_assert!(status.claimable(), "走到这里应可领取");
+
+        // 领取前记一次余额，仅用于报告增量（不参与成败判定）。
+        let before = self.balance(&token, &cred).await.ok();
+        self.checkin_claim(&token, &cred).await?;
+
+        // claim 的返回值无法区分「真领到」与「今日已签过」，只能复读 status 复核。
+        let after = self.checkin_status(&token, &cred).await?;
+        after.check().map_err(ProviderError::Protocol)?;
+        if !after.checked_in {
+            return Err(ProviderError::Protocol(
+                "claim 返回成功，但复核 status 仍显示未签到".to_string(),
+            ));
+        }
+
+        let delta = match (before, self.balance(&token, &cred).await.ok()) {
+            (Some(b), Some(a)) => Some(a - b),
+            _ => None,
+        };
+        let credits = after.credits + after.extra_credits;
         Ok(ClaimReport {
-            skipped: true,
-            message: "[trae 占位] 今日已签到，跳过".to_string(),
-            credits_delta: None,
+            skipped: false,
+            message: match delta {
+                Some(d) => format!("签到成功，额度 {credits}，余额变化 {d:+.2}"),
+                None => format!("签到成功，额度 {credits}"),
+            },
+            credits_delta: delta,
         })
     }
 }

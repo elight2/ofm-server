@@ -565,6 +565,13 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 `status` 判 `enable && !checked_in` → `claim` → 再读 `status`/`ide_user_ent_usage` 校验余额变化。
 `claim` 无破坏性副作用：已用只读接口核对，重复调用未扣款、未额外发积分。
 
+**2026-11-15 复测确认（本实现）**：当日已签到时调 `claim` → `{"code":0,"message":"success"}`，
+前后 `ide_user_ent_usage.total_balance` **均为 5657.82，完全未变** → 佐证「返回值不可作为成败判据」，
+且重复调用确实无副作用。本实现因此在 `checked_in=true` 时**直接跳过、不调 claim**。
+
+签到 host 实测：`api.trae.cn` 正常；`api.trae.com.cn`（登录用的那个）回 **404**（TLB 页面）
+→ 签到与登录不同 host，不要统一。
+
 字段语义（实测，注意与直觉相反）`[抓包 + curl]`：
 
 * `checked_in: true` = 今日已签到

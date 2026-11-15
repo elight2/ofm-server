@@ -38,3 +38,7 @@
 * pi 的 `--list-models` 与 print 模式都以 `allowModelNetwork: false` 初始化，
   `refreshModels` 不会被调用 → 纯 refreshModels 方案下模型列表恒为空。
   解法：扩展工厂写成 `async function` 并在其中拉取，pi 启动会等工厂完成
+* 签到 `claim` 在「今日已签到」时仍回 `{"code":0,"message":"success"}`，与真领到无法区分；
+  实测前后 `total_balance` 都是 5657.82 未变。实现必须：`checked_in=true` 直接跳过、不调 claim，
+  成败只能靠复读 `status` 的 `checked_in` 判定
+* 签到 host 是 `api.trae.cn`；登录用的 `api.trae.com.cn` 对签到路径回 404，两者不可混用
