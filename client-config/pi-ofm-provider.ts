@@ -27,7 +27,14 @@ const PROVIDER_ID = "ofm-server";
 const DEFAULT_BASE_URL = "http://127.0.0.1:3060/v1";
 /** 快照新鲜度窗口：窗口内不重复请求。 */
 const REFRESH_TTL_MS = 5 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 10_000;
+/** 单次拉取超时。仅作用于扩展加载时的首次兜底与后台刷新。 */
+const FETCH_TIMEOUT_MS = Number(process.env.OFM_SERVER_TIMEOUT_MS ?? 3_000);
+/**
+ * 扩展加载时首次兜底的等待上限。
+ * 它直接串在 pi 启动路径上：服务不可达时最坏会阻塞这么久。
+ * 本机回环通常是立即 ECONNREFUSED（<0.5s），远端地址才会吃满。
+ */
+const STARTUP_TIMEOUT_MS = Math.min(FETCH_TIMEOUT_MS, 3_000);
 
 function baseUrl(): string {
 	return (process.env.OFM_SERVER_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
@@ -67,16 +74,29 @@ async function fetchModels(signal: AbortSignal): Promise<ProviderModelConfig[]> 
 	return ids.map(toConfig);
 }
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
 	/** 内存快照；持久化由 pi 通过 context.publish({ persist }) 负责。 */
 	let current: ProviderModelConfig[] = [];
+
+	// 首次运行的兜底：此时还未到 refreshModels，也没有持久化快照。
+	// pi 的非交互路径（--print/--list-models）以 allowNetwork:false 启动，
+	// 不会联网，若这里不拉就会显示「无模型」。因此在扩展加载时同步拉一次，
+	// 失败静默降级（服务未启动不影响 pi 正常使用）。
+	try {
+		current = await fetchModels(AbortSignal.timeout(STARTUP_TIMEOUT_MS));
+	} catch {
+		// 保持空表；后续 refreshModels 的网络阶段会再试。
+	}
 
 	pi.registerProvider(PROVIDER_ID, {
 		name: "ofm-server",
 		baseUrl: baseUrl(),
 		api: "openai-completions",
 		apiKey: "dummy",
-		models: [],
+		// 关键：把工厂里拉到（或空的）清单作为初始 models。
+		// 若留空数组，非交互路径下 provider-composer 的 applyExtension 会解析出
+		// 0 个模型，refreshModels 的离线恢复也救不回来（实测）。
+		models: current,
 
 		// 注意：扩展的 refreshModels 必须 **返回模型数组**——
 		// pi 在 provider-composer 里用的是返回值（`refreshed = await ...`），

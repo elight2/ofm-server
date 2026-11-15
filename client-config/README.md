@@ -18,19 +18,35 @@ cp client-config/pi-ofm-provider.ts ~/.pi/agent/extensions/ofm-provider.ts
 export OFM_SERVER_BASE_URL=http://127.0.0.1:3060/v1
 ```
 
-### 首次必须先跑一次交互式（重要）
+### 两条发现路径（互为兜底）
 
-pi 的刷新时机（读 `dist/` 源码确认）：
+| 路径 | 触发时机 | 说明 |
+|-|-|-|
+| 扩展加载时拉取 | 每次启动 | 保证**首次即可用**，无需先跑交互式 |
+| `refreshModels` | 交互式启动后 / `/model` 选择器 / 后台刷新 | 走官方机制，负责**持久化**与增量更新 |
 
-| 场景 | 是否联网刷新 |
+pi 的非交互路径（`--print`、`--list-models`）以 `allowNetwork: false` 初始化，
+`refreshModels` 只恢复快照、不联网。若只靠它，**首次会显示 0 个模型**，
+因此扩展在加载时（`async` 工厂）先同步拉一次作为兜底。
+
+实测对照：
+
+| 场景 | 结果 |
 |-|-|
-| 交互式启动后异步刷新 | **是**（`refreshModelCatalogs`，15s 超时，不阻塞 UI） |
-| `/model` 打开选择器 | **是** |
-| `--print`、`--list-models`、print 模式 | **否**（`allowNetwork: false`），只读持久化快照 |
+| 无快照 + 服务在线，`--list-models` | ✅ 56 个（0.4s） |
+| 无快照 + 服务离线，`--list-models` | 0 个，**0.37s 返回**（回环立即 ECONNREFUSED，不卡启动） |
+| 有快照 + 服务离线，`--list-models` | ✅ 56 个 |
 
-因此**首次使用必须先启动一次交互式 `pi`**，等它拉取并写入
-`~/.pi/agent/models-store.json`；此后非交互模式也能正常列出模型，且服务未启动时
-`--list-models` 仍可用（只是对话会 `ECONNREFUSED`）。
+启动兜底有 3 秒上限（`STARTUP_TIMEOUT_MS`），避免远端地址不可达时拖慢 pi 启动。
+
+### 避免拖慢启动
+
+首次兜底直接串在 pi 启动路径上。本机回环一般立即失败（<0.5s），
+但如果 `OFM_SERVER_BASE_URL` 指向不可达的远端，最坏会等满 3 秒。可调小：
+
+```sh
+export OFM_SERVER_TIMEOUT_MS=1500
+```
 
 ### 行为说明
 
