@@ -3,8 +3,13 @@
 //! 当前 `models` / `chat` / `claim` 使用硬编码输出，仅用于联调 CLI 与服务器。
 //! 协议实现见 `provider-info/trae.md`，后续替换本文件的 TODO 部分。
 
+pub mod api;
 pub mod auth;
 pub mod credential;
+pub mod device;
+pub mod pkce;
+pub mod proof;
+pub mod refresh;
 
 use std::path::PathBuf;
 

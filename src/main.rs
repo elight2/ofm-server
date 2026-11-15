@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let root = cli.root.canonicalize().unwrap_or(cli.root);
+    let root = cli::root();
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => cli::serve::run(root).await,

@@ -43,39 +43,54 @@ pub fn open_browser(url: &str) -> anyhow::Result<()> {
     anyhow::bail!("找不到可用的浏览器打开命令（例如 xdg-open）")
 }
 
-/// 在本地端口等待 OAuth 回调，返回原始查询串。
-pub async fn wait_callback(port: u16, timeout: Duration) -> anyhow::Result<String> {
+/// 同上，但只接受指定路径的请求（其它路径返回 404 并继续等待）。
+pub async fn wait_callback_on(
+    port: u16,
+    expect_path: &str,
+    timeout: Duration,
+) -> anyhow::Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    tracing::info!("等待浏览器回调 http://127.0.0.1:{port}/callback");
+    let deadline = tokio::time::Instant::now() + timeout;
 
-    let accept = listener.accept();
-    let (mut sock, _) = tokio::time::timeout(timeout, accept)
-        .await
-        .map_err(|_| anyhow::anyhow!("等待回调超时（{}s）", timeout.as_secs()))??;
+    loop {
+        let (mut sock, _) = tokio::time::timeout_at(deadline, listener.accept())
+            .await
+            .map_err(|_| anyhow::anyhow!("等待回调超时（{}s）", timeout.as_secs()))??;
 
-    let mut buf = vec![0u8; 8192];
-    let n = sock.read(&mut buf).await?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let first_line = request.lines().next().unwrap_or_default();
-    // 形如 `GET /callback?code=...&state=... HTTP/1.1`
-    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-    let query = path
-        .split_once('?')
-        .map(|(_, q)| q.to_string())
-        .unwrap_or_default();
+        let mut buf = vec![0u8; 8192];
+        let n = match tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await {
+            Ok(Ok(n)) => n,
+            _ => continue,
+        };
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let first_line = request.lines().next().unwrap_or_default();
+        let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+        let (route, query) = match path.split_once('?') {
+            Some((r, q)) => (r, q.to_string()),
+            None => (path, String::new()),
+        };
 
-    let body = "<html><body>登录完成，可以关闭此页面。</body></html>";
-    let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = sock.write_all(resp.as_bytes()).await;
-    let _ = sock.shutdown().await;
+        if route != expect_path {
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+            let _ = sock.shutdown().await;
+            continue;
+        }
 
-    Ok(query)
+        let body = "<html><body>登录完成，可以关闭此页面。</body></html>";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = sock.write_all(resp.as_bytes()).await;
+        let _ = sock.shutdown().await;
+
+        return Ok(query);
+    }
 }
 
 /// 从 `application/x-www-form-urlencoded` 查询串取某个键。

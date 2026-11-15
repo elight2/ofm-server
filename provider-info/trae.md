@@ -72,7 +72,7 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 | `api5-normal.mchost.guru/api/ide/v1/get_client_config` | 端点配置 `[抓包]` |
 | `api5-normal.mchost.guru/api/solo_hub/v1/conversations/messages/batchInsert` | 会话落库（明文）`[抓包]` |
 | `api.trae.cn/trae/api/v3/oauth/ExchangeToken` | 登录换令牌 / 续期 `[抓包]` |
-| `api.trae.cn/cloudide/api/v3/trae/oauth/GetPCAuthCode` | 浏览器侧取 AuthCode（需门户 Cookie）`[抓包]` |
+| `api.trae.cn/cloudide/api/v3/trae/oauth/GetPCAuthCode` | 浏览器侧取 AuthCode（需门户 Cookie，CLI 不可用）`[抓包+实测]` |
 | `api.trae.cn/cloudide/api/v3/{trae/CheckLogin,trae/GetUserInfo,common/GetUserToken}` | 登录态 / 用户信息 `[抓包]` |
 | `api.trae.cn/trae/api/v2/ug/*`、`trae/api/v2/pay/*` | 签到 / 积分 `[抓包]` |
 | `www.trae.cn/authorization` | 登录页（浏览器打开）`[抓包]` |
@@ -94,12 +94,15 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
      &code_challenge=<b64url43>&code_challenge_method=S256&channel_name=common
    用户在页面完成抖音/手机号登录。
 
-2) POST https://api.trae.cn/cloudide/api/v3/trae/oauth/GetPCAuthCode   （需门户 Cookie）[抓包]
-   {"ClientID":"ono9krqynydwx5","CodeChallenge":"…","CodeChallengeMethod":"S256",
-    "DeviceID":"…","PlatformCode":"IDE_PC"}
-   → Result.AuthCode（ExpireDuration 600000 = 10 分钟）
+2) 授权完成后浏览器跳回 auth_callback_url，查询串已含授权码 [实测，2026-11-15]
+   ?isRedirect=true&scope=trae
+    &authCodeInfo={"AuthCode":"<44 字符>","ExpireAt":<ms>,"ExpireDuration":600000}
+    &loginTraceID=<uuid>&host=https://api.trae.com.cn&userRegion=cn&userInfo={…}
+   → 直接取 authCodeInfo.AuthCode，**无需**再调 GetPCAuthCode。
+   GetPCAuthCode 是网页端（www.trae.cn 页面内）取授权码用的，需浏览器门户 Cookie，
+   无 Cookie 调用返回 401 `{"Code":"20101","Message":"Token 无效"}`。
 
-3) POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）[抓包]
+3) POST <回调返回的 host>/trae/api/v3/oauth/ExchangeToken   （无认证）[抓包 + 实测]
    {"ClientID":"ono9krqynydwx5","AuthCode":"…","CodeVerifier":"…",
     "DeviceInfo":{"DeviceID","MachineID","PlatformCode":"IDE_PC","DeviceType":"PC",
       "DeviceName","DeviceModel":"","ClientVersion":"3.4.18",
@@ -107,6 +110,20 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
       "OSInfo":"linux","OSVersion":"Arch Linux"},
     "IDEVersion":"3.4.18"}
    → Result.{Token, RefreshToken, RefreshExpireAt, BoundDeviceID, ClientID, DeviceBindStatus}
+```
+
+续期（`RefreshToken` 换新 `Token`）`[实测 2026-11-15]`：
+
+```
+POST <host>/trae/api/v3/oauth/ExchangeToken
+{"ClientID":"ono9krqynydwx5","ClientSecret":"","RefreshToken":"…",
+ "DeviceInfo":{…同上但 DevicePublicKey 为同一密钥的公钥…},
+ "DeviceProof":{"Signature":"<b64 DER>","Timestamp":<秒>,"Nonce":"<32 hex>"},
+ "IDEVersion":"3.4.18"}
+
+DeviceProof 签名消息 = ["POST","/trae/api/v3/oauth/ExchangeToken",ClientID,RefreshToken,
+                        Timestamp,Nonce].join("\n")，ECDSA-SHA256(设备私钥) → DER → 标准 base64。
+注意签名 payload 是 **RefreshToken 本身**（不是 JSON body）；见 out/main.js 的 pFe。
 ```
 
 要点 `[抓包]`：

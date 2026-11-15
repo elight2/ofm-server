@@ -1,12 +1,17 @@
 //! CLI 子命令：`login` / `claim` / `serve`（默认）。
+//!
+//! 运行目录固定为当前工作目录（配置与 `providers/` 都在其中）。
 
 pub mod claim;
 pub mod login;
 pub mod serve;
 
-use std::path::PathBuf;
-
 use clap::{Parser, Subcommand};
+
+/// 运行目录：当前工作目录。
+pub fn root() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -15,10 +20,6 @@ use clap::{Parser, Subcommand};
     about = "聚合多家 LLM 免费额度，对外提供 OpenAI 兼容 API"
 )]
 pub struct Cli {
-    /// 运行目录（配置文件与 providers/ 所在目录），默认当前目录。
-    #[arg(long, global = true, default_value = ".", value_name = "DIR")]
-    pub root: PathBuf,
-
     #[command(subcommand)]
     pub command: Option<Command>,
 }
