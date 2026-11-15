@@ -1,20 +1,29 @@
-//! `ofm-server login <供应商id>`：浏览器 OAuth（PKCE S256）+ 本地回调，保存凭证。
+//! `ofm-server login <供应商id>`：浏览器 OAuth + 本地回调，保存凭证。
 //!
-//! 流程见 `provider-info/trae.md` §1。本模块只负责与供应商无关的编排：
+//! 流程见 `provider-info/<id>.md` §1。本模块只负责与供应商无关的编排：
 //! 1. 供应商给出授权 URL 与回调端口；
 //! 2. 用 `xdg-open` 打开浏览器；
 //! 3. 本地 HTTP 服务接收回调；
 //! 4. 供应商用回调结果换取凭证并写盘。
+//!
+//! * trae：PKCE S256 + `ExchangeToken`（`trae::auth`）
+//! * raccoon：loopback 兼容登录，本地收货后 `login_with_authorization_code`
+//!   （`raccoon::auth`，自带一次性回调服务，不走 `wait_callback_on`）
 
 use std::time::Duration;
 
-use crate::providers::trae;
+use crate::providers::{raccoon, trae};
 
 /// 浏览器 OAuth 登录。
 pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<()> {
     match provider_id {
         trae::ID => trae::auth::login(root).await,
-        other => anyhow::bail!("未知供应商 `{other}`，可用: {}", trae::ID),
+        raccoon::ID => raccoon::auth::run(root).await,
+        other => anyhow::bail!(
+            "未知供应商 `{other}`，可用: {}, {}",
+            trae::ID,
+            raccoon::ID
+        ),
     }
 }
 

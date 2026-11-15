@@ -94,8 +94,9 @@
 * `code` 非空、长度 ≤ 4096、不含控制字符；单次消费(重复→409)
 * 超时 300s，`maxConnections=8`
 
-⚠️ **待实测**：授权页是否真的会回连 loopback(`redirect` 参数由服务端能否接受未经抓包验证)。
-若服务端不支持，则回到方式 1 自行取 code。
+⚠️ **实测进展**(2025-11，本机，未登录)：授权页 URL 直接请求返回 **HTTP 200**(32KB 页面)，
+说明 `desktop_callback` / `redirect` / `state` 参数被服务端受理，未报参数错误。
+回连环节服务端自实现已验证(见下)，但**浏览器端是否真的按 `redirect` 回连未经真人登录确认**。
 
 存储(官方)：`<BOX_AGENT_CONFIG_DIR>/config/auth.json`，权限 0600
 ```json
@@ -197,6 +198,15 @@
   * 延期由**登录行为**(`login_with_authorization_code` / `refresh` 成功)触发，非独立接口
   * 故服务器若保持 token 长期有效、多日不重新登录，可能不触发延期
   * ⚠️ **待实测**：延期到底由「登录」还是「任何携带 token 的请求」触发，未抓包验证
+
+### 换 token 端点实测(本机，2025-11)
+`POST /api/web/auth/v1/login_with_authorization_code` 以假 code 实测，返回：
+```
+HTTP 400 {"code":200035,"message":"authorization_code_not_found_error","details":"authorization code not found"}
+```
+* 端点真实存在且受理该请求体格式 `{"authorization_code":"..."}`
+* 错误码 `200035` 与源码一致；**假 code 会回 HTTP 400**（非 200 信封）
+* 故客户端不能只看 HTTP 状态，需解析 body 的业务码
 
 账单相关字段与文案(`GET /api/web/points/v2/bills`)：
 |字段/类型|含义|
