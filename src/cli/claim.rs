@@ -5,8 +5,10 @@
 //! 每次签到（成功/跳过/失败）都写一条 `providers/<id>/claim.log` 记录。
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::core::claimlog::{self, Entry};
+use crate::core::provider::Provider;
 use crate::core::registry::Registry;
 
 pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
@@ -15,8 +17,18 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 串行签到所有供应商（手动 `claim` 子命令用）。
 pub async fn claim_all(registry: &Registry, root: &Path) {
     for provider in registry.all() {
+        claim_one(&provider, root).await;
+    }
+}
+
+/// 签到单个供应商。成功/跳过/失败均写一条 `claim.log`。
+///
+/// 自动签到按供应商独立计时，直接调本函数。
+pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
+    {
         let id = provider.id();
         let (result, balance) = match provider.claim().await {
             Ok(report) => {

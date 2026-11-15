@@ -1,4 +1,4 @@
-//! `ofm-server`：启动服务 + 每小时自动签到。
+//! `ofm-server`：启动服务 + 按供应商独立计时自动签到。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,23 +12,41 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
     let config = Config::load(&root)?;
     let registry = Arc::new(providers::build_registry(&root));
 
-    spawn_claim_loop(registry.clone(), config.claim_interval_secs, root.clone());
+    spawn_claim_loops(registry.clone(), &config, root.clone())?;
 
     let state = AppState { registry };
     server::run(state, &config).await?;
     Ok(())
 }
 
-/// 启动时先跑一轮，之后按间隔重复。
-fn spawn_claim_loop(registry: Arc<Registry>, interval_secs: u64, root: std::path::PathBuf) {
-    tokio::spawn(async move {
-        // 启动时立刻跑一轮；之后每 `interval_secs` 一轮。
-        // （`interval` 的首次 `tick()` 立即就绪，故先 tick 再签到，避免启动时连跑两轮。）
-        let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(60)));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            crate::cli::claim::claim_all(&registry, &root).await;
-        }
-    });
+/// 给每个供应商起一个**独立计时**的签到循环。
+///
+/// 间隔取自 `[claim_intervals]`，未配置则默认 6h。独立计时意味着各供应商
+/// 互不阻塞：某个账号签到慢或失败，不影响其它供应商的节奏。
+///
+/// 间隔非法时**直接返回错误**终止启动，不静默纠正——否则用户写了 `10`
+/// 却被偷偷改成 60 秒，永远不知道自己配错了。
+fn spawn_claim_loops(
+    registry: Arc<Registry>,
+    config: &Config,
+    root: std::path::PathBuf,
+) -> anyhow::Result<()> {
+    for provider in registry.all() {
+        let id = provider.id();
+        let secs = config.claim_interval_for(id)?;
+        tracing::info!("[{id}] 签到间隔 {}s", secs);
+
+        let provider = provider.clone();
+        let root = root.clone();
+        tokio::spawn(async move {
+            // `interval` 首次 `tick()` 立即就绪 ⇒ 启动时先跑一轮。
+            let mut ticker = tokio::time::interval(Duration::from_secs(secs));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                crate::cli::claim::claim_one(&provider, &root).await;
+            }
+        });
+    }
+    Ok(())
 }
