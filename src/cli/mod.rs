@@ -41,4 +41,8 @@ pub enum Command {
         /// 供应商 id（如 trae）
         provider: String,
     },
+    /// 打印默认配置（内嵌的 config.example.toml），可直接重定向为配置
+    ///
+    /// 用法：`ofm-server config > config.toml`
+    Config,
 }
