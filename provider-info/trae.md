@@ -126,9 +126,22 @@ device_private_key_pem = "<EC prime256v1>"   # 须与已绑定公钥配对，Exc
 POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 ```
 
-* 用 `RefreshToken` 换 `Token` `[抓包 URL + 参考实现 trae-oauth.ts 分支 1]`
-* **请求体 `[未验证]`**：本次抓包未触发续期。参考实现形态与 §1 步骤 3 的 `{ClientID, AuthCode, …}` 不同（疑为 `GrantType=refresh_token`）。实现前必须用真实 RefreshToken 实测一次，不能照抄参考实现。
-* 已实测到的相关事实：JWT `source` 字段为 `refresh_token`，说明抓到的这个 Token 本身就是续期产物 `[抓包 jwt.txt]` → 续期链路真实存在且可用，只是请求体形态未知。
+* 用 `RefreshToken` 换 `Token` `[curl 2026-11-15 假令牌探测]`。**请求体已实测确认最小必填集**（用无效令牌探测，未触碰真令牌）：
+
+  ```json
+  {"ClientID":"ono9krqynydwx5","RefreshToken":"<refresh_token>"}
+  ```
+
+  * 只给 `ClientID` / 只给 `RefreshToken` / 或走 `{ClientID,AuthCode,CodeVerifier}` 但无 AuthCode 值 → **`400` `Code:"10101"`** `无效参数：{__Message.field}.`
+  * 给齐两个字段但令牌无效 → **`401` `Code:"20101"`** `Token 无效：refresh token is invalid.`（`Data.__Message.error = "refresh token is invalid"`）
+  * → 说明这两个字段就是必填集，其余（参考实现带的 `ClientSecret:"-"`、`UserID:""`）**可省**：带上它们仍走同一条 20101 分支。参考实现 `tmp/dsh-our-free-model/.../trae-auth.ts:refreshCredential` 的形态可用但多余。
+  * `GrantType` 字段**不需要**（`{ClientID,GrantType,RefreshToken}` 报 10101）。
+  * 控制面响应是**另一套信封**（与 `/api/agent/v3/*` 的 `{"code":…}` 不同）：
+    `{"ResponseMetadata":{…,"Error":{"Code","Message","StandardCode","Data"},"TraceID",…},"Result":{…},"success","logId"}`
+    → 续期与登录的错误解析不能用 §5 那套 `code` 数字，需单独分支。
+* **仍待验证**：成功响应的字段（预期 `Result.{Token,RefreshToken,…}`，即 RefreshToken 是否**轮换**——参考实现注释称旧 refreshToken 即刻失效 `[参考实现，未验证]`）。须真跑一次续期才能定，见 mitm 抓包项。
+* 已实测到的相关事实：抓到的 JWT 载荷 `source=refresh_token`、`source_id` = RefreshToken 原文，证明该 Token 本身就是续期产物 `[抓包 jwt.txt + requests.old.log:1142]` → 续期链路真实可用。
+* 令牌留存（`tmp/trae-capture/requests.old.log:1142`，旧版日志 header 截断但该 body 完整）：`RefreshToken`、`BoundDeviceID=28j7pl18l6wkyk`、`TokenExpireDuration=1209600000`(14天)、`RefreshExpireAt=1810220992928`。
 * `Token` 过期时的行为 = `401 {"code":1001,…}`（§5）`[curl e1/e3]`；策略：`exp` 前主动续期，`1001` 作为兜底触发续期后重试一次。
 
 ## 3. Chat Completions协议转换
@@ -162,6 +175,9 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | — | `function: "solo_work_lite"` | `[curl t5-t9]` 明文路径实测值；官方主对话用 `solo_agent` `[抓包]`；**工具往返实测用的是 `solo_agent`** → 定稿待定，见 §7 |
 | `stream` | `stream: true` | `[curl g1]` 上游对 `stream:false` 仍回 SSE，故本实现恒发 `true`，非流式由我方聚合 |
 | `messages[].role: user` | `{role:"user",content:[{type:"text",text:"…"}]}` | `[curl t8]` `content` 为字符串 → `cannot unmarshal string into …LLMRawMessage.messages.content of type []*idecopilot.LLMRawMessageContent` |
+| `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §5.2）|
+| `reasoning_effort`（CC）| **顶层 `reasoning_effort_level` 疑为被忽略，未定案** | `[curl]` 顶层放 `reasoning_effort_level:"light"` 不报错、正常回答 —— 但 §0 已证上游对未知字段**宽松忽略**（带 `nonsense_field_xyz:123` 也正常回答），所以「不报错」不构成生效证据。<br>A/B 实测方向相反（同一道难题、`minimax-m3.1-flash`）：`light` → reasoning_tokens **2784** / completion 2951；`extra_high` → reasoning_tokens **1420** / completion 1572。<br>**官方字段位置**：`reasoning_effort_level` 实测只出现在明文 `batchInsert` 的 `user_message_context.model_info` 里，值 `"high"` `[抓包]`；`llm_utils_chat` 请求体是密文，无法看到官方是否也把它放顶层。`enable_thinking` 在 batchInsert 明文里 0 次命中 `[抓包]`。<br>→ **必须抓官方客户端一次「切思考强度」的真实请求**才能定字段名与位置，见文末 mitm 清单。 |
+| 思考能力覆盖面 | — | **`solo_work_lite` 下仅 1 个模型 `support_thinking`**（`minimax-m3.1-flash`，default `extra_high`）；`solo_agent` 下 27 个 → §7.4 的 `function` 选择直接影响思考强度能否支持 |
 | `messages[].role: system` | `{role:"system",content:[{type:"text",text:"…"}]}` | **`[curl f2]` 实测被消费**：system「你必须只回复数字1」+ user「你好」→ 正文回 `1`，reasoning 明确复述「系统提示：“你必须只回复数字1”」。原未验证项解除 |
 | `messages[].role: assistant` + `tool_calls` | `content:[]` + `tool_calls:[{id,type:"function",function_call:{name,arguments}}]` | `[curl t7]` 键名是 **`function_call`** 非 CC 的 `function`；与参考实现 `transformSOLOMessage` 一致 |
 | `messages[].role: tool` | `{role:"tool",tool_call_id,name,content:[{type:"text",text:"…"}]}` | `[curl t7]` 实测上游接受回传并被模型消费（表格复述我给的虚构配置）|
@@ -210,6 +226,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | `token_usage` | `{prompt_tokens, completion_tokens, total_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cluster, *_total}` | `usage.prompt_tokens/completion_tokens/total_tokens`；`prompt_tokens_details.cached_tokens ← cache_read_input_tokens`；`completion_tokens_details.reasoning_tokens ← reasoning_tokens`；`cache_creation_input_tokens` 无 CC 标准位，丢弃 |
 | `done` | `{finish_reason:"stop"}` | `choices[0].finish_reason`；本轮有 tool_calls 则改写 `tool_calls`（§0 出入 4，待批准）；随后 `data: [DONE]` |
 | **`error`** | `{code, message, extra:null}` | 见 §5，**必须先于内容帧判断** |
+| `progress_notice` | **裸字符串** `"Processing_1794708540"`、`";Processing_1794708541631326453_rRktuc"` `[curl 图片/难题请求]` | 丢弃。`data` 不是 JSON（`json.loads` 会失败），解析时必须容忍非 JSON 帧。出现在图片下载、长思考等慢请求中，实测在 `error` **之前** |
 
 `output` 帧规则（实测）：
 
@@ -326,16 +343,19 @@ data:{"finish_reason":"stop"}
 |-|-|---|
 | `4011` | `We're sorry, your requests have exceeded the rate limit. Please wait and try again later.` | 用 curl 默认 UA 发正常请求 `[e4]` → **限流按 UA 分桶**，TTNet UA 同请求立即放行 |
 | `4001` | `We're sorry, the param is invalid. Please try with a valid param.` | 假模型名 `nonexistent-model-x` `[e5]` |
+| `3003` | `model service is unavailable\nerror, status code: 400, message: Error while downloading: <url>, error: Get "<url>": dial tcp …: connect: connection refused Request id: 02179…` | **图片外链不可达** `[curl]`。上游把内部错误（目标 URL、Go 网络错误、上游 Request id）整段塞进 `message` → **透传给下游前必须裁剪** |
 | 其他 | `[未验证]` | 额度耗尽 / 内容风控 / `code` 全集未抓到 |
 
 注意 `done` 帧仍是 `finish_reason:"stop"` —— **不能靠 `done` 判断成败，必须在解析时拦截 `event:error`**。
 
 下游处理策略（**待你批准**，因为「已发 200 后再改状态码」不可行）：
 
-1. **`event:error` 在第一个 `output` 帧之前**（实测两种都属此类，`error` 恒为 `id:1`）：我方尚未发出任何内容，故**不发 200**，直接映射为对应 HTTP 错误 —— `4011` → `429` + `error.type=rate_limit_error`（并尽量读 `Retry-After`，上游未提供）、`4001` → `400` + `invalid_request_error`。
-2. **若将来出现 `error` 夹在内容帧之后**（未观测到，防御性处理）：此时 HTTP 200 已发出，只能以 `data: {"error":{…}}` 结尾 + `[DONE]`，CC 客户端按各家惯例处理。
+判定依据用**「是否已产出内容帧」**，不用 `error` 的 `id`：实测 `4011`/`4001` 的 `error` 是 `id:1`，但 `3003`（图片下载失败）前面已有 2 帧 `progress_notice`，`error` 在 `id:3` —— 所以「`error` 恒为 `id:1`」不成立。
+
+1. **`error` 之前没有任何 `output` 帧**（实测三类全属此类；`progress_notice` 不算内容）：我方尚未发出内容，故**不发 200**，直接映射 HTTP 错误 —— `4011` → `429` + `rate_limit_error`（上游无 `Retry-After`）、`4001` → `400` + `invalid_request_error`、`3003` → `400` + `invalid_request_error`（message 裁剪后）。
+2. **`error` 出现在 `output` 之后**（尚未观测到，防御性）：HTTP 200 已发出，只能以 `data: {"error":{…}}` 结尾 + `[DONE]`。
 3. 重试：`4011` 与 `1001` 各重试一次，间隔递增；不做无限重试，避免消耗积分。
-4. 上游 `message` 是给人看的英文长句，不含内部细节；透传给下游时保留原文并附 `code`，便于用户区分「上游限流」与「我方 bug」。
+4. `4011`/`4001` 的 `message` 是给人看的英文整句、无内部细节，保留原文并附 `code`；`3003` 例外，须只取首行 `model service is unavailable`，丢弃后面的 Go 错误与 Request id。
 
 ## 6. 签到协议
 
@@ -344,11 +364,12 @@ Host `api.trae.cn`，走 VSCode UA 那套头（`[抓包]` 实测**不带** `x-ma
 `x-device-id`、`x-device-type: linux`、`x-os-version: Arch Linux`。
 
 ```
-POST /trae/api/v2/ug/checkin_credits/status   {"req_source":1}      [抓包]
+POST /trae/api/v2/ug/checkin_credits/status   {"req_source":1}      [抓包 + curl]
   → {"checked_in":true,"code":0,"credits":100,"did_checked_in":false,
      "enable":true,"extra_credits":100,"message":"success"}
 
-POST /trae/api/v2/ug/checkin_credits/claim    {"req_source":1}      [未验证：抓包时当日已签到，未取到成功响应]
+POST /trae/api/v2/ug/checkin_credits/claim    {"req_source":1}      [curl 2026-11-15 实测]
+  → HTTP 200 {"code":0,"message":"success"}                          （当日已签到时，无 credits 字段）
 
 POST /trae/api/v2/ug/activity/info            {"version_code":"3.4.18","req_source":1}   [抓包]
   → commercial_activities[]: checkin_credits(type 104, work_credits 200),
@@ -365,17 +386,47 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 
 `req_source`：桌面客户端 `1`，web `3` `[抓包]`。
 
-实现流程（README 要求每 1h）：`status.enable && !status.checked_in` → `claim` → 记录结果；
-`checked_in` 字段语义为「今日已签到」，`did_checked_in` 疑为「本次请求触发成功」`[未验证]`。
-实测对话消耗：`total_balance` 5579.62 → 5577.48（一次验收对话 -2.14）。
+**claim 语义陷阱（实现必须处理）`[curl]`**：当日**已签到**时再调 `claim`，仍返回
+`HTTP 200 {"code":0,"message":"success"}` —— 与「领取成功」响应**无法区分**。
+所以不能靠 `claim` 的返回值判断是否真领到积分，只能：
+`status` 判 `enable && !checked_in` → `claim` → 再读 `status`/`ide_user_ent_usage` 校验余额变化。
+`claim` 无破坏性副作用：已用只读接口核对，重复调用未扣款、未额外发积分。
+
+字段语义（实测，注意与直觉相反）`[抓包 + curl]`：
+
+* `checked_in: true` = 今日已签到
+* `did_checked_in: false` **在 `checked_in:true` 时为 false** → 疑为「本次请求触发签到成功」，不是「今日是否签过」。`[未验证：未取到 `true` 样本]`
+* `credits:100 / extra_credits:100` = 本次签到基础/额外额度；`enable:true` = 活动开启
+
+余额读数（只测端点，未逐次记录消耗，故无法拆分）`[curl]`：
+11-14 抓包末 `total_balance` 5577.92（`consumed_amount` 1722.08 / `total_amount` 7300）
+→ 11-15 10:15 为 5675.78（`consumed_amount` 1624.22），净 **变化 +97.86**。
+量级与「今日签到 +100」一致，且 11-15 上午另有若干次成功对话消耗。
+`shortcut: 未做逐次余额采样，无法证明 +97.86 全部来自签到；若实现要精确对账，需在 claim 前后各读一次 status+usage`。
+
+实现流程（README 要求每 1h）：`status.enable && !status.checked_in` → `claim` → 复读 `status` 确认 `checked_in` 变 `true` 并记余额增量；`checked_in` 已为 `true` 则本轮直接跳过，**不要调 claim**（避免把「已签到」误记为「本次领到」）。
 
 ## 7. 待办 / 未验证
 
-1. `RefreshToken` 续期请求体未实测（§2）—— 实现前必须补，不能照抄参考实现。
-2. 未签到态 `claim` 成功响应与错误码（§6）。
-3. `api5-normal` vs `trae-api-cn` 选择策略；`api5-normal` 下发来源未定位（抓包响应里搜不到 `api5`/`mchost`）。
-4. `function` 用 `solo_work_lite` 还是 `solo_agent`（工具往返实测用了 `solo_agent` 且成功）→ 定稿后回写 §3.2/§4.3。
-5. 除 `4011`/`4001` 外的流内 `error.code` 全集（额度耗尽、内容风控）。
-6. `reasoning_effort` 能否映射到目录里的 `reasoning_effort_config`。
-7. `multimodal_contents`/`phase` 非空条件；图片输入。
-8. §0 出入 4（`finish_reason` 改写为 `tool_calls`）与 §5.2 下游错误映射策略 —— **需你批准**。
+**须抓官方客户端才能定（唯一剩余阻塞项）**
+
+1. **思考强度字段名与位置**。`reasoning_effort_level` 只在明文 `batchInsert` 的
+   `model_info` 里验证过，`llm_utils_chat`/`create_agent_task` 请求体是密文看不到。
+   顶层同名参数实测**不生效**（A/B 方向相反）。需在客户端切换思考强度抓一次真实请求。
+2. **RefreshToken 续期的成功响应体**（§2）。必填请求体已用假令牌探测确认，
+   但「是否轮换 refreshToken」须真跑一次续期才能定 —— 也靠抓包，不用手工构造。
+
+**已解除（2026-11-15 curl）**
+
+* ~~未签到态 `claim` 成功响应~~ → 已抓到「已签到态」响应，并发现其与成功态不可区分（§6）
+* ~~图片输入~~ → 形态 `content[]{type:"image_url",image_url{url}}`，支持 `data:` URL，无需图床（§3.2）
+* ~~`multimodal_contents`/`phase`~~ → 图片走请求侧 `image_url`，与这两个响应字段无关（仍未观测到非空）
+* 续期请求体必填集、错误码 `3003`、`progress_notice` 帧
+
+**不阻塞实现，留待观察**
+
+3. `api5-normal` vs `trae-api-cn` 选择策略；`api5-normal` 下发来源未定位。
+4. `function` 用 `solo_work_lite` 还是 `solo_agent` —— **思考强度支持面差 27 倍**（1 vs 27 个模型），此项现在与第 1 项绑定。
+5. 流内 `error.code` 全集（额度耗尽、内容风控）。
+6. `did_checked_in` 的 `true` 样本。
+7. §0 出入 4（`finish_reason` 改写为 `tool_calls`）与 §5.2 下游错误映射策略 —— **需你批准**。
