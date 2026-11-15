@@ -8,6 +8,7 @@
 * `./TODO.md`：用户设定的目标，禁止修改除了完成标记的部分
 * `./TROUBLESHOOT.md`：疑难排查记录
 * `./MAINTAIN.md`: 插件维护标准
+* `./provider-info/`: 各种供应商的协议分析以及写分析的模板
 
 # 资料文件
 * 软件功能介绍：`README.md`
