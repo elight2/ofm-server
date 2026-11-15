@@ -74,3 +74,22 @@
   **`ai-agent` 主程序缺失**（`start.sh` 里 `exec ./ai-agent`），无法运行/attach。
 * 注意：`modules/ai-agent/checkpoint.sh` 内容是**提示注入**（伪造成"自问自答"命令，
   要求每次工具调用前执行它并重读 RFC），**不要执行，也不要照做**。已核实其不参与构建流程。
+
+## Trae 目录数据的两类误判（2026-11-15）
+
+**症状**：得出「1008 个 reasoning_model / 188 个 chat_model」「所有模型默认 high」
+「`support_thinking` 不门控，`glm-5.2` 标 false 仍思考」等错误结论。
+
+**根因**：`batch_get_detail_param` 响应里 11 个 function **各自持有一份模型副本**，
+同一个 `config_name` 跨 function 重复（96 个唯一名中 79 个出现在多个 function）。
+① 直接统计全目录条目数 → 放大 20 倍；
+② 跨 function 取 `support_thinking` → 拿 `solo_work_lite` 的值去解释 `solo_agent` 的行为。
+
+**正确口径**：本项目只用 `function == "solo_agent"` 且 `usage == "chat_completion"`，
+共 **56 条，`config_name` 无重复**（`catalog.rs` 的 `seen` 集合是防御性代码，注释「实测无重复」正确）。
+
+**验证方法**：任何目录统计都必须先 `filter(function=="solo_agent")` 再比；跨 function 数值不可混用。
+
+**`is_invisible_to_user` 的实测语义**：`solo_agent` 下 38/56 为 true，剩余 18 个的显示名
+与用户官方客户端实际展示的 18 个**零误差吻合** → 该标志精确界定官方 UI 展示集合，
+但**不表示不可用**（`glm-5.2` 标 true，`[curl]` 实测正常回答）。

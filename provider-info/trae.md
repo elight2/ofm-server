@@ -10,7 +10,7 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 
 * 客户端(WebUI)版本: Trae CN **1.107.1**（appVersion `3.4.18`，buildVersion `2.3.102387`，`x-app-version-code`/`x-ide-version-code` = `20261110`）
 * 分析方式: deb 解包 + 二进制符号分析 + mitmproxy 抓包 + 明文 curl 递增实验
-* UA: 三套，按发起进程分，不可混用。对话必须 `[curl]` 用 `TraeClient/TTNet`（UA 参与限流分桶，见 §5）
+* UA: 三套，按发起进程分，不可混用。对话必须 `[curl]` 用 `TraeClient/TTNet`（UA 参与限流分桶，见 §6）
 
 | UA | 发起进程 `[抓包]` |
 |-|-|
@@ -48,15 +48,16 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 以下偏离逐条经用户批准（2026-11-14/15；维护标准要求与官方客户端一致）。分两类：A 类是我方主动改动上游字面值，B 类是官方行为不可观测（请求体密文）只能取推断值。
 
 1. **对话端点不同** `[curl vs 抓包]` — A 类。官方主回答来自 `create_agent_task`（体密文，明文完整 schema 未知，仅确认必填 `conversation_id`）；本实现用 `llm_utils_chat`。理由：明文 `llm_utils_chat` 已通过 `MAINTAIN.md` 两条验收（对话 + 工具调用），参考实现 `tmp/dsh-ofm-ng/TROUBLESHOOT.md` 亦直连实测该端点可用。
-2. **请求体不加密** `[curl]` — A 类。官方发 base64 密文（entropy≈7.99）；本发明文 JSON。服务端不强制加密：认证先于 body 解析（无 JWT+明文 → `401/1001`；有 JWT+明文缺 app_id → `400/4001 expr_path=app_id`；有 JWT+含 app_id → `200` 正常回答）。→ 不需要逆向 `libharness.so`；与 §3.6 的客户端明文直通分支互证。
+2. **请求体不加密** `[curl]` — A 类。官方发 base64 密文（entropy≈7.99）；本发明文 JSON。服务端不强制加密：认证先于 body 解析（无 JWT+明文 → `401/1001`；有 JWT+明文缺 app_id → `400/4001 expr_path=app_id`；有 JWT+含 app_id → `200` 正常回答）。→ 不需要逆向 `libharness.so`；与 §3.6 的客户端明文直通分支互证。**补充（2026-11-15）**：加密不经协议协商 —— 抓包 `llm_utils_chat` 的 29 个请求头中**无任何**声明 `body 已加密`/`encryption-version`/`protocol-key` 的字段，服务端无法可靠区分「忘加密」与「旧版客户端不支持加密」，故必须容忍明文。UA 只作限流分桶标签（换 UA 即放行），不承担客户端鉴权。
 3. **不实现会话落库** `[抓包]` — A 类。官方每轮附带 `solo_hub/.../batchInsert` + `sync_history_state` + `workflow/start`（摘要/记忆）；本实现每请求自带完整 messages 历史，无跨请求会话态。
 4. **`finish_reason` 改写** `[curl t7]` — A 类，**已批准（2026-11-15）**。上游**工具轮次也只回 `stop`**（t7 有 tool_calls，done 帧仍 `{"finish_reason":"stop"}`）。本实现在本轮产出 tool_calls 时改写为 `tool_calls`，以符合 CC 规范。回退方式：删掉改写，原样透传 `stop`（代价：依赖 `finish_reason=="tool_calls"` 判断退出条件的客户端会把工具轮当最终回答，agent 循环失效）。
 5. **响应 `id`/`created` 由我方生成** `[抓包]` — A 类。上游响应无 conversation/response id 与时间戳，只有 `event:metadata` 的内部 `session_id`（uuid）。
 6. **`app_id` 取参考实现常量** `6eefa01c-1036-4c7e-9ca5-d891f63bfcd8` `[curl]` — B 类，出处 `tmp/dsh-ofm-ng/.../trae-product.ts:322`；抓包请求体是密文，无法从流量验证此值。放 body `app_id` 或头 `X-App-Id` 均实测通过。
 7. **`function` 取 `solo_agent`** `[curl + 抓包]` — B 类，**已批准（2026-11-15）**。官方对话请求里的 `function` 值看不到（体密文），且该字段是服务端**模型准入闸门**，不是可选装饰。取值依据见 §3.2；两个候选的目录覆盖与逐条代价见 §4.3。
 8. **图片不走官方上传链路** `[curl vs 抓包]` — A 类，**已批准（2026-11-15）**。官方四步：附件落本地 → `get_resource_upload_url` → 传 TOS → `commit_resource_upload_result` → `Read` 工具交独立多模态模型转描述（§3.7）。我方：CC 的 `image_url`（含 `data:` URL）内联直发，一步完成。理由：内联实测有效；上传链路要复刻 TOS 分片协议 + 凭证信封，成本高，且走完拿到的只是**图片的文字描述**，能力并不等价。
-9. **流内错误映射为 HTTP 状态码 + 裁剪 message** `[curl e4/e5/3003]` — A 类，**已批准（2026-11-15）**。详见 §5.2。
+9. **流内错误映射为 HTTP 状态码 + 裁剪 message** `[curl e4/e5/3003]` — A 类，**已批准（2026-11-15）**。详见 §6.2。
 10. **上游独有、CC 无法表达因而放弃的能力** `[抓包]` — B 类后果。`create_agent_task` 自主 agent 循环（多轮工具自执行、记忆、plan_item）、服务端 PE 与 `extra_config`/`model_extra_config` 行为开关、`reasoning_effort_config`（目录有 `support_thinking`/`options`/`default_level`；我方入参能否映射过去已实测为**不能**，见 §3.2）、`access.identity_list` 准入身份、`model_entitlement_usage_cost` 计费倍率。
+11. **不过滤 `is_invisible_to_user`** `[抓包 + 用户客户端核对 2026-11-15]` — A 类，**待批准**。官方客户端 UI 按该标志过滤，**恰好只展示 18 个**（与用户实际所见完全一致）；本实现不过滤，`/v1/models` 暴露 56 个（多 38 个）。保留理由：这些条目 API 层实测可用（`glm-5.2` `[curl]` 正常回答），过滤会砍掉已验证能力；代价是 `list_models` 比官方多 38 项。若要 1:1 复刻 UI 行为，改为 `is_invisible_to_user != Some(true)` 即可。详见 §4.3。
 
 ### 域名
 
@@ -163,11 +164,11 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
   * `GrantType` 字段**不需要**（`{ClientID,GrantType,RefreshToken}` 报 10101）。
   * 控制面响应是**另一套信封**（与 `/api/agent/v3/*` 的 `{"code":…}` 不同）：
     `{"ResponseMetadata":{…,"Error":{"Code","Message","StandardCode","Data"},"TraceID",…},"Result":{…},"success","logId"}`
-    → 续期与登录的错误解析不能用 §5 那套 `code` 数字，需单独分支。
+    → 续期与登录的错误解析不能用 §6 那套 `code` 数字，需单独分支。
 * **未知项只剩一个**：RefreshToken 是否**轮换**（参考实现注释称旧 refreshToken 即刻失效 `[参考实现，未验证]`）。成功响应的字段结构不用等验证 —— 见本节末尾。
 * 已实测到的相关事实：抓到的 JWT 载荷 `source=refresh_token`、`source_id` = RefreshToken 原文，证明该 Token 本身就是续期产物 `[抓包 jwt.txt + requests.old.log:1142]` → 续期链路真实可用。
 * 令牌留存（`tmp/trae-capture/requests.old.log:1142`，旧版日志 header 截断但该 body 完整）：`RefreshToken`、`BoundDeviceID=28j7pl18l6wkyk`、`TokenExpireDuration=1209600000`(14天)、`RefreshExpireAt=1810220992928`。
-* `Token` 过期时的行为 = `401 {"code":1001,…}`（§5）`[curl err1/e3]`；**我方策略**：`exp` 前主动续期，`1001` 兜底触发续期后重试一次。
+* `Token` 过期时的行为 = `401 {"code":1001,…}`（§6）`[curl err1/e3]`；**我方策略**：`exp` 前主动续期，`1001` 兜底触发续期后重试一次。
   这是**我方设计，不是官方行为**。
 
 **官方客户端不会因 401 而续期** `[抓包 flows2 2026-11-15，用 mitmdump request 钩子伪造 401]`：
@@ -198,7 +199,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 `[抓包 requests.old.log:1142]` 已知 = `Result.{Token, RefreshToken, RefreshExpireAt, BoundDeviceID,
    ClientID, DeviceBindStatus}`（外层 `ResponseMetadata`）。续期调用**几乎必然回同一结构**，
    字段名可直接实现 `[推断，未验证]`。唯一真正未知的是 **RefreshToken 是否轮换**（若轮换，
-   我方必须持久化新值，旧值作废）。→ 不阻塞实现；定案选项见 §7.1。
+   我方必须持久化新值，旧值作废）。→ 不阻塞实现；定案选项见 §8.1。
 
 ## 3. Chat Completions协议转换
 
@@ -240,9 +241,9 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | — | `function` | **定稿 `solo_agent`**（§0 出入 7，已批准）`[curl + 抓包 2026-11-15]`。**`function` 是模型准入闸门**（决定性实测）：`qwen3.8-flash` + `solo_work_lite` → 流内 `4001`；同模型 + `solo_agent` → `200` 正常回答（`provider_model_name=qwen3.8-flash`）。官方对话请求里的 `function` 值**看不到**（体密文）；间接证据 `[推断]`：官方所用 `qwen3.8-flash` 只存在于 `solo_agent` 目录，且明文 `batchInsert` 的 `agent_type=solo_agent` `[抓包]`。两个候选的目录覆盖与逐条代价见 §4.3 → 本实现取 `solo_agent` |
 | `stream` | `stream: true` | `[curl g1]` 上游对 `stream:false` 仍回 SSE，故本实现恒发 `true`，非流式由我方聚合 |
 | `messages[].role: user` | `{role:"user",content:[{type:"text",text:"…"}]}` | `[curl t8]` `content` 为字符串 → `cannot unmarshal string into …LLMRawMessage.messages.content of type []*idecopilot.LLMRawMessageContent` |
-| `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §5.2）|
-| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | **官方字段名与取值已由 `[抓包 flows2 2026-11-15]` 坐实**：明文 `batchInsert` 的 `model_info.reasoning_effort_level`，随 UI 切换依次出现 `high`（默认）→ `light` → `extra_high`，与目录 `options:[light,high,extra_high]`、`default_level:high`（`qwen3.8-flash`）完全对应。**但该字段只出现在明文落库请求里，对话请求体是密文**（同批 `create_agent_task` 解码后 entropy≈7.996、无魔术头），无法看到官方在对话请求里怎么传。<br>我方 `llm_utils_chat` 明文路径实测**不受该字段控制**：顶层放 `reasoning_effort_level:"bogus_level"` 与 `"light"` 行为一致（`[curl]`，函数 solo_agent/qwen3.8-flash），且非法枚举值不报错 —— 与「未知字段被宽松忽略」（§0）一致，无法区分「忽略」和「透传但不校验」。A/B 也无生效证据且方向相反（solo_work_lite/minimax-m3.1-flash：`light` reasoning_tokens 2784 > `extra_high` 1420，属噪声）。<br>→ **结论：思考强度要真正生效必须走 `create_agent_task`，其明文 schema 未知。当前端点下此参数按「接受并忽略、回日志提示」处理。**<br>另注：目录 `reasoning_effort_config.support_thinking` **不门控实际行为** —— `glm-5.2`+`solo_work_lite` 标 `false`，实测仍产出 224 字 reasoning `[curl]`。|
-| 思考能力覆盖面 | — | 目录 `support_thinking` 计数 `[抓包]`：`solo_work_lite` 48 条中仅 1 条；`solo_agent` 74 条中 27 条 → 与 §3.2 的 `function` 选择绑定 |
+| `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §6.2）|
+| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | **已由定量 A/B 定案（2026-11-15 复测，`solo_agent` + `deepseek-v4.1-flash`，`support_thinking:true`，各档 5 次共 20 次真实调用）**：<br>`reasoning_tokens` 分档 —— 不传(默认high) `2874/2986/2590/2677/4390` 均值 3103；`light` `2375/4204/3333/2750/3228` 均值 3178；`high` `2687/4301/2682/3002/2854` 均值 3105；`extra_high` `3679/2545/3958/2612/3580` 均值 3275。<br>**`light` 的取值区间 2375–4204 完全覆盖 `extra_high` 的 2545–3958**；排列检验 `baseline−light` p=0.834、`baseline−extra_high` p=0.696、`light−extra_high` p=0.819，**全部不显著**；组内标准差 617 vs 组间均值极差 171（比值 0.28），且顺序非单调。<br>20 次全部 `provider_model_name=ep-20261020194436-p4fjc`（同一后端，排除按档位路由到不同模型）；答案 20/20 正确，证明 prompt 确实触发长链推理。<br>→ **该字段在 `llm_utils_chat` 上被静默忽略**。另 `reasoning_effort_level:"bogus_level"` 与 `"light"` 行为一致且不报错（宽松绑定，§0）。<br>**字段名只在明文落库接口可见**：`batchInsert`/`batchInsertMulti`/`wsmessages/push` 的 `user_message_context.model_info.reasoning_effort_level`（随 UI 切换 `high`→`light`→`extra_high`）。**对话请求体（`llm_utils_chat` 与 `create_agent_task`）均为 base64 密文**，官方在对话请求里如何传该字段**无任何观测**。<br>→ **结论：当前端点下此参数按「接受并忽略、回日志提示」处理。** 档位真实能力见 §4.4。<br>**早期反例已撤销**：曾记「`support_thinking` 不门控，`glm-5.2` 标 false 仍出 reasoning」系跨 function 混用数据的误判；`glm-5.2` 在 `solo_agent` 下实为 `true`。|
+| 思考档位能力 | — | 见 §4.4。官方客户端可见 18 个模型中 10 个三档齐全、4 个仅 `light`+`high`、4 个不可调；`options` 形态按模型不同，禁止硬编码映射 |
 | `messages[].role: system` | `{role:"system",content:[{type:"text",text:"…"}]}` | **`[curl f2]` 实测被消费**：system「你必须只回复数字1」+ user「你好」→ 正文回 `1`，reasoning 明确复述「系统提示：“你必须只回复数字1”」。原未验证项解除 |
 | `messages[].role: assistant` + `tool_calls` | `content:[]` + `tool_calls:[{id,type:"function",function_call:{name,arguments}}]` | `[curl t7]` 键名是 **`function_call`** 非 CC 的 `function`；与参考实现 `transformSOLOMessage` 一致 |
 | `messages[].role: tool` | `{role:"tool",tool_call_id,name,content:[{type:"text",text:"…"}]}` | `[curl t7]` 实测上游接受回传并被模型消费（表格复述我给的虚构配置）|
@@ -290,7 +291,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | `extra_info` | `{model, version:1, content:<字符串化 reasoning_content>, input_token, expire_time}` | 丢弃 |
 | `token_usage` | `{prompt_tokens, completion_tokens, total_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cluster, *_total}` | `usage.prompt_tokens/completion_tokens/total_tokens`；`prompt_tokens_details.cached_tokens ← cache_read_input_tokens`；`completion_tokens_details.reasoning_tokens ← reasoning_tokens`；`cache_creation_input_tokens` 无 CC 标准位，丢弃 |
 | `done` | `{finish_reason:"stop"}` | `choices[0].finish_reason`；本轮有 tool_calls 则改写 `tool_calls`（§0 出入 4，已批准）；随后 `data: [DONE]` |
-| **`error`** | `{code, message, extra:null}` | 见 §5，**必须先于内容帧判断** |
+| **`error`** | `{code, message, extra:null}` | 见 §6，**必须先于内容帧判断** |
 | `progress_notice` | **裸字符串** `"Processing_1794708540"`、`";Processing_1794708541631326453_rRktuc"` `[curl 图片/难题请求]` | 丢弃。`data` 不是 JSON（`json.loads` 会失败），解析时必须容忍非 JSON 帧。出现在图片下载、长思考等慢请求中，实测在 `error` **之前** |
 
 `output` 帧规则（实测）：
@@ -308,7 +309,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 ### 3.4 非流式 `[curl g1]`
 
 上游对 `stream:false` 仍返回 `Content-Type: text/event-stream` + 相同 SSE 帧。
-下游 `stream:false` 时：我方聚合 `output` 的 `response` 为 `message.content`、`reasoning_content` 为扩展字段、累积 `tool_calls`、`token_usage` 填 `usage`，拼成单个 `chat.completion` 对象返回。聚合失败（中途 `event:error`）见 §5。
+下游 `stream:false` 时：我方聚合 `output` 的 `response` 为 `message.content`、`reasoning_content` 为扩展字段、累积 `tool_calls`、`token_usage` 填 `usage`，拼成单个 `chat.completion` 对象返回。聚合失败（中途 `event:error`）见 §6。
 
 ### 3.5 官方主对话端点备查（本实现不用）`[抓包，Trae CN 1.107.1]`
 
@@ -352,7 +353,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
   `TodayUserRequestLimit`、`FreeActivityQuotaExhausted`、`RequestWaitExceedQueueSize`、
   `RiskRequestImageContentSafety`、`ContextLengthExceeded`、`NotSupportMultiMedia`、
   `ModelNotExisted`、`EnterpriseSeatQuotaExhausted`、`OutOfQuota`、`AbnormalAccountLimitRequest`
-  等）。这是**客户端侧**枚举，不等同于 §5 上游 `{"code":4011}` 的数字码；
+  等）。这是**客户端侧**枚举，不等同于 §6 上游 `{"code":4011}` 的数字码；
   但可用于判断「额度耗尽/风控」这类场景官方是怎么命名的。`[未验证]` 数字 code 映射表。
 
 
@@ -452,18 +453,26 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 | `support_thinking=true`（全条目口径） | 27 | 1 |
 
 * 选 `solo_agent`（本实现）取不到的 8 个 `chat_completion` 模型：`seed-code-pro-0430`、`Doubao-Seed-2.0-Code`、`glm-5-turbo`、`kimi-k2.6`、`sagitta`、`aquila`、`file_search_agent`、`explore_sub_agent_v2`（后两个是子 agent，非用户可选模型）。
-* 选 `solo_work_lite` 取不到的 31 个，含官方主对话在用的 `qwen3.8-flash`、`deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.3_advisor` → 且这些会直接撞 §5.2 的 `4001`。
+* 选 `solo_work_lite` 取不到的 31 个，含官方主对话在用的 `qwen3.8-flash`、`deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.3_advisor` → 且这些会直接撞 §6.2 的 `4001`。
 * → **定稿 `solo_agent`**（§0 出入 7）。净收益 23 个可对话模型（31−8）、`support_thinking` 覆盖 1 → 27。
 
-**不得按 `is_invisible_to_user` 过滤 `[抓包 + curl，2026-11-15]`**：`solo_agent` 的 56 个 `chat_completion` 条目里 **38 个 `is_invisible_to_user=true`**，其中 **`glm-5.2` 是我方实测通过、正常出中文回答的模型**（`[curl f1/f2/g1]`，`provider_model_name=glm-5.2`）。同组还包含 `deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.1/5/4.7/4.6`、`qwen-3.7-plus` 等。
-→ 该标志只表示「客户端 UI 不展示」，**与 API 可用性无关**；若按其过滤，`/v1/models` 只剩 18 个并会砍掉已验证可用的条目。原「`[未验证是否等价于不可用]`」项就此关闭。
+**`is_invisible_to_user` 的语义已由客户端 UI 对照定案 `[抓包 + 用户客户端核对 2026-11-15]`**：
+`solo_agent` 的 56 个 `chat_completion` 条目里 **38 个 `is_invisible_to_user=true`**、18 个非 true。
+**该 18 个的显示名与用户官方客户端 Trae CN 实际列出的 18 个模型完全一致（零增减）**，见 §4.4 表。
+
+→ 该标志**精确界定官方客户端 UI 的展示集合**，不是随机标记。
+但**它不表示不可用**：`glm-5.2` 标 true，我方 `[curl f1/f2/g1]` 实测正常出中文回答（`provider_model_name=glm-5.2`）；
+同组还有 `deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.1/5/4.7/4.6`、`qwen-3.7-plus` 等。
+
+**本实现的取舍：不过滤**（与官方 UI 行为不同，属 `[有意偏差]`）。理由见 §0 出入 11。
+若要 1:1 复刻官方 UI，应改为 `filter(|c| c.is_invisible_to_user != Some(true))`，模型数 56 → 18。
 
 | 上游 | CC `/v1/models` |
 |-|-|
 | `config_name` | `id = "trae/"+config_name`、`owned_by = "trae"` |
 | `display_config.display_name` | 无标准位，可选放扩展 |
 | `context_window_tokens.dev` | 无 CC 标准位（丢弃）|
-| `is_invisible_to_user` | **不过滤**，见上方实测（`glm-5.2` 标 true 但实测可用）|
+| `is_invisible_to_user` | **不过滤**（有意偏差，见 §0 出入 11；官方 UI 按此过滤到 18 个）|
 | `display_contact_config.consumption_rate.data.rate` | 拼进 `id`：`id = "trae/"+config_name+" (x"+rate+")"`（README 格式）|
 | — | `created` 上游无来源，取本地时间 |
 | — | `object = "model"` |
@@ -484,11 +493,113 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 建议：`/v1/models` 暴露 `config_name`，`prompt_max_tokens`/`max_tokens` 上限按 `__max` 记，
 并在文档标注「大上下文模式当前无法通过明文路径选择」。
 
-## 5. 上游异常响应
+### 4.4 思考强度档位（`reasoning_effort_config`）`[抓包 + 客户端核对 + curl 实测 2026-11-15]`
+
+`reasoning_effort_config` 位于 `config_info_list[]` 条目一级（与 `config_name` 同级，**不在 `model_detail_list[]` 内**）。
+本实现当前**未解析**该字段（`ConfigInfo` 未声明，serde 丢弃）。
+
+**字段语义已定案**（三者相互独立）：
+
+| 字段 | 语义 | 依据 |
+|-|-|-|
+| `support_thinking` | **是否允许调节档位**，不是「是否会思考」 | 4 个 false 模型在客户端均无档位选择器，但对话中仍产出 `reasoning_content` |
+| `options` | 可选档位值，**按模型不同** | 目录直读，见下表三种形态 |
+| `default_level` | 不传时的默认档位，**不全是 `high`** | `glm-5.3_advisor`=light、`kimi-k2.8-preview`/`kimi-k3-auto`=extra_high |
+
+**关键反例（纠正常见误判）**：`support_thinking: false` 的模型**照样会思考**。
+`MiniMax-M3` 标签是 `reasoning_model` 但 `support_thinking: false` —— 意思是「能思考、但不能调档」。
+
+**官方客户端实际展示的 18 个模型与档位配置**（`is_invisible_to_user != true` 的那批，与 UI 零误差）：
+
+| 客户端显示名 | `config_name` | `support_thinking` | `default_level` | `options` |
+|-|-|-|-|-|
+| Seed-2.1-Turbo | `Doubao-Seed-2.1-Turbo` | true | high | `light`、`high` |
+| Seed-2.1-Pro-0915 | `Doubao-Seed-2.1-Pro` | true | high | `light`、`high` |
+| Seed-Evolving | `Doubao-Seed-Evolving` | **false** | — | 无 |
+| Seed-Code | `Doubao-Seed-Code` | true | high | `light`、`high` |
+| GLM-5.3-Flash | `glm-5.3-flash` | true | high | `light`、`high`、`extra_high` |
+| GLM-5.3-FlashX | `glm-5.3-flashx` | true | high | `light`、`high`、`extra_high` |
+| GLM-5.3 | `glm-5.3` | true | high | `light`、`high`、`extra_high` |
+| DeepSeek-V4.1-Flash | `deepseek-v4.1-flash` | true | high | `light`、`high`、`extra_high` |
+| DeepSeek-V4-Pro | `DeepSeek-V4-Pro-Official` | true | high | `light`、`high`、`extra_high` |
+| Kimi-K3.1-Pro | `kimi-k3.1-pro` | true | high | `light`、`high`、`extra_high` |
+| Kimi-K3 | `kimi-k3` | true | high | `light`、`high`、`extra_high` |
+| MiMo-V2.6-Flash | `mimo-v2.6-flash` | **false** | — | 无 |
+| MiMo-V2.6-Pro | `mimo-v2.6-pro` | **false** | — | 无 |
+| MiniMax-M3.1-Flash | `minimax-m3.1-flash` | true | high | `light`、`high`、`extra_high` |
+| MiniMax-M3 | `minimax-m3` | **false** | — | 无 |
+| Step-5-Preview | `step-5-preview` | true | high | `light`、`high` |
+| Qwen3.8-Flash | `qwen3.8-flash` | true | high | `light`、`high`、`extra_high` |
+| Qwen3.8-Max | `qwen3.8-max` | true | high | `light`、`high`、`extra_high` |
+
+→ 可见 18 个中：**10 个三档齐全**、**4 个缺 `extra_high`**（`light`+`high`）、**4 个不可调**。
+用户客户端核对结论与之完全一致，含「`Evolving`/`2.6 Flash`/`2.6 Pro`/`M3` 不支持改档位但对话中会思考」。
+另：`Kimi-K3.1-Pro` 需会员（`display_contact_config` 含 entitlement 限制）。
+
+**`options` 的三种形态**（全 56 条目口径）：三档 `light/high/extra_high`、缺 `light` 的 `high/extra_high`（如 `glm-5.2`、`DeepSeek-V4-Flash`、`DeepSeek-V4-Pro`）、缺 `extra_high` 的 `light/high`。
+→ **禁止硬编码档位映射表**，必须按模型从目录读取 `options`。
+
+**同名不同 `config_name`（客户端只显示一个名字，上游是多条）**：
+`DeepSeek-V4.1-Flash` → `-1M`/`-300K`/`-600K`/主条目；`DeepSeek-V4-Pro` → `-Official`/主条目；
+`GLM-5.3` → `glm-5.3`/`glm-5.3_advisor`；`Kimi-K3` → `kimi-k3`/`kimi-k3-auto`；
+`Seed-Code` → `Doubao-Seed-Code`/`Doubao_1_6`/`doubao-for-auto`；`Seed-Evolving`/`Seed-2.1-Turbo` 等也各有多条。
+**这些同名条目的档位配置往往不同**（如 `Doubao-Seed-2.1-Turbo` 有档位、`-auto` 无档位），
+故 `/v1/models` 必须以 `config_name` 为 `id` 才不歧义。
+
+**「`support_thinking` 不门控实际行为」此前的反例已撤销**：早期记录的「`glm-5.2` 标 false 仍出 reasoning」
+是**跨 function 混用数据**导致的误判 —— `glm-5.2` 在 `solo_agent` 下实为 `support_thinking: true`、
+`options: [high, extra_high]`；标 false 的是它在 `solo_work_lite` 等 function 下的条目。
+同类错误的另一例：「1008 个 `reasoning_model` / 188 个 `chat_model`」是**全 11 个 function 叠加的计数**，
+`config_name` 跨 function 重复（96 个唯一名里 79 个出现在多个 function），不是下发给下游的模型数。
+**本项目实际下发的是 `solo_agent` + `usage=chat_completion` 的 56 条，且这 56 条 `config_name` 无重复。**
+
+## 5. 余额获取
+
+Host `api.trae.cn`（与 §7 签到同 host，与登录的 `api.trae.com.cn` 不同），
+请求头与签到完全相同（VSCode UA 那套，**不带** `x-machine-id`）。
+
+```
+POST /trae/api/v2/pay/ide_user_ent_usage
+{"require_usage":true,"req_source":1}          [抓包 + curl]
+  → {total_balance, balance_summary[{source,total_balance}], is_credits_billing,
+     usage_summary{consumed_amount,total_amount,consumption_ratio},
+     user_entitlement_pack_list[], trial_status}
+```
+
+字段语义 `[抓包]`：
+
+| 字段 | 含义 |
+|-|-|
+| `total_balance` | **总余额**，本实现取这个值 |
+| `balance_summary[].source` / `.total_balance` | 按来源拆分（签到积分/套餐等） |
+| `is_credits_billing` | 是否按积分计费 |
+| `usage_summary.consumed_amount` | 已消耗 |
+| `usage_summary.total_amount` | 总额度 |
+| `usage_summary.consumption_ratio` | 消耗比例 |
+
+同 host 另有 `POST /trae/api/v2/pay/ide_user_pay_status {}`（`[抓包]`，本实现未用）。
+
+**实现现状**：已实现，`src/providers/trae/mod.rs` 的 `fetch_balance` 调用 `checkin::PATH_USAGE`
+（`checkin.rs:19`），`Usage` 结构体只声明了 `total_balance`（`checkin.rs:78`），其余字段 serde 丢弃。
+`Provider::balance()` 返回 `Some(total_balance)`。
+
+**用途限制**：当前仅用于**签到增量对账**（签到前后各读一次，算 delta），
+**未实现独立的余额查询 API 端点**，也未把余额暴露给下游客户端。
+
+**已知无法精确对账**：只测端点、未做逐次余额采样，故无法拆分「某次消耗」与「签到入账」。
+11-14 抓包末 `total_balance` 5577.92（`consumed_amount` 1722.08 / `total_amount` 7300）
+→ 11-15 10:15 为 5675.78（`consumed_amount` 1624.22），净 **+97.86**；
+量级与「当日签到 +100」一致，但同期另有若干成功对话消耗，**不能证明全部来自签到**。
+
+**余额与签到不可混用**：抄 §7 的 `claim` 语义陷阱 —— 当日已签到时调 `claim` 仍返回
+`{"code":0,"message":"success"}`，与成功无法区分，故**不能靠 claim 返回值判断**，
+只能靠「`status` 判定 → `claim` → 复读 `status`/`ide_user_ent_usage` 校验余额变化」。
+
+## 6. 上游异常响应
 
 **两类，实现必须都处理。第二类是 HTTP 200，靠 HTTP 状态码判断会漏。**
 
-### 5.1 HTTP 层错误 `[curl，Trae CN 1.107.1，2026-11-15]`
+### 6.1 HTTP 层错误 `[curl，Trae CN 1.107.1，2026-11-15]`
 
 | HTTP | 上游 body | 触发条件 `[实测]` | → 下游（CC 规范错误）|
 |-|-|-|-|
@@ -499,7 +610,7 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 | `403` | `{"code":991402,"message":"git token not found"}` | `[抓包]` 仅 `/api/remote/v1/git/repositories`，本实现不用该端点 | 不透传 |
 | `400` | `{"code":400,"message":"[LocalConvSync.FetchCliConversation] hub error: code=2900101, message=cli device is offline"}` | `[抓包]` `batchInsert`，本实现不落库 | 不透传 |
 
-### 5.2 SSE 流内错误（HTTP 200）`[curl e4/e5，2026-11-15]`
+### 6.2 SSE 流内错误（HTTP 200）`[curl e4/e5，2026-11-15]`
 
 上游在业务/限流错误时**照样返回 HTTP 200 + SSE**，帧形如：
 
@@ -526,12 +637,12 @@ data:{"finish_reason":"stop"}
 
 判定依据用**「是否已产出内容帧」**，不用 `error` 的 `id`：实测 `4011`/`4001` 的 `error` 是 `id:1`，但 `3003`（图片下载失败）前面已有 2 帧 `progress_notice`，`error` 在 `id:3` —— 所以「`error` 恒为 `id:1`」不成立。
 
-1. **`error` 之前没有任何 `output` 帧**（实测三类全属此类；`progress_notice` 不算内容）：我方尚未发出内容，故**不发 200**，直接映射 HTTP 错误 —— `4011` → `429` + `rate_limit_error`（上游无 `Retry-After`）、`4001` → `400` + `invalid_request_error`、`3003` → `400` + `invalid_request_error`（message 裁剪后）。未观测到的 `code` 一律 `502` + `api_error`，`message` 取首行，原始 `code` 附在 `error.code`（§7.2 会陆续补进此表）。
+1. **`error` 之前没有任何 `output` 帧**（实测三类全属此类；`progress_notice` 不算内容）：我方尚未发出内容，故**不发 200**，直接映射 HTTP 错误 —— `4011` → `429` + `rate_limit_error`（上游无 `Retry-After`）、`4001` → `400` + `invalid_request_error`、`3003` → `400` + `invalid_request_error`（message 裁剪后）。未观测到的 `code` 一律 `502` + `api_error`，`message` 取首行，原始 `code` 附在 `error.code`（§8.2 会陆续补进此表）。
 2. **`error` 出现在 `output` 之后**（尚未观测到，防御性）：HTTP 200 已发出，只能以 `data: {"error":{…}}` 结尾 + `[DONE]`。
 3. 重试：`4011` 与 `1001` 各重试一次，间隔递增；不做无限重试，避免消耗积分。
 4. `4011`/`4001` 的 `message` 是给人看的英文整句、无内部细节，保留原文并附 `code`；`3003` 例外，须只取首行 `model service is unavailable`，丢弃后面的 Go 错误与 Request id。
 
-## 6. 签到协议
+## 7. 签到协议
 
 Host `api.trae.cn`，走 VSCode UA 那套头（`[抓包]` 实测**不带** `x-machine-id`，与参考实现不同）：
 `user-agent: VSCode 1.107.1 (Trae CN)`、`authorization: Cloud-IDE-JWT <jwt>`、`x-app-version: 3.4.18`、
@@ -579,30 +690,26 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 * `did_checked_in: false` **在 `checked_in:true` 时为 false** → 疑为「本次请求触发签到成功」，不是「今日是否签过」。`[未验证：未取到 `true` 样本]`
 * `credits:100 / extra_credits:100` = 本次签到基础/额外额度；`enable:true` = 活动开启
 
-余额读数（只测端点，未逐次记录消耗，故无法拆分）`[curl]`：
-11-14 抓包末 `total_balance` 5577.92（`consumed_amount` 1722.08 / `total_amount` 7300）
-→ 11-15 10:15 为 5675.78（`consumed_amount` 1624.22），净 **变化 +97.86**。
-量级与「今日签到 +100」一致，且 11-15 上午另有若干次成功对话消耗。
-`shortcut: 未做逐次余额采样，无法证明 +97.86 全部来自签到；若实现要精确对账，需在 claim 前后各读一次 status+usage`。
+余额端点与读数、以及「无法精确对账」的说明见 **§5 余额获取**（不在此重复）。
 
 实现流程（README 要求每 1h）：`status.enable && !status.checked_in` → `claim` → 复读 `status` 确认 `checked_in` 变 `true` 并记余额增量；`checked_in` 已为 `true` 则本轮直接跳过，**不要调 claim**（避免把「已签到」误记为「本次领到」）。
 
-## 7. 剩余未验证
+## 8. 剩余未验证
 
 协议分析阶段结束：§0 出入 10 条已全部经用户批准（2026-11-14/15），实现尚未开始（`TODO.md` #1）。
 下面只列真正未定的事项，正文各节已定稿的结论不再在此重复。
 
-### 7.1 RefreshToken 是否轮换（唯一需用户决定）
+### 8.1 RefreshToken 是否轮换（唯一需用户决定）
 
 §2 的必填请求体与响应结构都已确定，剩下的问题是**旧 refreshToken 在续期后是否作废**（决定我方要不要把新值写回 `credential.toml`）。实现上先按「无条件写回」处理，两种情况都正确；要定案二选一：
 
 * a) 用真实 RefreshToken 直接 `curl` 一次 `ExchangeToken` —— 立刻可定，但**旧 refreshToken 可能被轮换作废**（参考实现称即刻失效，未验证），届时客户端与 `tmp/trae-capture/jwt.txt` 的凭证一起失效，用户须重新登录一次。
 * b) 等 JWT `exp`（2026-11-28）临近时抓客户端自然续期 —— 无副作用，但要等约两周。§2 已证明只有这条被动路径能看到续期。
 
-### 7.2 留待观察（不阻塞实现）
+### 8.2 留待观察（不阻塞实现）
 
 * `api5-normal.mchost.guru` vs `trae-api-cn.mchost.guru` 的选择策略；`api5-normal` 的下发来源未定位（§0 域名表）。
-* 流内 `error.code` 全集（额度耗尽、内容风控未观测到）。客户端侧 ErrorCode 枚举见 §3.6，数字映射未知。未知 code 的兜底策略已写在 §5.2。
+* 流内 `error.code` 全集（额度耗尽、内容风控未观测到）。客户端侧 ErrorCode 枚举见 §3.6，数字映射未知。未知 code 的兜底策略已写在 §6.2。
 * `did_checked_in: true` 的样本（§6），下次签到时顺手可取。
 * `tos-d-lq.bytedancevod.com` 的实际 PUT 分片协议未捕获（`--allow-hosts` 不含该主机）。本实现不走该链路（§0 出入 8），仅在日后要复刻官方图片行为时才需要。
 * 大上下文模式能否经明文路径选择：`mode_type` 实测不生效，`__dev`/`__max` 变体是否可直接指定 `[未验证]`（§4.3）。
