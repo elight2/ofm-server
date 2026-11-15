@@ -266,6 +266,31 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
 明文 `create_agent_task` 请求仅确认必填 `conversation_id`，完整 schema `[未验证]`。
 
 
+### 3.6 二进制字符串佐证（`[二进制 libharness.so]`，2026-11-15）
+
+不依赖 mitm 的补充证据，来自 `strings` 提取的 serde 字段名表（Rust serde 会把结构体字段名编进二进制）：
+
+* **加密是可选协议而非强制**：同一份枚举里并列 `plaintext_passthrough`、`absent`、
+  `unprotected`、`no_encrypted_fields`、`decrypt_failed_passthrough`、
+  `unsupported encryption version`、`encrypted history missing version`、
+  `cloud SSE encryption processed`。→ 与 §0 出入 2 的实测互证：客户端本身就有明文直通分支。
+* **采样参数存在于客户端，但属「自定义模型」配置**，不在预设模型请求链上：
+  结构 `ModelHyperParamsConfig{thinking_enable, reasoning_param, temperature, top_p, top_k}`，
+  邻居是 `CustomModelHyperParams` / `CustomModelConfigDetail` / `custom_model_uniq_id` /
+  `skauth_type` / `region`（用户自填 OpenAI 兼容模型那套）。
+  同一段还出现 `OpenAIRequest{model, max_tokens, stream, temperature, tools, tool_choice}`
+  + `OpenAIMessage{content, tool_calls, tool_call_id}` → 客户端对自定义模型走**标准 OpenAI 协议**，
+  对自家预设模型走 trae 私有协议。
+  → §0「上游不支持采样参数」仅对**预设模型**成立；若日后接自定义模型（`is_custom_model`）
+  则是另一套明文 OpenAI 请求，可支持 temperature。
+* **客户端自带完整 ErrorCode 枚举**（数百个，含 `ModelPremiumQuotaDrained`、
+  `TodayUserRequestLimit`、`FreeActivityQuotaExhausted`、`RequestWaitExceedQueueSize`、
+  `RiskRequestImageContentSafety`、`ContextLengthExceeded`、`NotSupportMultiMedia`、
+  `ModelNotExisted`、`EnterpriseSeatQuotaExhausted`、`OutOfQuota`、`AbnormalAccountLimitRequest`
+  等）。这是**客户端侧**枚举，不等同于 §5 上游 `{"code":4011}` 的数字码；
+  但可用于判断「额度耗尽/风控」这类场景官方是怎么命名的。`[未验证]` 数字 code 映射表。
+
+
 ## 4. 模型列表获取
 
 ### 4.1 上游请求 `[抓包 + curl，Trae CN 1.107.1]`
