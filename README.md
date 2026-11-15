@@ -22,3 +22,5 @@
 * 供应商的登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 使用Rust语言
 * 模型名称: `供应商id/模型名`
+* 导出api使用`OpenAI Chat Completions`格式
+

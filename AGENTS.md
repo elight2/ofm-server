@@ -13,6 +13,7 @@
 * 软件功能介绍：`README.md`
 * 项目内, 临时目录使用`./tmp/`
 * 每个供应商的官方客户端：`~/tools/docs/agent-clients/`
+* openai api完整文档: `~/tools/docs/openai-openapi/`
 * `./tmp/`里有ofm插件和ofm插件重写版本的代码, **仅供参考**, server版本需重写
 
 # 工作记录
