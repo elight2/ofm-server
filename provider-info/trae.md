@@ -127,6 +127,16 @@ x-os-version: Arch Linux
 
 签到请求**不带** `x-machine-id`（参考实现带）。
 
+### 3.2b 最小必带头集（2026-11-15 curl 递增实验实测）
+
+- 只带 `authorization` → `400 expr_path=app_version_code, missing required parameter`
+- `x-app-version` + `x-app-version-code` + `x-ide-version` + `x-ide-version-code`
+  四者齐全才过参数校验（缺一律报 app_version_code）
+- `user-agent` 必须是 `TraeClient/TTNet`：curl UA 持续撞 `4011 rate limit`，
+  同请求换 TTNet UA 立即放行 → **限流按 UA 分桶，UA 是准入标签**
+- `x-machine-id` / `x-device-id` 实测不强制（无认证层依赖），实现仍整套照抄 §3.1
+- 版本号/UA 写死为抓包常量，客户端升级时属维护项
+
 ### 3.3 Electron 桌面壳
 
 用于 `ExchangeToken`、`icube/api/v1/user`：
