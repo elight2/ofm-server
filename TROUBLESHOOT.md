@@ -97,3 +97,23 @@
 **决定**：`to_models()` 按该标志过滤（56 → 18），与官方 UI 对齐。
 被过滤的 38 个 API 层仍可调用，需要时手动指定 `config_name`（`function` 才是准入闸门）。
 两个回归测试锁定口径：过滤后 18、未过滤 56（hidden 38）。
+
+## Trae 思考强度：不能靠「换字段位置」绕过（2026-11-15）
+
+**问题**：`llm_utils_chat` 上 `reasoning_effort_level` 无效，怀疑是放错位置。
+
+**已试位置**（均为明文，不涉加密）：
+1. 顶层 `{"reasoning_effort_level":"light"}` → 20 次，p=0.70~0.83，无效
+2. 嵌套 `{"model_info":{"reasoning_effort_level":"light"}}`（照官方落库结构）→ 12 次，
+   light 3267 / extra_high 3124，区间完全重叠且方向相反，p=0.790，无效
+
+**检验力自查**（避免「样本不够」的自我安慰）：合并两实验 cv=0.23 稳定；
+2 倍效应、80% 检验力只需每组 n≈4，实测 5~6 次 → p≈0.8 是真无效应。
+
+**旁证**：`support_thinking:false` 的 `mimo-v2.6-pro` 传档位后照常思考，行为与可调档模型无法区分。
+
+**其他排除**：`extra_config` 111 字段档位切换时全不变（`enable_compact_reasoning_effort_alignment`
+也不是开关）；无按档位拆分的 `config_name`；`ModelHyperParamsConfig` 属自定义模型链路。
+
+**结论**：不破解加密就没有入口。剩下只有 `create_agent_task`（需重写 stream，SSE 帧集合不同）。
+脚本 `tmp/re-test/probe_nested.py`，数据 `tmp/re-test/results_nested.json`。
