@@ -99,6 +99,19 @@ pub trait Provider: Send + Sync {
     /// 模型目录。失败应返回空表而非硬错误（`/v1/models` 要能容错聚合）。
     async fn models(&self) -> Vec<ModelInfo>;
 
+    /// 拉取模型目录并保留错误（供 `status` 真实探测接入状态）。
+    ///
+    /// 默认实现回退到 [`Provider::models`]（永远 `Ok`）。需要区分
+    /// 「拉取失败」与「真的没有模型」的供应商应覆盖此方法。
+    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(self.models().await)
+    }
+
+    /// 凭证到期时间（毫秒时间戳）。不适用或未知时返回 `None`。
+    fn credential_expire_at(&self) -> Option<i64> {
+        None
+    }
+
     /// 发起对话，返回事件流。要求：错误以 [`crate::core::events::Event::Error`]
     /// 形式出现在流内，便于下游统一处理"已发内容前后"两种情形。
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError>;

@@ -288,6 +288,19 @@ impl Provider for TraeProvider {
         }
     }
 
+    /// 带错误的目录拉取：`status` 用它真实探测接入是否可用。
+    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        self.fetch_models().await
+    }
+
+    /// JWT 到期时间（毫秒）。
+    fn credential_expire_at(&self) -> Option<i64> {
+        Credential::load(&self.root)
+            .ok()
+            .flatten()
+            .and_then(|c| c.token_expire_at)
+    }
+
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let cred = self.credential()?;
         let token = self.access_token().await?;
