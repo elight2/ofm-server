@@ -293,7 +293,7 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 | — | `created` 上游无来源，取本地时间 |
 | — | `object = "model"` |
 
-## 5. 上游异常相应
+## 5. 上游异常响应
 
 **两类，实现必须都处理。第二类是 HTTP 200，靠 HTTP 状态码判断会漏。**
 
