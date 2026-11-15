@@ -241,21 +241,8 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | `stream` | `stream: true` | `[curl g1]` 上游对 `stream:false` 仍回 SSE，故本实现恒发 `true`，非流式由我方聚合 |
 | `messages[].role: user` | `{role:"user",content:[{type:"text",text:"…"}]}` | `[curl t8]` `content` 为字符串 → `cannot unmarshal string into …LLMRawMessage.messages.content of type []*idecopilot.LLMRawMessageContent` |
 | `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §6.2）|
-| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | **已由定量 A/B 定案（2026-11-15 复测，`solo_agent` + `deepseek-v4.1-flash`，`support_thinking:true`，各档 5 次共 20 次真实调用）**：<br>`reasoning_tokens` 分档 —— 不传(默认high) `2874/2986/2590/2677/4390` 均值 3103；`light` `2375/4204/3333/2750/3228` 均值 3178；`high` `2687/4301/2682/3002/2854` 均值 3105；`extra_high` `3679/2545/3958/2612/3580` 均值 3275。<br>**`light` 的取值区间 2375–4204 完全覆盖 `extra_high` 的 2545–3958**；排列检验 `baseline−light` p=0.834、`baseline−extra_high` p=0.696、`light−extra_high` p=0.819，**全部不显著**；组内标准差 617 vs 组间均值极差 171（比值 0.28），且顺序非单调。<br>20 次全部 `provider_model_name=ep-20261020194436-p4fjc`（同一后端，排除按档位路由到不同模型）；答案 20/20 正确，证明 prompt 确实触发长链推理。<br>→ **该字段在 `llm_utils_chat` 上被静默忽略**。另 `reasoning_effort_level:"bogus_level"` 与 `"light"` 行为一致且不报错（宽松绑定，§0）。
-<br>**两个可能的位置都已证伪 `[curl 2026-11-15]`**：
-<br>(1) **顶层** `{"reasoning_effort_level":…}` —— 20 次，见上表，p=0.70~0.83。
-<br>(2) **`model_info` 嵌套** `{"model_info":{"reasoning_effort_level":…}}`（照官方落库结构）—— 12 次，
-`light` rt=`2283/2510/3090/3783/3810/4125` 均值 3267、`extra_high` rt=`1891/2524/2734/3007/3913/4676` 均值 3124，
-区间 `[2283,4125]` 与 `[1891,4676]` 完全重叠、**方向相反**，排列检验 p=0.790。
-**该嵌套对象被服务端接受（无报错）但不产生任何行为差异。**
-<br>**检验力已排除「样本不够」的辩解**：合并两实验同档位数据 n=22，cv=0.23（稳定，非异常波动）；
-按 2 倍效应、80% 检验力估算每组仅需 n≈4，实测每组 5~6 次 → **检验力充分，p≈0.8 是真无效应**。
-<br>**旁证**：`support_thinking:false` 的 `mimo-v2.6-pro` 传档位后照常思考（rt 4919/3678），
-行为与可调档模型 `deepseek-v4.1-flash` **无法区分** → 参数未被消费。
-<br>**已排除的其他不加密思路**（均无证据支持）：`extra_config` 的 111 个字段在档位切换时**完全不变**
-（含 `enable_compact_reasoning_effort_alignment`，故它不是档位开关）；目录中**不存在**按档位拆分的 `config_name`；
-`ModelHyperParamsConfig{thinking_enable, reasoning_param,…}` 属**自定义模型**链路（§3.6），预设模型不走。
-<br>→ **结论强化：不加密的前提下，`llm_utils_chat` 无任何可用入口调节思考强度。**<br>**字段名只在明文落库接口可见**：`batchInsert`/`batchInsertMulti`/`wsmessages/push` 的 `user_message_context.model_info.reasoning_effort_level`（随 UI 切换 `high`→`light`→`extra_high`）。**对话请求体（`llm_utils_chat` 与 `create_agent_task`）均为 base64 密文**，官方在对话请求里如何传该字段**无任何观测**。<br>→ **结论：当前端点下此参数按「接受并忽略、回日志提示」处理。** 档位真实能力见 §4.4。<br>**早期反例已撤销**：曾记「`support_thinking` 不门控，`glm-5.2` 标 false 仍出 reasoning」系跨 function 混用数据的误判；`glm-5.2` 在 `solo_agent` 下实为 `true`。|
+| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | 两个可能的位置均已实测证伪：**顶层** `{"reasoning_effort_level":…}`（20 次，p=0.70~0.83）与 **`model_info` 嵌套** `{"model_info":{"reasoning_effort_level":…}}`（12 次，p=0.790，区间重叠且方向相反）。`llm_utils_chat` 上该字段被**静默忽略**，非法值也不报错（宽松绑定）。旁证：`support_thinking:false` 的模型行为与可调档模型无法区分。<br>**完整方法、数据、检验力边界与已排除的其他思路见 §3.2.1。** 档位真实能力见 §4.4。<br>**早期反例已撤销**：曾记「`support_thinking` 不门控，`glm-5.2` 标 false 仍出 reasoning」系跨 function 混用数据的误判；`glm-5.2` 在 `solo_agent` 下实为 `true`。|
+|
 | 思考档位能力 | — | 见 §4.4。官方客户端可见 18 个模型中 10 个三档齐全、4 个仅 `light`+`high`、4 个不可调；`options` 形态按模型不同，禁止硬编码映射 |
 | `messages[].role: system` | `{role:"system",content:[{type:"text",text:"…"}]}` | **`[curl f2]` 实测被消费**：system「你必须只回复数字1」+ user「你好」→ 正文回 `1`，reasoning 明确复述「系统提示：“你必须只回复数字1”」。原未验证项解除 |
 | `messages[].role: assistant` + `tool_calls` | `content:[]` + `tool_calls:[{id,type:"function",function_call:{name,arguments}}]` | `[curl t7]` 键名是 **`function_call`** 非 CC 的 `function`；与参考实现 `transformSOLOMessage` 一致 |
@@ -289,6 +276,52 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
    {"role":"tool","tool_call_id":"call_00_gu39…","name":"get_system_info",
     "content":[{"type":"text","text":"OS=Arch Linux; CPU=…"}]}]}
 ```
+
+### 3.2.1 思考强度实测：两个位置均证伪 `[curl，Trae CN 1.107.1 的 API 端点，2026-11-15]`
+
+目标：不破解加密，在 `llm_utils_chat` 明文通道上找到能调节思考强度的字段位置。
+
+**方法**：同一长链推理 prompt（1000–1100 四重筛选题，答案唯一=24），
+模型 `deepseek-v4.1-flash`（`solo_agent` 下 `support_thinking:true`、三档齐全）；
+取 `light` vs `extra_high` 两个**极端**档；以 `event:token_usage` 的 `reasoning_tokens` 为主指标；
+交错执行抵消时间漂移。脚本 `tmp/re-test/probe.py`（顶层）、`tmp/re-test/probe_nested.py`（嵌套），
+数据 `results.json` / `results_nested.json`，原始 SSE 均在 `tmp/re-test/`。
+
+**已测的两个位置**（均为明文，不涉加密）：
+
+| 位置 | 请求体形态 | 每组 n | `light` rt | `extra_high` rt | 排列检验 | 结论 |
+|-|-|-|-|-|-|-|
+| 顶层 | `{"reasoning_effort_level":"…"}` | 5 | 均值 3178<br>区间 2375–4204 | 均值 3275<br>区间 2545–3958 | p=0.696~0.834 | 区间完全重叠 |
+| `model_info` 嵌套 | `{"model_info":{"reasoning_effort_level":"…"}}` | 6 | 均值 3267<br>区间 2283–4125 | 均值 3124<br>区间 1891–4676 | **p=0.790** | 区间完全重叠且**方向相反** |
+
+两个位置的均值高度一致（light 3178/3267，extra_high 3275/3124），互相印证是同一分布。
+`model_info` 嵌套**被服务端接受、不报错**（说明该层结构存在），但**不产生任何行为差异**。
+另 `reasoning_effort_level:"bogus_level"` 与 `"light"` 行为一致且不报错 → 宽松绑定，非法值也不报错。
+20+12 次调用答案全部正确，`provider_model_name` 恒为 `ep-20261020194436-p4fjc`（同一后端，排除按档位路由）。
+
+**检验力量化（限定结论边界）**：合并两实验 sd=744、mean=3210（cv=0.23，稳定）。
+每组 n=5~6 时，80% 检验力（α=0.05 双侧）**仅能可靠检出 ≥37~41%（约 1200 tokens）的差异**；
+30% 效应需每组 n≈10、20% 效应需 n≈22。
+→ 结论的准确边界：**已排除「大效应（≥40%）」，不能排除 20~30% 的中等效应**。
+但档位是 `light`→`extra_high` 跨两级，若真生效理应远大于 40%，故「无效」判断成立，
+只是不宜表述为「完全排除任何效应」。
+
+**旁证**：`support_thinking:false` 的 `mimo-v2.6-pro` 传档位后照常思考（rt 4919/3678，答案正常），
+行为与可调档模型 `deepseek-v4.1-flash` **无法区分** → 参数未被消费。
+
+**已排查并排除的其他不加密思路**：
+
+* `extra_config` 的 111 个字段在**档位切换时完全不变**（含 `enable_compact_reasoning_effort_alignment`，
+  该名易被误认为档位开关，实为常量）。逐字段对比 flow 127(`high`)/162(`light`)/182(`extra_high`)
+  的 `model_info.extra_config` **全等，零差异**。
+  唯一差异出现在 flow 211（`__max` 上下文切换）：`v3_read_max_content_byte_size` 65536→131072，
+  属上下文开关而非档位。→ 说明档位切换只改 `reasoning_effort_level` 一个值，不触发任何行为开关。
+* 目录中**不存在**按档位拆分的 `config_name`（`__max`/`__dev` 是上下文后缀，与档位无关）。
+* `ModelHyperParamsConfig{thinking_enable, reasoning_param, temperature, top_p, top_k}` 属
+  **自定义模型**链路（§3.6），预设模型不走。
+
+→ **结论：不破解加密时，`llm_utils_chat` 无任何可用入口调节思考强度。**
+剩余唯一可能是 `create_agent_task`（其 SSE 帧集合与本实现差异大，见 §3.5）。
 
 ### 3.3 响应映射（上游 SSE → CC chunk）`[curl t7/t9，2026-11-15]`
 
