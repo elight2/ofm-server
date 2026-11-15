@@ -24,4 +24,4 @@
 * 使用Rust语言
 * 模型名称: `供应商id/模型名`
 * 导出api使用`OpenAI Chat Completions`格式
-
+* 无需api key校验
