@@ -53,13 +53,17 @@
 6. **`app_id` 取参考实现常量** `6eefa01c-1036-4c7e-9ca5-d891f63bfcd8` `[curl]`，出处 `tmp/dsh-ofm-ng/.../trae-product.ts:322`；抓包请求体是密文，无法从流量验证此值。放 body `app_id` 或头 `X-App-Id` 均实测通过。
 7. **上游独有、CC 无法表达因而放弃的能力** `[抓包]`：`create_agent_task` 自主 agent 循环（多轮工具自执行、记忆、plan_item）、服务端 PE 与 `extra_config`/`model_extra_config` 行为开关、`reasoning_effort_config`（目录有 `support_thinking`/`options`/`default_level`，我方 `reasoning_effort` 入参是否可映射到它 `[未验证]`）、`access.identity_list` 准入身份、`model_entitlement_usage_cost` 计费倍率。
 
+8. **图片不走官方上传链路** `[curl vs 抓包]`。官方：附件落本地 → `get_resource_upload_url` → 传 TOS → `commit_resource_upload_result` → `Read` 工具交独立多模态模型转描述（§3.7）。我方：CC 的 `image_url`（含 `data:` URL）内联直发，一步完成。理由：内联实测有效，且上传链路要复刻 TOS 分片协议 + 凭证信封，成本高且无收益。
 ### 域名
 
 | 域名和端点 | 功能 |
 |-|-|
 | `api5-normal.mchost.guru/api/agent/v3/llm_utils_chat` | 对话（本实现主路径）`[抓包+curl]` |
 | `api5-normal.mchost.guru/api/agent/v3/create_agent_task` | 官方主对话（密文）`[抓包]`，本实现不用 |
-| `api5-normal.mchost.guru/api/agent/v3/{workflow/start,sync_history_state,initialize,append_msg,stop_chat,subscribe_events}` | agent 辅助 `[抓包+二进制]`，本实现不用 |
+| `api5-normal.mchost.guru/api/agent/v3/{workflow/start,sync_history_state,query_history_state,initialize,append_msg,stop_chat,subscribe_events}` | agent 辅助 `[抓包+二进制]`，本实现不用 |
+| `api5-normal.mchost.guru/api/ide/v1/{get_resource_upload_url,commit_resource_upload_result}` | 图片上传两步（官方链路，本实现不用）`[抓包 flows2]`，见 §3.7 |
+| `tos-d-lq.bytedancevod.com` | 图片实际上传主机 `[抓包 flows2 仅由 session_key 得知名，流量未捕获]` |
+| `api5-normal.mchost.guru/api/v1/commercial/get_session_usage`、`solo_hub/v1/clis/requests/respond` | 会话用量 / CLI 请求响应 `[抓包 flows2]`，本实现不用 |
 | `api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param` | 模型列表 `[抓包+curl]` |
 | `api5-normal.mchost.guru/api/ide/v1/get_client_config` | 端点配置 `[抓包]` |
 | `api5-normal.mchost.guru/api/solo_hub/v1/conversations/messages/batchInsert` | 会话落库（明文）`[抓包]` |
@@ -172,12 +176,12 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 |-|-|-|
 | `model: "trae/glm-5.2"` | `model` + `config_name`（同值，剥 `trae/` 前缀）| `[curl t5-t9]`；假模型名 → 流内 `event:error code:4001` `[curl e5]`；大小写归一按目录 `config_name`（小写）`[抓包]` |
 | — | `app_id: "6eefa01c-…"` | `[curl]` 必填，缺失 → `400 expr_path=app_id`；也可放头 `X-App-Id` |
-| — | `function: "solo_work_lite"` | `[curl t5-t9]` 明文路径实测值；官方主对话用 `solo_agent` `[抓包]`；**工具往返实测用的是 `solo_agent`** → 定稿待定，见 §7 |
+| — | `function` | **定稿 `solo_agent`** `[curl + 抓包 2026-11-15]`。**`function` 是模型准入闸门**（决定性实测）：`qwen3.8-flash` + `solo_work_lite` → 流内 `4001`；同模型 + `solo_agent` → `200` 正常回答（`provider_model_name=qwen3.8-flash`）。目录覆盖 `[抓包]`：`solo_work_lite` 48 条（33 个 `usage=chat_completion`），`solo_agent` 74 条（56 个），`solo_agent` 独占 35 条含 `qwen3.8-flash`、`deepseek-v4.1-flash-{600K,1M,300K}`、`kimi-k3-auto`、`glm-5.3_advisor`。官方桌面主对话亦为 `solo_agent` `[抓包 batchInsert agent_type]` → 本实现与之一致 |
 | `stream` | `stream: true` | `[curl g1]` 上游对 `stream:false` 仍回 SSE，故本实现恒发 `true`，非流式由我方聚合 |
 | `messages[].role: user` | `{role:"user",content:[{type:"text",text:"…"}]}` | `[curl t8]` `content` 为字符串 → `cannot unmarshal string into …LLMRawMessage.messages.content of type []*idecopilot.LLMRawMessageContent` |
 | `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §5.2）|
-| `reasoning_effort`（CC）| **顶层 `reasoning_effort_level` 疑为被忽略，未定案** | `[curl]` 顶层放 `reasoning_effort_level:"light"` 不报错、正常回答 —— 但 §0 已证上游对未知字段**宽松忽略**（带 `nonsense_field_xyz:123` 也正常回答），所以「不报错」不构成生效证据。<br>A/B 实测方向相反（同一道难题、`minimax-m3.1-flash`）：`light` → reasoning_tokens **2784** / completion 2951；`extra_high` → reasoning_tokens **1420** / completion 1572。<br>**官方字段位置**：`reasoning_effort_level` 实测只出现在明文 `batchInsert` 的 `user_message_context.model_info` 里，值 `"high"` `[抓包]`；`llm_utils_chat` 请求体是密文，无法看到官方是否也把它放顶层。`enable_thinking` 在 batchInsert 明文里 0 次命中 `[抓包]`。<br>→ **必须抓官方客户端一次「切思考强度」的真实请求**才能定字段名与位置，见文末 mitm 清单。 |
-| 思考能力覆盖面 | — | **`solo_work_lite` 下仅 1 个模型 `support_thinking`**（`minimax-m3.1-flash`，default `extra_high`）；`solo_agent` 下 27 个 → §7.4 的 `function` 选择直接影响思考强度能否支持 |
+| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | **官方字段名与取值已由 `[抓包 flows2 2026-11-15]` 坐实**：明文 `batchInsert` 的 `model_info.reasoning_effort_level`，随 UI 切换依次出现 `high`（默认）→ `light` → `extra_high`，与目录 `options:[light,high,extra_high]`、`default_level:high`（`qwen3.8-flash`）完全对应。**但该字段只出现在明文落库请求里，对话请求体是密文**（同批 `create_agent_task` 解码后 entropy≈7.996、无魔术头），无法看到官方在对话请求里怎么传。<br>我方 `llm_utils_chat` 明文路径实测**不受该字段控制**：顶层放 `reasoning_effort_level:"bogus_level"` 与 `"light"` 行为一致（`[curl]`，函数 solo_agent/qwen3.8-flash），且非法枚举值不报错 —— 与「未知字段被宽松忽略」（§0）一致，无法区分「忽略」和「透传但不校验」。A/B 也无生效证据且方向相反（solo_work_lite/minimax-m3.1-flash：`light` reasoning_tokens 2784 > `extra_high` 1420，属噪声）。<br>→ **结论：思考强度要真正生效必须走 `create_agent_task`，其明文 schema 未知。当前端点下此参数按「接受并忽略、回日志提示」处理。**<br>另注：目录 `reasoning_effort_config.support_thinking` **不门控实际行为** —— `glm-5.2`+`solo_work_lite` 标 `false`，实测仍产出 224 字 reasoning `[curl]`。|
+| 思考能力覆盖面 | — | 目录 `support_thinking` 计数 `[抓包]`：`solo_work_lite` 48 条中仅 1 条；`solo_agent` 74 条中 27 条 → 与 §3.2b 的 `function` 选择绑定 |
 | `messages[].role: system` | `{role:"system",content:[{type:"text",text:"…"}]}` | **`[curl f2]` 实测被消费**：system「你必须只回复数字1」+ user「你好」→ 正文回 `1`，reasoning 明确复述「系统提示：“你必须只回复数字1”」。原未验证项解除 |
 | `messages[].role: assistant` + `tool_calls` | `content:[]` + `tool_calls:[{id,type:"function",function_call:{name,arguments}}]` | `[curl t7]` 键名是 **`function_call`** 非 CC 的 `function`；与参考实现 `transformSOLOMessage` 一致 |
 | `messages[].role: tool` | `{role:"tool",tool_call_id,name,content:[{type:"text",text:"…"}]}` | `[curl t7]` 实测上游接受回传并被模型消费（表格复述我给的虚构配置）|
@@ -291,6 +295,40 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
   但可用于判断「额度耗尽/风控」这类场景官方是怎么命名的。`[未验证]` 数字 code 映射表。
 
 
+### 3.7 图片：官方链路 ≠ 我方可用链路 `[抓包 flows2 2026-11-15]`
+
+**官方桌面客户端不内联图片**，实测四步：
+
+```
+1) 图片落本地:  ~/.trae-cn/attachments/<uuid>_<uuid>_test.png
+2) POST /api/ide/v1/get_resource_upload_url   {"targets":["<ms>_<hash>_png_<W>x<H>"],"biz_type":"image"}
+     → {session_key:<base64 JSON>, store_infos:[{auth,upload_id,batch_id,…}], upload_hosts:["tos-d-lq.bytedancevod.com"]}
+     session_key 解出 {accountType:ImageX, fileType:image, storeInfos:[{StoreUri,Auth,UploadID,BatchID,…}],
+                       uploadHost, uri, userId}
+     Auth = "GJZWJT7CHNZUT4T18CN3:version:v2:<HMAC-JWT>"，内含 bucket/expires/fileInfos[].oidKey（凭证不落文档）
+3) 实际 PUT/分片上传到 tos-d-lq.bytedancevod.com（**不在本抓包范围**：`--allow-hosts` 只放了 trae 域名，
+     该主机名来自 `product.json` 声明的 AhaNet 通道；见 §7）
+4) POST /api/ide/v1/commit_resource_upload_result  {session_key:…} → `{}`（空对象即成功）
+```
+
+然后 agent 侧**不是把图片喂给对话模型**，而是调工具：
+
+```json
+{"id":"…","name":"Read",
+ "params":{"file_path":"/home/main/.trae-cn/attachments/…_test.png",
+           "target":"Describe all visible content in the image"},
+ "result":{"status":"success","images":[{"url":"trae-res://image/tos-cn-i-zaeny81f73/cn/<uid>/image/…_1024x560",
+            "detail":"auto","size":{"width":1024,"height":560}}]}}
+```
+
+配置开关（明文 `model_extra_config`）：`enable_read_tool_image_to_text:true`、
+`read_tool_image_to_text_config_name:"multimodal_image_kimi-k2.5"` → **官方用一个独立的多模态模型
+（Kimi-K2.5）把图转成描述文字**，再由主模型（qwen3.8-flash，`multimodal:true`）继续。
+
+**我方实现走不通也不必走这条路**：`content[]{type:"image_url",image_url:{url}}` 在
+`llm_utils_chat` 明文路径实测直接生效（§3.2，1×1 红 PNG 被识别为粉色调），无需上传、无需工具、
+无需 TOS 凭证。差异属 §0 出入 8（新增）。
+
 ## 4. 模型列表获取
 
 ### 4.1 上游请求 `[抓包 + curl，Trae CN 1.107.1]`
@@ -324,7 +362,9 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 
 ### 4.3 映射到 `/v1/models`
 
-取 `function == "solo_work_lite"`（与本实现 §3.2 的 `function` 一致）且 `usage == "chat_completion"` 的条目：
+取 **`function == "solo_agent"`**（与本实现 §3.2 `function` 定稿一致 `[curl 实测门控]`）
+且 `usage == "chat_completion"` 的条目 → 56 个（`solo_work_lite` 只有 33 个，会漏掉
+`qwen3.8-flash`、`deepseek-v4.1-flash-600K/1M`、`kimi-k3-auto` 等 35 个 solo_agent 独占模型）。
 
 | 上游 | CC `/v1/models` |
 |-|-|
@@ -334,6 +374,22 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 | `is_invisible_to_user` | 过滤掉 `[未验证是否等价于不可用]` |
 | — | `created` 上游无来源，取本地时间 |
 | — | `object = "model"` |
+
+**同一 `config_name` 下有两套 `model_detail_list`（决定「更大上下文」）`[抓包 + 抓包 flows2]`：**
+
+| `model_name` | `prompt_max_tokens` | `max_tokens` |
+|-|-|-|
+| `qwen3.8-flash__dev` | 168000 | 32000 |
+| `qwen3.8-flash__max` | **936000** | **64000** |
+
+官方「更大上下文」开关实测落点：`mode_type: 0 → 2`，且 `model_info.model_name` 由
+`qwen3.8-flash__dev` 变为 `qwen3.8-flash__max` `[抓包 flows2 batchInsert 明文]`。
+→ 后缀语义：`__dev` = 默认上下文，`__max` = 大上下文（`mode_type=2`）。
+**但 `mode_type` 在明文对话请求里实测不改变行为**（顶层放 `mode_type:2` 与对照组一致，
+同属「未知字段被宽松忽略」）→ 大上下文是否等价于直接请求 `model_name` 的 `__max` 变体，
+`[未验证]`，且我方 `llm_utils_chat` 只有 `model`/`config_name` 两字段可用。
+建议：`/v1/models` 暴露 `config_name`，`prompt_max_tokens`/`max_tokens` 上限按 `__max` 记，
+并在文档标注「大上下文模式当前无法通过明文路径选择」。
 
 ## 5. 上游异常响应
 
@@ -367,7 +423,7 @@ data:{"finish_reason":"stop"}
 | `code` | message | 触发 `[实测]` |
 |-|-|---|
 | `4011` | `We're sorry, your requests have exceeded the rate limit. Please wait and try again later.` | 用 curl 默认 UA 发正常请求 `[e4]` → **限流按 UA 分桶**，TTNet UA 同请求立即放行 |
-| `4001` | `We're sorry, the param is invalid. Please try with a valid param.` | 假模型名 `nonexistent-model-x` `[e5]` |
+| `4001` | `We're sorry, the param is invalid. Please try with a valid param.` | 假模型名 `nonexistent-model-x` `[e5]`；`{type:"image",url:"…"}` 形态 `[curl]`；**模型不在所给 `function` 的目录内**：`qwen3.8-flash`+`solo_work_lite` → `4001`，同模型+`solo_agent` → `200` `[curl 2026-11-15]` → 实现须在映射前按目录校验 model×function |
 | `3003` | `model service is unavailable\nerror, status code: 400, message: Error while downloading: <url>, error: Get "<url>": dial tcp …: connect: connection refused Request id: 02179…` | **图片外链不可达** `[curl]`。上游把内部错误（目标 URL、Go 网络错误、上游 Request id）整段塞进 `message` → **透传给下游前必须裁剪** |
 | 其他 | `[未验证]` | 额度耗尽 / 内容风控 / `code` 全集未抓到 |
 
@@ -435,23 +491,24 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 
 **须抓官方客户端才能定（唯一剩余阻塞项）**
 
-1. **思考强度字段名与位置**。`reasoning_effort_level` 只在明文 `batchInsert` 的
-   `model_info` 里验证过，`llm_utils_chat`/`create_agent_task` 请求体是密文看不到。
-   顶层同名参数实测**不生效**（A/B 方向相反）。需在客户端切换思考强度抓一次真实请求。
-2. **RefreshToken 续期的成功响应体**（§2）。必填请求体已用假令牌探测确认，
-   但「是否轮换 refreshToken」须真跑一次续期才能定 —— 也靠抓包，不用手工构造。
+1. **RefreshToken 续期的成功响应体**（§2）。必填请求体已用假令牌探测确认；
+   「是否轮换 refreshToken」须真跑一次续期 → `TRAE_FORCE_401=1` 抓（本轮未跑）。
 
-**已解除（2026-11-15 curl）**
+**已由 2026-11-15 抓包/实测定案**
 
-* ~~未签到态 `claim` 成功响应~~ → 已抓到「已签到态」响应，并发现其与成功态不可区分（§6）
-* ~~图片输入~~ → 形态 `content[]{type:"image_url",image_url{url}}`，支持 `data:` URL，无需图床（§3.2）
-* ~~`multimodal_contents`/`phase`~~ → 图片走请求侧 `image_url`，与这两个响应字段无关（仍未观测到非空）
-* 续期请求体必填集、错误码 `3003`、`progress_notice` 帧
+* `function` 定稿 **`solo_agent`**：实测是模型准入闸门（§3.2），并与官方 `agent_type` 一致
+* `reasoning_effort_level` 官方字段名/取值（`light|high|extra_high`，默认 `high`）坐实于明文
+  `batchInsert`；但我方明文对话路径不受其控制 → 本实现声明为忽略（§3.2）
+* `mode_type` 0↔2 = 「更大上下文」，伴随 `model_name` `__dev`→`__max`（§4.3）
+* 图片官方走上传+工具链路，我方走内联（§3.7、§0 出入 8）
+* `support_thinking` 标志不门控是否产出 reasoning（§3.2）
 
 **不阻塞实现，留待观察**
 
-3. `api5-normal` vs `trae-api-cn` 选择策略；`api5-normal` 下发来源未定位。
-4. `function` 用 `solo_work_lite` 还是 `solo_agent` —— **思考强度支持面差 27 倍**（1 vs 27 个模型），此项现在与第 1 项绑定。
-5. 流内 `error.code` 全集（额度耗尽、内容风控）。
-6. `did_checked_in` 的 `true` 样本。
-7. §0 出入 4（`finish_reason` 改写为 `tool_calls`）与 §5.2 下游错误映射策略 —— **需你批准**。
+2. `api5-normal` vs `trae-api-cn` 选择策略；`api5-normal` 下发来源未定位。
+3. 流内 `error.code` 全集（额度耗尽、内容风控）。客户端侧 ErrorCode 枚举见 §3.6，数字映射未知。
+4. `did_checked_in` 的 `true` 样本（明日签到补）。
+5. `tos-d-lq.bytedancevod.com` 的实际 PUT 分片协议未捕获（`--allow-hosts` 不含该主机）；
+   本实现不用该链路，除非日后要复刻官方行为。
+6. §0 出入 4（`finish_reason` 改写 `tool_calls`）、出入 8（图片不走上传链路）
+   与 §5.2 下游错误映射策略 —— **需你批准**。
