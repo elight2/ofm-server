@@ -94,9 +94,12 @@
 * `code` 非空、长度 ≤ 4096、不含控制字符；单次消费(重复→409)
 * 超时 300s，`maxConnections=8`
 
-⚠️ **实测进展**(2025-11，本机，未登录)：授权页 URL 直接请求返回 **HTTP 200**(32KB 页面)，
-说明 `desktop_callback` / `redirect` / `state` 参数被服务端受理，未报参数错误。
-回连环节服务端自实现已验证(见下)，但**浏览器端是否真的按 `redirect` 回连未经真人登录确认**。
+⚠️ **实测结论(2025-11，已真实登录成功)**：loopback 登录**完全可用**。
+* 授权页 URL 返回 HTTP 200，`desktop_callback` / `redirect` / `state` 均被受理
+* 浏览器完成授权后**确实回连 `127.0.0.1:<port>/auth/callback?code=...&state=...`**
+* 用该 code 调 `login_with_authorization_code` 成功换到 token
+
+⇒ 服务器可直接复用此方式，**无需**手动粘 code。
 
 存储(官方)：`<BOX_AGENT_CONFIG_DIR>/config/auth.json`，权限 0600
 ```json
@@ -106,10 +109,22 @@
 
 ## 2. 令牌续期方式
 * `POST https://xiaohuanxiong.com/api/web/auth/v1/refresh`，body `{"refresh_token":"<rt>"}`
-* 响应 `{code:0, data:{access_token, refresh_token?}}`
-* 提前量 `TOKEN_REFRESH_WINDOW_SECONDS = 300`(access_token 约 3h 有效)
+* 响应 `{code:0, data:{access_token, refresh_token}}`
+* 提前量 `TOKEN_REFRESH_WINDOW_SECONDS = 300`(官方源码)
 * `refresh_token` 自身也需检查 `exp`，过期只能重新登录
-* IAM token 不刷新(只校验 `exp`)，过期即重新登录
+
+### 实测(2025-11，个人身份，`login_with_authorization_code` 登入)
+登入得到的 token 形态与官方源码假设**不同**：
+* `iss` = `xiaohuanxiong.com/iam`，按官方 `isIamToken()` 判定**属 IAM token**
+* `access_token` 与 `refresh_token` **字符串完全相同**(同一 `jti`、同一 `exp`)
+* 有效期 **30 天**(非文档所述的“约 3h”)：`exp - iat = 2592000`
+* **IAM token 可正常调 `/refresh`**：回 `code:0` 且带两个 token，
+  故“IAM token 不刷新”的说法**不成立**，但响应是**原样返还同一 token**
+  (未临近过期时 `exp`/`jti` 均不变)
+
+⇒ 采用任意一个 token 作 `refresh_token` 均可续期；只需按 `exp` 判断
+(提前 300s 窗口)。由于服务端可能原样返还，不要用“token 是否变化”
+判断续期是否成功。
 
 ## 3. Chat Completions 协议转换
 实测版本：客户端 `1.2.0`，依据 `hostedModels.js`、`boxAgentConfig.js`、`dist/electron/main.cjs`
@@ -159,14 +174,43 @@
   按 `name` 去重；`visible!=false` 才算展示；`context_window` 兼容 `params.context_window` 与顶层；
   `default_model` 不在列表内则退化为第一个
 
+### 实测(2025-11，个人身份)
+`data.categories` 只有 1 个，`type="chat"`，`models` 共 9 个：
+|name|visible|备注|
+|-|-|-|
+|`raccoon-090dd3`(default) / `raccoon-19b265` / `raccoon-405a1c`|`false`|内部路由模型，不展示|
+|`sn-sensenova-6-8-flash` / `sn-sensenova-6-8-flash-lite`|`true`|`tags` 含 `vision`|
+|`sn-glm-5-3` / `sn-glm-5-3-flash`|`true`|`billing_category: lite`|
+|`sn-kimi-k3` / `sn-deepseek-v4-1-flash-1017`|`true`|——|
+
+倍率取 `billing_effective_multiplier`(已计入折扣)，如 `sn-sensenova-6-8-flash` 的
+`billing_multiplier: 0.5` 但 `billing_effective_multiplier: 0`(限免到 11-30，`billing_status: limited_free`)。
+模型样例：
+```json
+{"name":"sn-sensenova-6-8-flash","visible":true,"billing_category":"lite",
+ "params":{"context_window":256000,"max_tokens":63999},
+ "billing_multiplier":0.5,"billing_effective_multiplier":0,
+ "billing_status":"limited_free","billing_status_note":"限免到11月30日",
+ "billing_discounts":[{"name":"限免到11月30日","multiplier":0,"active":true,
+   "start_at":"2026-11-11T16:00:00Z","end_at":"2026-11-30T15:59:59Z"}]}
+```
+注：文档早期写 `points_multiplier`，**实测响应里没有该字段**，只有 `billing_*` 系列。
+
 ## 5. 余额获取
 * 积分余额：`GET https://xiaohuanxiong.com/api/web/points/v1/balance`
   (类 `PointsApi.baseUrl = ${origin}/api/web/points`，头带 `Authorization`，
   非 personal 加 `X-Org-Code`)
+* 实测响应(个人身份)：
+  ```json
+  {"code":0,"data":{"available_points":7713,"daily_points":300,"monthly_points":0,
+   "reward_points":7413,"topup_points":0,"enterprise_topup_points":0,
+   "total_chargeable_points":7713,"enterprise_reserved":false,"topup_frozen":false,
+   "owner_type":"users","owner_id":7657055}}
+  ```
+  卡片主数字取 `available_points`。
 * 积分流水：`GET /api/web/points/v2/bills?paging.limit=20&type=all[&cursor=]`
 * 会话消耗：`GET /api/web/desktop/v1/sessions/{sessionId}/points-consumed`
   → `{code:0, data:{total_points_consumed: number}}`
-
 ## 6. 上游异常响应
 通用业务信封：`{code: <int>, message: <str>, data: ...}`，**HTTP 200 也可能 `code!=0`**，必须解析业务码。
 客户端已识别的错误码：
