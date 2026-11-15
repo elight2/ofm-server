@@ -12,18 +12,20 @@
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
 * `ofm-server status 供应商id`: 获取供应商当前信息（目前输出余额、最近一次成功签到的时间与增量）
-* 配置文件: `运行目录/config.toml`
 
 ## 供应商信息
 |名称|id|厂家|接入方式|备注|
 |-|-|-|-|-|
 |TRAE|trae|字节|使用客户端的api调用方式| |
 
-## 技术信息
+## 配置信息
+* 配置文件: `运行目录/config.toml`
+* 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
 * 绑定ip: 默认`127.0.0.1`, 可以使用配置文件修改
 * 端口: 默认`3060`, 可以使用配置文件修改
 * 供应商的登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
+* 供应商的签到记录: `运行目录/providers/供应商id/claim.log`
+
+## 技术信息
 * 使用Rust语言
-* 导出api使用`OpenAI Chat Completions`格式
 * 日志可适配systemd, 也支持独立运行
-* 无需api key校验
