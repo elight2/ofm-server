@@ -405,6 +405,22 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 
 响应 2757110 字节（未截断，实测 4 次同长度一致）。
 
+**准入靠请求头 `x-app-id`** `[curl 2026-11-15，逐个补头二分实测]`：
+
+| 请求头 | 缺失后果 |
+|-|-|
+| `x-app-id: 6eefa01c-1036-4c7e-9ca5-d891f63bfcd8` | **HTTP 200 但每个 function 回 `{"error_code":2001,"error_message":"Config detail for function: <fn> not found"}`，响应仅 1576 字节** |
+
+其余 21 个抓包头（`x-ide-token`、`x-agent-host-type`、`x-harness`、`package-type`、`x-user-region`、
+`sec-fetch-*`、`traceparent`、`x-custom-trace-id`、`referer` 等）**逐个单独补入均无效**，只有 `x-app-id` 有效。
+同理把 `x-machine-id`/`x-device-id` 换成任意伪值仍正常 → 该接口不校验设备指纹。
+
+与对话接口的差异：对话把同一值放 **body `app_id`**（缺失 → `400 expr_path=app_id`），
+本接口放 **请求头 `x-app-id`**；两处都要带，与官方客户端一致（抓包中两个请求均含此值）。
+
+**`error_code` 必须显式检查**：失败也是 HTTP 200，只看状态码会静默得到空模型列表。
+这正是本实现最初拿到 0 个模型的原因。
+
 ### 4.2 解析规则 `[抓包]`
 
 顶层 `{allow_tenant_user_add_model, client_config, client_config_ab_versions, function_configs[11]}`；

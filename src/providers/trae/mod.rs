@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod catalog;
 pub mod chat;
 pub mod credential;
 pub mod device;
@@ -103,10 +104,47 @@ impl TraeProvider {
             ("x-device-cpu", device::cpu_model()),
             ("x-device-type", std::env::consts::OS.to_string()),
             ("x-os-version", device::os_version()),
+            // 模型目录接口靠这个头做准入：缺失时 HTTP 200 但每个 function 都回
+            // `error_code 2001 ... not found`（实测，见 provider-info/trae.md §4.1）。
+            // 对话接口同一值放 body `app_id`，两处都要与官方客户端一致。
+            ("x-app-id", chat::APP_ID.to_string()),
             ("x-flow-traceparent", flow_traceparent()),
             ("content-type", "application/json".to_string()),
             ("accept", "*/*".to_string()),
         ]
+    }
+
+    /// 请求模型目录并解析（独立方法便于单测与错误传播）。
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        let url = format!("{HOST_API5}{}", catalog::ENDPOINT_PATH);
+
+        let payload = serde_json::to_vec(&catalog::CatalogBody::build())
+            .map_err(|e| ProviderError::Other(format!("序列化目录请求体失败: {e}")))?;
+        let mut http = self.client.post(&url).body(payload);
+        for (k, v) in self.chat_headers(&token, &cred) {
+            http = http.header(k, v);
+        }
+
+        let resp = http.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(map_http_error(status.as_u16(), &body));
+        }
+
+        let catalog: catalog::Catalog = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Other(format!("解析模型目录失败: {e}")))?;
+        // 准入失败也是 200，不检查就会静默返回空列表。
+        if let Some(msg) = catalog.first_error() {
+            return Err(ProviderError::Other(format!("模型目录不可用: {msg}")));
+        }
+        let models = catalog::to_models(&catalog);
+        tracing::debug!("[{ID}] 模型目录共 {} 个可对话模型", models.len());
+        Ok(models)
     }
 }
 
@@ -144,16 +182,18 @@ impl Provider for TraeProvider {
         ID
     }
 
+    /// 拉取上游模型目录（`provider-info/trae.md` §4）。
+    ///
+    /// 失败时记日志并返回空列表：`/v1/models` 是聚合端点，
+    /// 单个供应商不可用不应让整体失败。
     async fn models(&self) -> Vec<ModelInfo> {
-        // TODO(协议): POST /api/ide/v1/batch_get_detail_param，
-        // 取 function == "solo_agent" 且 usage == "chat_completion" 的 config_name。
-        ["glm-5.2", "deepseek-v4.1-flash", "qwen3.8-flash"]
-            .into_iter()
-            .map(|m| ModelInfo {
-                model: m.to_string(),
-                display_name: None,
-            })
-            .collect()
+        match self.fetch_models().await {
+            Ok(models) => models,
+            Err(e) => {
+                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
+                Vec::new()
+            }
+        }
     }
 
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
