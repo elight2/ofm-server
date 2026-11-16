@@ -122,8 +122,12 @@ pub async fn claim(client: &reqwest::Client, cred: &Credential) -> Result<ClaimR
         });
     }
 
+    // 服务端下发的 `display_name` 比本地 `source` 映射准确（可能含活动名），优先用。
     let (label, points) = match &grant.popup {
-        Some(p) => (p.source_label(), p.points),
+        Some(p) => (
+            p.display_name.as_deref().unwrap_or_else(|| p.source_label()),
+            p.points,
+        ),
         None => ("积分", None),
     };
     let message = match points {

@@ -11,6 +11,9 @@ use crate::config::Config;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
+    /// 文件不存在时统一由调用方转成 `Ok(None)`，故本变体暂无构造点；
+    /// 保留以便区分「不存在」与「读不了」。
+    #[allow(dead_code)]
     #[error("凭证不存在: {path}")]
     Missing { path: PathBuf },
     #[error("读取凭证失败 {path}: {source}")]

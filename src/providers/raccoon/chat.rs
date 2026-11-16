@@ -10,8 +10,8 @@ use serde::Serialize;
 
 use crate::core::provider::{ChatRequest, Message, Part, Role};
 
-/// 对话路径（相对 `api::HOST`）。
-pub const PATH: &str = "/api/web/llm/v2/chat/completions";
+/// 对话路径（相对 `api::LLM_PREFIX`）。
+pub const PATH: &str = "/chat/completions";
 
 #[derive(Debug, Serialize)]
 pub struct ChatBody {

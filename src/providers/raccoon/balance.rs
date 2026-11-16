@@ -8,10 +8,10 @@
 
 use serde::Deserialize;
 
-use super::api;
+use super::api::{self, POINTS_PREFIX};
 
-/// 余额路径。
-pub const PATH: &str = "/api/web/points/v1/balance";
+/// 余额路径（`api::POINTS_PREFIX` + 版本段）。
+pub const PATH: &str = "/v1/balance";
 
 /// 余额响应。字段很多，只解需要的部分；未知字段由 serde 默认忽略。
 #[derive(Debug, Default, Deserialize)]
@@ -19,17 +19,21 @@ pub struct Balance {
     /// 可用总积分（各分池之和）。
     #[serde(default)]
     pub available_points: f64,
-    /// 每日积分（当天/未过期的那部分）。
+    /// 每日积分（当天/未过期的那部分）。分池明细仅存档，`status` 只展示总额。
     #[serde(default)]
+    #[allow(dead_code)]
     pub daily_points: f64,
     /// 每月积分。
     #[serde(default)]
+    #[allow(dead_code)]
     pub monthly_points: f64,
     /// 奖励积分（无到期字段）。
     #[serde(default)]
+    #[allow(dead_code)]
     pub reward_points: f64,
     /// 加油包积分。
     #[serde(default)]
+    #[allow(dead_code)]
     pub topup_points: f64,
 }
 
@@ -38,7 +42,7 @@ pub async fn fetch(
     client: &reqwest::Client,
     headers: &[(&str, String)],
 ) -> Result<Balance, api::HttpError> {
-    let url = format!("{}{PATH}", api::HOST);
+    let url = format!("{}{POINTS_PREFIX}{PATH}", api::HOST);
     api::get_envelope(client, &url, headers).await
 }
 

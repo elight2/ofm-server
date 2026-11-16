@@ -10,10 +10,10 @@ use serde::Deserialize;
 
 use crate::core::provider::ModelInfo;
 
-use super::api;
+use super::api::{self, LLM_PREFIX};
 
-/// 模型目录路径。
-pub const PATH: &str = "/api/web/llm/v2/model_catalog";
+/// 模型目录路径（相对 `api::LLM_PREFIX`）。
+pub const PATH: &str = "/model_catalog";
 
 #[derive(Debug, Deserialize)]
 pub struct Catalog {
@@ -48,7 +48,7 @@ pub async fn fetch(
     client: &reqwest::Client,
     headers: &[(&str, String)],
 ) -> Result<Vec<ModelInfo>, api::HttpError> {
-    let url = format!("{}{PATH}", api::HOST);
+    let url = format!("{}{LLM_PREFIX}{PATH}", api::HOST);
     let catalog: Catalog = api::get_envelope(client, &url, headers).await?;
     Ok(to_models(catalog))
 }

@@ -10,6 +10,7 @@ pub const HOST_API5: &str = "https://api5-normal.mchost.guru";
 pub const HOST_WEB: &str = "https://api.trae.cn";
 pub const HOST_CONSOLE: &str = "https://www.trae.cn";
 /// 图片/视频真实上传主机（抓包仅由 session_key 得知名，本实现不走该链路）。
+#[allow(dead_code)]
 pub const HOST_ICUBE: &str = "https://api.trae.com.cn";
 
 pub const CLIENT_ID: &str = "ono9krqynydwx5";
@@ -29,7 +30,9 @@ pub struct ControlEnvelope<T> {
     pub metadata: Metadata,
     #[serde(rename = "Result", default = "Option::default")]
     pub result: Option<T>,
+    /// 上游的成功标志。以 `Result` 字段是否存在为准，此字段仅存档。
     #[serde(default)]
+    #[allow(dead_code)]
     pub success: Option<bool>,
 }
 
@@ -37,7 +40,9 @@ pub struct ControlEnvelope<T> {
 pub struct Metadata {
     #[serde(default)]
     pub error: Option<ControlError>,
+    /// 上游 trace id，排查用；当前未记录到日志。
     #[serde(default)]
+    #[allow(dead_code)]
     pub trace_id: Option<String>,
 }
 
@@ -47,9 +52,13 @@ pub struct ControlError {
     pub code: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    /// 标准化错误码，与 `code` 冗余；展示用 `code`。
     #[serde(default)]
+    #[allow(dead_code)]
     pub standard_code: Option<String>,
+    /// 错误附加数据，当前未展示。
     #[serde(default)]
+    #[allow(dead_code)]
     pub data: Option<serde_json::Value>,
 }
 
@@ -193,6 +202,7 @@ pub fn os_name() -> String {
 }
 
 /// 签到等接口用的 `ReqSource`。
+#[allow(dead_code)]
 pub const REQ_SOURCE: &str = "IDE";
 
 /// 共享的 HTTP 客户端（连接复用）。

@@ -11,6 +11,8 @@ pub enum ConvertError {
     EmptyMessages,
     #[error("第 {0} 条消息缺少 content")]
     MissingContent(usize),
+    /// 未知 `content` 片段类型。目前未遇到，保留以覆盖未来 OpenAI 新增类型。
+    #[allow(dead_code)]
     #[error("不支持的 content 片段类型")]
     UnsupportedPart,
     #[error("assistant 的 tool_calls 缺少 function.name")]

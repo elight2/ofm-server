@@ -16,7 +16,7 @@ pub mod proof;
 pub mod refresh;
 pub mod stream;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -39,8 +39,6 @@ pub struct TraeProvider {
     client: reqwest::Client,
     /// 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: Arc<Mutex<()>>,
-    /// JWT 缺失/过期时的 warning 只报一次，避免刷屏。
-    warned_no_cred: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TraeProvider {
@@ -49,7 +47,6 @@ impl TraeProvider {
             root,
             client: api::client().expect("构建 HTTP 客户端失败"),
             refresh_lock: Arc::new(Mutex::new(())),
-            warned_no_cred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -330,7 +327,7 @@ impl Provider for TraeProvider {
         }
 
         // 上游恒回 SSE；分帧后逐帧转成中间事件。
-        let mut bytes_stream = resp.bytes_stream();
+        let bytes_stream = resp.bytes_stream();
         let state = StreamState {
             decoder: SseDecoder::new(),
             parser: stream::FrameParser::new(),
@@ -488,11 +485,6 @@ fn truncate(s: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
-}
-
-/// 供 `main` 判断是否已有登录凭证。
-pub fn has_credential(root: &Path) -> bool {
-    matches!(Credential::load(root), Ok(Some(_)))
 }
 
 #[cfg(test)]

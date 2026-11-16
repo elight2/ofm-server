@@ -87,8 +87,3 @@ pub enum ErrorKind {
 }
 
 pub type EventStream = Pin<Box<dyn Stream<Item = Event> + Send>>;
-
-/// 便捷构造：从 `Vec<Event>` 得到流。
-pub fn from_events(events: Vec<Event>) -> EventStream {
-    Box::pin(futures_util::stream::iter(events))
-}

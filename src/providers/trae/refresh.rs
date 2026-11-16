@@ -83,7 +83,6 @@ pub async fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::trae::device::Device;
 
     /// 真实续期（需要本地已登录凭证，故默认忽略）。
     /// 运行：`cargo test -- --ignored live_refresh`

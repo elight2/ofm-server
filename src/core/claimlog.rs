@@ -25,6 +25,9 @@ pub struct Entry {
     /// 当时的余额（`None` 表示未取到）。
     #[serde(default)]
     pub balance: Option<f64>,
+    /// 本次签到上游明确告知的增量（`None` 表示上游未告知，只能靠余额差分）。
+    #[serde(default)]
+    pub delta: Option<f64>,
 }
 
 impl Entry {
@@ -92,6 +95,10 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
 pub fn last_success(root: &Path, provider: &str) -> Option<(String, Option<f64>)> {
     let entries = load(root, provider);
     let idx = entries.iter().rposition(Entry::is_success)?;
+    // 优先用上游明确告知的增量：余额差分受首次签到、中途失败等影响，不一定准。
+    if let Some(d) = entries[idx].delta {
+        return Some((entries[idx].time.clone(), Some(d)));
+    }
     let cur = entries[idx].balance;
     let prev = entries[..idx].iter().rev().find_map(|e| e.balance);
     let delta = match (cur, prev) {
@@ -117,6 +124,7 @@ mod tests {
             time: time.into(),
             result: result.into(),
             balance,
+            delta: None,
         }
     }
 
@@ -173,6 +181,20 @@ mod tests {
         let (time, delta) = last_success(&root, "p").unwrap();
         assert_eq!(time, "t1");
         assert_eq!(delta, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 上游告知的增量优先于余额差分() {
+        let root = tmp_root("delta-preferred");
+        append(&root, "p", entry("t1", "成功", Some(100.0))).unwrap();
+        // t2 余额差分应为 +50，但上游明确告知 300（中间可能有过消耗）。
+        let mut e = entry("t2", "成功", Some(400.0));
+        e.delta = Some(300.0);
+        append(&root, "p", e).unwrap();
+        let (time, delta) = last_success(&root, "p").unwrap();
+        assert_eq!(time, "t2");
+        assert_eq!(delta, Some(300.0));
         let _ = std::fs::remove_dir_all(&root);
     }
 

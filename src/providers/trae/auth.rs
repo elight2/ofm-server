@@ -6,7 +6,7 @@
 //! 回调只拿到浏览器跳转的查询串；其中的授权码键名由授权页决定，
 //! 因此同时接受 `auth_code` / `code` / `authCode` 三种写法，取第一个命中的非空值。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -111,8 +111,9 @@ pub struct AuthCodeInfo {
     /// 过期时间（毫秒时间戳）。
     #[serde(rename = "ExpireAt", default)]
     pub expire_at: Option<i64>,
-    /// 有效期（毫秒）。
+    /// 有效期（毫秒）。以 `expire_at` 绝对时间为准，此字段仅存档。
     #[serde(rename = "ExpireDuration", default)]
+    #[allow(dead_code)]
     pub expire_duration: Option<i64>,
 }
 
@@ -187,9 +188,4 @@ fn fmt_ms(ms: Option<i64>) -> String {
         }
         None => "未知".to_string(),
     }
-}
-
-/// 保存路径（供提示信息复用）。
-pub fn credential_path(root: &Path) -> PathBuf {
-    crate::config::Config::credential_path(root, crate::providers::trae::ID)
 }

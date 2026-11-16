@@ -23,7 +23,10 @@ pub struct ChatRequest {
     #[serde(default)]
     pub stream_options: Option<StreamOptions>,
     /// 其余字段（temperature 等）本服务器不转发，忽略。
+    ///
+    /// `flatten` 必须保留：否则未知字段在反序列化时会报错而非被丢弃。
     #[serde(flatten)]
+    #[allow(dead_code)]
     pub extra: serde_json::Map<String, Value>,
 }
 
@@ -78,7 +81,9 @@ pub struct ImageUrl {
 pub struct ToolCall {
     #[serde(default)]
     pub id: Option<String>,
+    /// 恒为 `"function"`；不校验，仅保证反序列化完整。
     #[serde(rename = "type", default)]
+    #[allow(dead_code)]
     pub kind: Option<String>,
     pub function: FunctionCall,
 }
@@ -92,7 +97,9 @@ pub struct FunctionCall {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Tool {
+    /// 恒为 `"function"`；工具无 `function` 字段时仍会解析出结构，留给上层判断。
     #[serde(rename = "type", default)]
+    #[allow(dead_code)]
     pub kind: Option<String>,
     pub function: ToolSpec,
 }

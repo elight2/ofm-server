@@ -15,7 +15,7 @@ pub mod models;
 pub mod refresh;
 pub mod stream;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -82,7 +82,7 @@ impl RaccoonProvider {
         tracing::info!("[{ID}] token 即将过期，正在续期");
         let new = refresh::refresh(&self.client, &cred)
             .await
-            .map_err(|e| ProviderError::from(e))?;
+            .map_err(ProviderError::from)?;
         new.store(&self.root)
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
         tracing::info!("[{ID}] 续期成功");
@@ -109,32 +109,6 @@ impl RaccoonProvider {
         models::fetch(&self.client, &self.headers(&token, &cred))
             .await
             .map_err(ProviderError::from)
-    }
-
-    /// 带头的 POST，返回原始字节（流式用）。
-    async fn post_stream(
-        &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<reqwest::Response, ProviderError> {
-        let cred = self.credential()?;
-        let token = self.access_token().await?;
-        let payload = serde_json::to_vec(body)
-            .map_err(|e| ProviderError::Other(format!("序列化请求体失败: {e}")))?;
-        let mut http = self.client.post(url).body(payload);
-        for (k, v) in self.headers(&token, &cred) {
-            http = http.header(k, v);
-        }
-        let resp = http.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::from(api::HttpError::Status {
-                status: status.as_u16(),
-                body: api::truncate(&text, 300),
-            }));
-        }
-        Ok(resp)
     }
 }
 
@@ -182,7 +156,7 @@ impl Provider for RaccoonProvider {
         let cred = self.credential()?;
         let token = self.access_token().await?;
         let body = chat::ChatBody::build(&req);
-        let url = format!("{}{}", api::HOST, chat::PATH);
+        let url = format!("{}{}{}", api::HOST, api::LLM_PREFIX, chat::PATH);
 
         // 自己序列化并 .body()：避免 .json() 追加第二个 content-type 头。
         let payload = serde_json::to_vec(&body)
@@ -210,7 +184,7 @@ impl Provider for RaccoonProvider {
         }
 
         // 上游恒回 SSE；分帧后逐帧转成中间事件。
-        let mut bytes_stream = resp.bytes_stream();
+        let bytes_stream = resp.bytes_stream();
         let state = ChatStreamState {
             decoder: crate::core::sse::SseDecoder::new(),
             parser: stream::FrameParser::new(),
@@ -296,7 +270,3 @@ impl Provider for RaccoonProvider {
     }
 }
 
-/// 供 `main` 判断是否已有登录凭证。
-pub fn has_credential(root: &Path) -> bool {
-    matches!(Credential::load(root), Ok(Some(_)))
-}

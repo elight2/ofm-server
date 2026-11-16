@@ -61,15 +61,15 @@ impl FrameParser {
         if let Some(choices) = v.get("choices").and_then(|c| c.as_array()) {
             for ch in choices {
                 if let Some(delta) = ch.get("delta") {
-                    if let Some(r) = delta.get("reasoning_content").and_then(|x| x.as_str()) {
-                        if !r.is_empty() {
-                            out.push(Event::Reasoning(r.to_string()));
-                        }
+                    if let Some(r) = delta.get("reasoning_content").and_then(|x| x.as_str())
+                        && !r.is_empty()
+                    {
+                        out.push(Event::Reasoning(r.to_string()));
                     }
-                    if let Some(c) = delta.get("content").and_then(|x| x.as_str()) {
-                        if !c.is_empty() {
-                            out.push(Event::Text(c.to_string()));
-                        }
+                    if let Some(c) = delta.get("content").and_then(|x| x.as_str())
+                        && !c.is_empty()
+                    {
+                        out.push(Event::Text(c.to_string()));
                     }
                     if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
                         for tc in tcs {

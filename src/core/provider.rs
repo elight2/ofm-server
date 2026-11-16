@@ -14,7 +14,11 @@ pub struct ChatRequest {
     /// 标准化消息。图片以 URL（支持 `data:`）内联。
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
-    /// 下游是否要求工具调用（`tool_choice=a required`）。
+    /// 下游是否要求工具调用（`tool_choice="required"`）。
+    ///
+    /// ⚠️ 两家上游都没有对应的 `tool_choice` 字段可传，当前**未生效**：
+    /// 该值只被解析、不参与请求构造。保留以便将来上游支持时接上。
+    #[allow(dead_code)]
     pub require_tool: bool,
 }
 
@@ -38,7 +42,12 @@ pub struct Message {
 #[derive(Debug, Clone)]
 pub enum Part {
     Text(String),
-    Image { url: String, detail: Option<String> },
+    /// 图片。`detail` 是 OpenAI 的 `low`/`high`/`auto`，两家上游都不支持，解析后丢弃。
+    Image {
+        url: String,
+        #[allow(dead_code)]
+        detail: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +68,9 @@ pub struct ToolSpec {
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub model: String,
+    /// 上游给的人类可读名。对外模型 id 只用 `model`（见 README「转发出的模型名称」），
+    /// 此字段留给日志与排查。
+    #[allow(dead_code)]
     pub display_name: Option<String>,
     /// 供应商标的计费倍率（`display_contact_config.consumption_rate.data.rate`）。
     /// 上游未给出时为 `None`。
@@ -85,8 +97,6 @@ pub enum ProviderError {
     Transport(#[from] reqwest::Error),
     #[error("上游响应异常: {0}")]
     Protocol(String),
-    #[error("功能未实现: {0}")]
-    Unimplemented(&'static str),
     #[error("此供应商不支持: {0}")]
     Unsupported(&'static str),
     #[error("{0}")]

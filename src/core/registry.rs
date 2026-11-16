@@ -30,10 +30,6 @@ impl Registry {
         self.providers.get(id).cloned()
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.providers.keys().copied()
-    }
-
     pub fn all(&self) -> impl Iterator<Item = &Arc<dyn Provider>> {
         self.providers.values()
     }

@@ -20,7 +20,7 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
 /// 串行签到所有供应商（手动 `claim` 子命令用）。
 pub async fn claim_all(registry: &Registry, root: &Path) {
     for provider in registry.all() {
-        claim_one(&provider, root).await;
+        claim_one(provider, root).await;
     }
 }
 
@@ -30,32 +30,39 @@ pub async fn claim_all(registry: &Registry, root: &Path) {
 pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
     {
         let id = provider.id();
-        let (result, balance) = match provider.claim().await {
+        let (result, balance, delta) = match provider.claim().await {
             Ok(report) => {
                 if report.skipped {
                     tracing::info!("[{id}] 签到跳过: {}", report.message);
-                    (format!("跳过: {}", report.message), report.balance)
+                    (format!("跳过: {}", report.message), report.balance, None)
                 } else {
                     tracing::info!("[{id}] 签到完成: {}", report.message);
-                    ("成功".to_string(), report.balance)
+                    ("成功".to_string(), report.balance, report.credits_delta)
                 }
             }
             Err(e) => {
                 tracing::warn!("[{id}] 签到失败: {e}");
-                (format!("失败: {e}"), None)
+                (format!("失败: {e}"), None, None)
             }
         };
 
-        record(root, id, result, balance);
+        record(root, id, result, balance, delta);
     }
 }
 
 /// 追加一条签到记录；写盘失败只记日志，不影响签到本身。
-fn record(root: &Path, provider: &str, result: String, balance: Option<f64>) {
+fn record(
+    root: &Path,
+    provider: &str,
+    result: String,
+    balance: Option<f64>,
+    delta: Option<f64>,
+) {
     let entry = Entry {
         time: now_rfc3339(),
         result,
         balance,
+        delta,
     };
     if let Err(e) = claimlog::append(root, provider, entry) {
         tracing::warn!("[{provider}] 写签到记录失败: {e}");

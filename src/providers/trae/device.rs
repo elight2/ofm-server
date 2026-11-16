@@ -80,6 +80,8 @@ impl Device {
 pub enum DeviceError {
     #[error("设备密钥处理失败: {0}")]
     Key(String),
+    /// 随机源不可用时的专用错误。当前回退到主机名派生，暂无构造点。
+    #[allow(dead_code)]
     #[error("系统随机数不可用: {0}")]
     Rng(String),
 }
@@ -94,10 +96,10 @@ fn machine_seed() -> String {
             }
         }
     }
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() {
-            return h;
-        }
+    if let Ok(h) = std::env::var("HOSTNAME")
+        && !h.is_empty()
+    {
+        return h;
     }
     let mut buf = [0u8; 16];
     if getrandom::fill(&mut buf).is_ok() {
@@ -149,12 +151,11 @@ pub fn os_version() -> String {
 pub fn cpu_model() -> String {
     if let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") {
         for line in s.lines() {
-            if let Some(v) = line.strip_prefix("model name") {
-                if let Some(v) = v.split_once(':').map(|(_, v)| v.trim()) {
-                    if !v.is_empty() {
-                        return v.to_string();
-                    }
-                }
+            if let Some(v) = line.strip_prefix("model name")
+                && let Some(v) = v.split_once(':').map(|(_, v)| v.trim())
+                && !v.is_empty()
+            {
+                return v.to_string();
             }
         }
     }

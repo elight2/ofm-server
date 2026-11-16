@@ -17,14 +17,20 @@ pub const LLM_PREFIX: &str = "/api/web/llm/v2";
 /// 积分。
 pub const POINTS_PREFIX: &str = "/api/web/points";
 /// 桌面端专属接口。
+///
+/// 仅作协议记录：桌面端的 `login/points/grant` 只发首登奖励、不发每日积分，
+/// 本实现对每日积分走移动端端点（见 `claim.rs`）。
+#[allow(dead_code)]
 pub const DESKTOP_PREFIX: &str = "/api/web/desktop/v1";
 
 /// 登录与续期用 UA：官方是 Electron 41 桌面壳。
 pub const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) raccoon-ai/1.2.0 Chrome/142.0.7444.235 Electron/41.0.1 Safari/537.36";
 
-/// 客户端版本，`X-Client-Version` 用。
+/// 官方桌面端版本，记录用：移动端端点必须报移动端版本，不可混用（见 `claim::MOBILE_VERSION`）。
+#[allow(dead_code)]
 pub const CLIENT_VERSION: &str = "v1.2.0";
-/// `X-Client-Platform` 取值（`desktop/{platform}` 约定见官方）。
+/// 官方桌面端 `X-Client-Platform` 取值，记录用（移动端用 `app-android`）。
+#[allow(dead_code)]
 pub const CLIENT_PLATFORM: &str = "desktop-linux";
 
 /// 授权页路径（`DESKTOP_AUTH_PATH`）。
@@ -172,8 +178,6 @@ where
     parse_envelope::<R>(status.as_u16(), &text)
 }
 
-/// 移动端 API 前缀。
-pub const MOBILE_PREFIX: &str = "/api/web/mobile/v1";
 
 /// 发 GET 并解信封。
 ///
@@ -201,13 +205,13 @@ where
 fn parse_envelope<R: DeserializeOwned>(status: u16, text: &str) -> Result<R, HttpError> {
     // ⚠️ 业务错误可能返回非 2xx（实测 200035 → HTTP 400），
     // 所以先尝试按信封解析，能拿到业务码就报业务错，保留错误码。
-    if let Ok(env) = serde_json::from_str::<Envelope<R>>(text) {
-        if !env.is_ok() {
-            return Err(HttpError::Business {
-                code: env.code,
-                message: env.describe(),
-            });
-        }
+    if let Ok(env) = serde_json::from_str::<Envelope<R>>(text)
+        && !env.is_ok()
+    {
+        return Err(HttpError::Business {
+            code: env.code,
+            message: env.describe(),
+        });
     }
     if !(200..300).contains(&status) {
         return Err(HttpError::Status {
@@ -220,19 +224,6 @@ fn parse_envelope<R: DeserializeOwned>(status: u16, text: &str) -> Result<R, Htt
     // 2xx 但缺 data：换 token 这类端点 data 必有，缺失即异常。
     env.data
         .ok_or_else(|| HttpError::Decode("响应缺少 data".to_string()))
-}
-
-/// 同上，用于没有 `data` 或 `data` 可选的端点（如 `login/points/grant`）。
-pub async fn post_raw<B>(
-    client: &reqwest::Client,
-    url: &str,
-    bearer: Option<&str>,
-    body: &B,
-) -> Result<serde_json::Value, HttpError>
-where
-    B: serde::Serialize + ?Sized,
-{
-    post_envelope::<B, serde_json::Value>(client, url, bearer, body).await
 }
 
 /// 字符串截断到 `max` 字节（保持 UTF-8 边界）。
