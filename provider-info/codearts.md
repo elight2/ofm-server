@@ -72,6 +72,9 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 2. **两套认证 URL 参数集不同**（§1.2）：IDE 版带 `port`+`code_challenge`，kernel 版带 `ticket_id`+`auth_callback_url`+`plugin-name`。
 3. **两套模型列表来源不同**（§4）：kernel 走 AgentCenter `useragents→detail`，IDE 走 PromptCenter `/v1/model/builtin`。
 4. **AKSK 双模式**：有 AK/SK 时用 SDK-HMAC-SHA256 签名，无 AK/SK 时用 `x-auth-token`（security token）。官方两者可能同时存在。
+5. **续期与签到各两套**：续期 IDE 带 `code_verifier`/kernel 不带且加 `x-agent-user-account`（§2.1）；
+   签到 kernel 是 `POST {}`、IDE 是分 channel 的 `GET` + `enableBenefitClaim`（§7）。
+   端到端 token 续期**只有** `refresh_token` 重放一条链路，`snap-manager/v1/token/renew` 是死声明（§2.3）。
 
 ---
 
@@ -237,42 +240,89 @@ plugin-version: <Fr(!1)>
 
 ## 2. 令牌续期方式
 
-### 2.1 主动续期 `[打包JS]`
+> 续期**只有一条**真实链路：`refresh_token` 重放 `POST /v1/oauth2/tokens`。
+> 客户端不存在服务端续期接口的调用（见 §2.3）。
 
-主路径：`refresh_token` 重放 §1.3（`grant_type=refresh_token`）。
+### 2.1 续期请求（IDE 与 kernel 两种形态）`[打包JS]`
 
-`HcLoginService.ensureTokenValid`（offset 8753379 区）决策四分支：
+| 客户端 | 位置 | body（`x-www-form-urlencoded`） | 额外头 |
+|-|-|-|-|
+| IDE 扩展 | offset 8902310 区 `refreshToken(e,r)` | `client_id=codearts-snap`、`code_verifier=<loginContext.pkcePair.codeVerifier>`、`grant_type=refresh_token`、`refresh_token` | `DPoP`、`Content-Type`（**无** `Accept`） |
+| kernel | offset 106452732 `fQ()` | `client_id=CodeArts_Tui`、`grant_type=refresh_token`、`refresh_token`（**无** `code_verifier`） | `DPoP`、`Content-Type`、`Accept: application/json`、`x-agent-user-account: <auth.accountId，缺失则为空串>` |
+
+共同点：
+* DPoP proof 用**登录时同一密钥对**；`htu` = `https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens`；claims `{htm:"POST", htu, iat, jti}`。
+  * IDE：`jti = CryptoJS.WordArray.random(32).toString(Hex)` = 64 hex；签名 `jose`，header `{alg:ES256, typ:"dpop+jwt", jwk}`。
+  * kernel：`jti = crypto.randomBytes(16).toString("hex")` = **32 hex**（与 IDE 不同）。
+* 响应处理与登录完全一致（IDE 走 `validateTokenResponse`，kernel 走 `$.credentials`），取 `credentials.access_key_id/secret_access_key/security_token/expiration` 与顶层 `refresh_token`。
+* kernel 只在 `Error.message` 含 `401` 时清 auth store（视为 refresh token 已吊销）；IDE 无此分支。
+
+### 2.2 续期决策与调度 `[打包JS]`
+
+阈值：
+
+| 客户端 | 提前量 |
+|-|-|
+| IDE | `renewalWindowMs = 6e5`（10 分钟） |
+| kernel | `yQ = 600000`（10 分钟） |
+
+IDE `HcLoginService.ensureTokenValid`（offset 8754119 区）分支：
 
 | 结果 | 条件 |
 |-|-|
-| `valid` | 未到阈值 |
-| `waitLock` | 另一进程持 `fileLock` 正在续期 |
-| `cancel` | 续期被取消 |
-| `renew` | 需要续期 → 调 renew |
+| 直接 `true` | `now < tokenExpiredTime` |
+| 直接 `false` | `isRetrying`（重试周期进行中） |
+| `waitLock` | 另一窗口持 `renewalLockPath` 文件锁 → 等 30s 再判断 |
+| `renew` | 过期且取到锁 → 走 §2.1 |
+| `cancel` | 无 `refresh_token` 或无 `loginContext` |
 
-定时器（`startRenewalTimers`）：
-* 启动后 `12e4`ms 首次
-* 间隔 `kri` = clamp(计算值, `1800000`~`7200000`)
-* 提前量缓冲 `3e5`ms，下限 `6e4`ms
-* 凭证无 `expiration` 时 fallback TTL `mZe = 864e5`ms
+IDE 定时器：
+* `startRenewalTimers`：启动后 `12e4`ms 首次触发 `refreshSession()`，之后接 `scheduleRenewal`。
+* `scheduleRenewal` 间隔 `kri(expiresAt, now)`：
+  `r = expiresAt - now`；`n = clamp(max(r/2, 0), 1800000, 7200000)`；
+  返回 `max(min(n, r - 300000), 60000)`（结果恒落在 `60000`~`7200000`ms）。
+* `scheduleExpiryCheck`：间隔 `clamp(expiresAt + 1000 - now, 60000, 600000)`；重试中固定 `600000`。
+* 凭证无 `expiration` 时 fallback TTL `mZe = 864e5`ms。
 
-### 2.2 服务端续期端点 `[打包JS]`
+IDE 失败重试 `executeRetryCycle`：网络错误每 `6e4`ms 重试，非网络错误每 `6e5`ms；
+连续 5xx（`500/502/503/504`）达 30 次 → `softLogout`；非网络错误且已过 `tokenExpiredTime` → `softLogout`。
+网络错误判定集 `A5a`：`ECONNABORTED/ENOTFOUND/ETIMEDOUT/ECONNREFUSED/ECONNRESET/EAI_AGAIN` 或无 `response`。
+
+kernel `mW()`（启动引导，offset 106454000 区）：
+1. 环境变量 `CODEARTS_CLI_AK`+`CODEARTS_CLI_SK` → 直写 GlobalConfig（无 securityToken）。
+2. 环境变量 `HW_ACCESS_KEY`+`HW_SECRET_KEY`+`HW_SECURITY_TOKEN` → 直写 GlobalConfig。
+3. GlobalConfig 的 AKSK 三元组齐且 `expiresAt > now+600000` → 跳过。
+4. 否则读 auth store：有效（`expires > now+600000`）→ 同步进 GlobalConfig。
+5. 否则 `fQ()` 续期；失败抛 `AUTH_FAILED`。
+
+### 2.3 服务端续期端点（仅端点表声明，无调用方）`[打包JS]`
 
 ```
-POST/GET {chatDomain}/snap-manager/v1/token/renew
+{chatDomain}/snap-manager/v1/token/renew
 ```
-（`_hcSessionRenewalUrl`，offset 2375900 端点表）。响应体结构 `[未验证]`。
+（IDE 端点表字段 `_hcSessionRenewalUrl`，offset 2378069；仅声明与 getter `get hcSessionRenewalUrl()`，
+**全量 grep 无任何调用点**）。kernel 包内不存在该路径字符串。响应体结构无从确认，**不应实现**。
 
-### 2.3 IDE 命令通道 `[打包JS]`
+### 2.4 IDE 命令通道 `[打包JS]`
 
-extension 执行 `huaweicloud.authentication.command.renewSession`（offset 10162527），
-kernel 侧通过 VSCode 命令桥触发；命令不可用时日志 `CodeArts IDE renewSession command not available: {0}`。
+extension `ensureTokenValid()` 在 `kr`（IDE 宿主模式）下改为执行命令
+`huaweicloud.authentication.command.renewSession`，成功后再 `waitForTokenRefresh(3, 500)`
+（3 次 × 500ms 等待）。命令不可用日志：
+`CodeArts IDE renewSession command not available: {0}`。
 
-### 2.4 被动失效 `[打包JS]`
+### 2.5 被动失效 `[打包JS]`
 
-remote-session 轮询 `GET {chatDomain}/v1/sessions`（1h 刷新 / 120s 轮询），`status !== 0` → `FORCED_LOGOUT`，需重新走 §1。
+| 客户端 | 端点 | 行为 |
+|-|-|-|
+| IDE | `GET {chatDomain}/v1/sessions?client_type=CodeArts Agent CLI&page=1&page_size=10…` | 见下 |
+| kernel | `GET {chatDomain}/v1/sessions?client_type=…&page=1&page_size=10` | `data.sessions[0].status !== 0` → 清 auth → `FORCED_LOGOUT` |
+| kernel | `POST {chatDomain}/v1/sessions` body `{client_type, device_name(hostname), device_type("Linux"), ip_address(首个非内网 IPv4), client_version}` | 创建会话，失败仅 log |
 
-> 注：**`/snap-manager/v1/token/renew` 与 `/snap-manager/v1/login/ticket` 是端点表中仅有的 token 相关项**。kernel 实际调用的 snap-manager 路径只有 `chat-session/heartbeat`、`current/user`、`privacy`、`skill/*`、`statistics/plugin`，摘要中曾疑有 `token` 相关实为端点表静态声明 `[打包JS 已 grep 核实]`。
+kernel 轮询 `n = 120000`ms（120s）；`T()` 另有限流：仅当带 `CODEARTS_CLI_AK/SK` 或
+`HW_ACCESS_KEY/SECRET_KEY/SECURITY_TOKEN` 时按 `xQ = 3600000`ms（1h）节流重建会话。
+检测失败 → `LQ()` 打印/派发 `FORCED_LOGOUT` 并 `process.exit(0)`。
+
+---
 
 ---
 
@@ -812,37 +862,76 @@ token 限额告警阈值：90% / 100%。
 
 ## 7. 签到
 
-> 本节（`aD()`/`_D`/`RFn`）代码位于 **agent kernel** 的 `benefit-service`，非 IDE 扩展。
+> 两条独立实现：**agent kernel**（`aD()`/`_D`/`RFn`，benefit-service，加载福利模型前的前置动作）
+> 与 **IDE 扩展**（`SLc()` @offset 8489727，签到按钮）。两者端点相同、方法不同。
+
+### 7.1 kernel：`POST /api/v1/benefit/claim` `[打包JS]`
 
 ```
-POST {benefitBase}/api/v1/benefit/claim
-body: {}
-headers: 同 §5（AKSK 签名 + X-Security-token）
+POST {benefitBase}/api/v1/benefit/claim      # benefitBase: 生产 https://opengw.developer.huaweicloud.com
+body: {}                                     # 恒为 "{}"（非空 body）
+headers: 同 §5（Content-Type: application/json + x-snap-traceid + X-Security-token，AKSK 签名）
+timeout: 1e4ms（AbortController）
 ```
 
-`aD()`：
-* 成功（`error_code === "0000"`）→ 返回 `true`
-* 失败 → 日志 `claimBenefit failed`（带 `error_code` / `error_message`），返回 `false`
-* `4006` = 今日已签（`daily claim limit exhausted`）
-* 超时 10s
+`aD()`：成功（`error_code === "0000"`）→ `true`；否则 log `claimBenefit failed` → `false`。
 
-`channel` 参数：`ELc(t,e,r)` 会并发拉 `getGatewayConfig` 的 `benefit` / `education` / `examination` 三个 channel；
-**`claim` 是否也需要 channel 参数 `[未验证]`**（代码中 `_D("claim","POST")` 未带 channel，推测默认 `benefit`；未开通权益账号无法实测，恒 4000）。
+调用方 `tTn()`（加载福利模型）：
+`mD()`（GET `config`）→ 有 `models` 才继续 → `aD()` 失败则 **跳过全部福利模型** 并 log
+`claimBenefit failed, skip loading benefit models`；成功则把 `config.models` 并入模型表（标记 `is_free_benefit`）。
 
-**实测记录（2026-02-18）**：未开通权益账号 claim 返回同 §5 的 `4000 invalid channel, group not found`（POST body `{}` 与空 body 均试过）。
+`RFn.claim` 错误码表：`4000` 参数错误/JSON 解析失败、`4001` token 缺失/无效、`4002` token 过期、
+`4003` 用户禁用、`4004` 权益不存在/已过期/user 不存在、`4006` 每日名额耗尽、`5000` internal。
+**kernel 代码注释写“4006 = daily claim limit exhausted”，实际操作上 kernel 把 4006 当失败处理（不加特殊分支）。**
 
-签到记录建议写 `providers/codearts/claim.log`。
+### 7.2 IDE 扩展：`GET /api/v1/benefit/claim` + `POST enableBenefitClaim` `[打包JS]`
+
+`SLc()` 流程：
+
+1. 并发拉三个开关（PromptCenter 域，`x-auth-token` 而非 AKSK）：
+   | 接口 | 判定 |
+   |-|-|
+   | `GET {policyCenterDomain}/v1/benefit-gateway-config` | `enabled` |
+   | `GET {policyCenterDomain}/v1/education-gateway-config` | `enabled && is_student_certified` |
+   | `GET {policyCenterDomain}/v1/benefit-gateway-config?channel=examination` | `is_examination_domain && examination_model_enable` |
+2. 每个开关为真时按 channel 依次签到：
+   * benefit：`GET {benefitBase}/api/v1/benefit/claim`
+   * education：`GET .../claim?channel=education`
+   * examination：`GET .../claim?channel=examination`
+   （**GET 无 body**，channel 走 query；非 gamma 版直接用 `host/path` 相对地址由统一 http 客户端补域）
+3. 签到成功后置 `enableBenefitClaim`：
+   `POST {benefitBase}/api/v1/benefit/claim`，body 为该 channel 的 `{channel:"education"|"examination"}`，
+   benefit channel 时 **body 为空**。首个签到成功时先 `Pce(!1)`（静默）再读余额 `tB()`。
+4. 最后 `ELc()` 并发再拉三个 `gateway/config` 合并模型表（带 `maas_type`）。
+
+IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
+
+### 7.3 结论与差异
+
+| 项 | kernel | IDE |
+|-|-|-|
+| 方法 | `POST`，body `{}` | `GET`（无 body），channel 走 query |
+| channel | 不带（默认 benefit） | `benefit` / `education` / `examination` 各自独立 |
+| 前置条件 | 仅 `config` 有 models | 三个 `*-gateway-config` 开关 |
+| 后续动作 | 合并福利模型 | `enableBenefitClaim` POST + 余额 |
+
+**实测记录（2026-02-18）**：未开通权益账号 claim 返回 `4000 invalid channel, group not found`
+（POST body `{}` 与空 body 均试过）。**该 4000 在 `RFn.config` 中意为 `group not found`，属“账号未开通该渠道”，
+不应记为签到失败故障。**
+
+本 server 现状：`benefit.rs` 只复刻了 kernel 的 `POST {}`，缺 IDE 的 GET + channel 分支；
+并请求一次 `gateway/config` 判断可用性（见 §5.1）。签到记录写 `providers/codearts/claim.log`。
 
 ---
 
 ## 8. 未验证清单（实现时优先实测）
 
 1. ~~SM4-GCM 密钥协商报文与 AAD 构成~~ → **已从源码解析**：协商 body=`{clientPublicKey,sessionId,timestamp}`，响应 `{serverPublicKey(base64 DER),keyId,expiresIn}`；key=`sha256(shared)[0..16]`；请求 AAD=`method|pathname|ts`（iv/tag/ts 走 header），响应 AAD=`${keyId}|${chunkIndex}`。仅剩「服务端是否真接受明文回退」需实测
-2. `/v1/oauth2/tokens` 响应的完整字段名（`data.credentials.*` 已确认，`refresh_token` 位置未确认）
-3. `/snap-manager/v1/token/renew` 的 method 与响应结构
+2. ~~`/v1/oauth2/tokens` 响应字段名~~ → **已核实**：`{credentials:{access_key_id, secret_access_key, security_token, expiration}, refresh_token}`，`refresh_token` 与 `credentials` 平级。续期时 IDE 带 `code_verifier`、kernel 不带且加 `x-agent-user-account`（§2.1）
+3. ~~`/snap-manager/v1/token/renew` 的 method 与响应结构~~ → **已核实为死端点**：IDE 端点表仅声明 + getter，无调用方；kernel 无此字符串。续期唯一链路是 `refresh_token` 重放（§2.3）
 4. `balance` 返回字段：字段名已从 webview 取证（`used_amount`/`total_quota`，
    education 为 `monthly_tokens_used`/`monthly_token_limit`，见 §5）；数值形态未验证
-5. `claim` 是否需要 `channel` 参数（已核实代码 `_D("claim","POST")` 未带，推测默认 `benefit`）
+5. ~~`claim` 是否需要 `channel` 参数~~ → **已核实**：kernel `POST` 不带 channel（默认 benefit）；IDE 用 `GET ?channel=education|examination` 分支，并对 education/examination 补 `POST enableBenefitClaim`（§7.2）
 6. **上游是否真接受未加密（明文）chat 请求** ← 实现前最高优先级，用一次真实请求定夺，决定是否需复刻 SM4-GCM
 7. `response_format` / `logprobs` / `n>1` 上游支持情况
 8. 排队态是否发 notice 帧给下游
