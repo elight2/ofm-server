@@ -118,3 +118,18 @@
 
 **结论**：不破解加密就没有入口。剩下只有 `create_agent_task`（需重写 stream，SSE 帧集合不同）。
 脚本 `tmp/re-test/probe_nested.py`，数据 `tmp/re-test/results_nested.json`。
+
+## CodeArts benefit 签名 401（APIG.0301）：两个坑叠加（2026-11-16）
+
+**问题**：claim/balance 签名被拒 `APIG.0301 verify ak sk signature fail`，
+而同签名算法的 GET /v1/model/builtin 与 Python 对照脚本均成功。
+
+**排查**：
+1. 怀疑 AKSK 过期 → 刷新后仍 401；`valid_credential` 逻辑无误（返回新凭证）。
+2. Python 对照矩阵定位坑 1：POST 带 `{}` body 时，签空体 hash → 401；
+   签 `sha256("{}")` → 200。**服务端对 POST body payload hash 强校验**，
+   SDK 语义是「有 body 哈希 body」，而内核 `G6.sign` 只传 endpoint/method/headers
+   属 SDK 内部行为差异，不能照抄。已在 sign.rs 加 `body` 字段。
+3. 修完仍 401 → 对照出坑 2：`send()` 里又补了一次 `content-type` 头，
+   与签名头里的重复 → 服务端重算签名不符。**签名的头集合必须等于实际发送
+   的头集合**。去掉补头后 200（业务 4000，预期）。

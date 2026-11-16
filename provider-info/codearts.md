@@ -558,6 +558,16 @@ X-Security-token: <security_token>     # 若有
 ```
 非签名版 `V5(t,e,r,n)`：GET 参数转 query（`encodeURIComponent`），`Content-Type: application/json`，成功判定 `statusCode===200 && data.error_code==="0000"`，返回 `{success, data: data.result}`。
 
+> **签名两大坑（2026-02-18 实测，实现时必看）**：
+> 1. **POST body 的 payload hash 强校验**：发 `{}` body 必须签 `sha256("{}")`，
+>    签空体 hash（`e3b0c4…`）会被拒 `APIG.0301 Incorrect IAM authentication
+>    information: verify ak sk signature fail`。SDK 语义：有 body 哈希 body，
+>    无 body 才用空体 hash（SDK-HMAC-SHA256 后端不支持免签 hash）。
+> 2. **不得重复发送已参与签名的头**：签名头已含 `content-type`，发请求时再
+>    `header(CONTENT_TYPE, …)` 追加一次会变成重复头，服务端重算签名值不符
+>    → 同样 `APIG.0301`。签名的头集合 = 实际发送的头集合，多一个都不行。
+> 另：响应错误字段名是 `error_msg`（无 `error_message`）。
+
 超时 `10s`（`AbortController`）。
 
 **成功判定**：`error_code === "0000"`，取 `result`。
@@ -582,7 +592,11 @@ X-Security-token: <security_token>     # 若有
 
 即：**福利模型和能力模型走不同计费通道**，实现时若不区分会导致双计费（代码注释原文 `potential dual-billing risk`）。
 
-余额返回字段 `[未验证]`（仅见 `Dce()` 取 `balance`）：建议按 `{balance, tokens, expire_at}` 兼容解析。
+余额返回字段：webview 渲染层取证（`SnapChat-*.js` `returnTokensBalance` 处理器）：
+benefit/examination 用 `used_amount` / `total_quota`（模型卡判「额度用尽」同用此二字段）；
+education 由 `monthly_tokens_used` / `monthly_token_limit` 映射为同结构。
+**实际数值形态 `[未验证]`**（未开通权益账号恒 4000 拿不到 result），实现按
+`剩余 = total − used` 解析，字段缺失返回空。
 
 ---
 
@@ -684,7 +698,8 @@ headers: 同 §5（AKSK 签名 + X-Security-token）
 1. ~~SM4-GCM 密钥协商报文与 AAD 构成~~ → **已从源码解析**：协商 body=`{clientPublicKey,sessionId,timestamp}`，响应 `{serverPublicKey(base64 DER),keyId,expiresIn}`；key=`sha256(shared)[0..16]`；请求 AAD=`method|pathname|ts`（iv/tag/ts 走 header），响应 AAD=`${keyId}|${chunkIndex}`。仅剩「服务端是否真接受明文回退」需实测
 2. `/v1/oauth2/tokens` 响应的完整字段名（`data.credentials.*` 已确认，`refresh_token` 位置未确认）
 3. `/snap-manager/v1/token/renew` 的 method 与响应结构
-4. `balance` 返回字段（仅见 `Dce()` 取 `balance`）
+4. `balance` 返回字段：字段名已从 webview 取证（`used_amount`/`total_quota`，
+   education 为 `monthly_tokens_used`/`monthly_token_limit`，见 §5）；数值形态未验证
 5. `claim` 是否需要 `channel` 参数（已核实代码 `_D("claim","POST")` 未带，推测默认 `benefit`）
 6. **上游是否真接受未加密（明文）chat 请求** ← 实现前最高优先级，用一次真实请求定夺，决定是否需复刻 SM4-GCM
 7. `response_format` / `logprobs` / `n>1` 上游支持情况
