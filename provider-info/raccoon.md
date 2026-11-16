@@ -29,8 +29,9 @@
 
 ### 本协议不支持, 但 Chat Completions 有的功能
 * `n` / `logprobs` / `logit_bias` / `seed` / `stop` 之外的采样细节取决于上游网关，客户端不显式传
-* 思考档位**不能**用 `reasoning_effort` 表达：服务端接受 8 个枚举值但不产生效果；
-  唯一有效通道是 `extra_body.thinking.type = enabled|disabled`(两态，见参考插件实测)
+* 思考档位可用标准 `reasoning_effort` 表达：`low`/`medium`/`high` 是**真实枚举**，
+  其中 `low` 能稳定抑制思考（0 思考字符）。非标准值（`xhigh`/`minimal`/`none`）会被
+  当默认处理，思考量与不传相当。实测见 §3.7
 * （**`tool_choice` 不在此列**：四种取值均实测生效，已实现透传，见 §3 `tool_choice` 实测）
 
 ### 本协议与官方客户端的出入
@@ -219,9 +220,42 @@
 结论：
 * 对部分模型(如 `sn-sensenova-*`)有**部分抑制**效果，但不彻底且波动大
 * 对 `sn-glm-5-3` 完全无效（该模型强制思考）
-* 顶层 `thinking`、`thinking_budget`、`reasoning_effort` 实测**也均无效**
-  （`reasoning_effort=none` → 122 帧）
-⇒ 当前实现**不发送**思考开关，跟随上游默认；若下游传 `reasoning_effort` 不保证生效。
+* 顶层 `thinking`、`thinking_budget` 实测无效
+
+> 早前结论「`reasoning_effort` 也无效」是**误判**：当时用 8 个非标准枚举值测试，
+> 均走默认路径，思考量自然与基线相当。换用标准值 `low` 后可稳定抑制，见 §3.7。
+
+#### 3.7 思考强度 `reasoning_effort` 实测 `[curl，2026-11-16]`
+
+**结论：上游是标准 OpenAI 语义，`low` 可稳定关闭思考。**
+
+测试条件：`sn-glm-5-3`，`stream:true`，固定 prompt，统计 `delta.reasoning_content`
+累计字符数（比数帧更可靠，帧数与内容长度不成正比）。
+
+|取值|思考字符|判定|
+|-|-|-|
+|`low`|0, 0, 0, 0, 0|✅ 真实枚举，思考被抑制|
+|`medium`|0, 0, 0|✅ 真实枚举|
+|`high`|79, 70, 61, 102, 225|✅ 真实枚举，但思考量远低于不传|
+|`xhigh`|1009, 638|❌ 非标准值 → 走默认|
+|`minimal`|1060, 877, 3592|❌ 非标准值 → 走默认|
+|`none`|1890|❌ 非标准值 → 走默认|
+|**不传（基线）**|1134, 1606|—|
+
+要点：
+* `low`/`medium`/`high` 是真实枚举，能被下游识别；其余取值被当默认。
+  用非标准值测试是早前误判「无效」的原因。
+* **不构成单调关系**：`high` 反而比不传时思考更少。故无法用 `high` 实现「加深思考」，
+  「深度思考」只能靠**不发送该字段**（走基线）。
+* ⚠︎ **限流**：连续请求会触发 `HTTP 429 user_model_rate_limited`。429 时思考字符也为 0，
+  与 `low` 的真实抑制**无法区分**，测时必须校验 `err` 为空，否则得到假阳性。
+
+服务端实现（`RaccoonProvider::effort`，见 §3 实现要点）：
+
+|配置 `[raccoon] reasoning_effort`|上游请求体|
+|-|-|
+|`low`|`"reasoning_effort": "low"`|
+|`high`|不发送该字段|
 
 #### 其它实测结论
 * 多轮工具结果回传正常（`role:tool` + `tool_call_id` 被上游正确理解）
@@ -235,6 +269,8 @@
 * `tools[].function.parameters` 保持**对象**（与 trae 的字符串化不同）
 * 工具调用键名是标准 `function`（非 trae 的 `function_call`）
 * 无参数工具省略 `parameters` 字段
+* 思考强度取 `RaccoonProvider::effort`（来自 `[raccoon] reasoning_effort`）：
+  `Low` → 发 `reasoning_effort:"low"`；`High` → 不发该字段（实测见 §3.7）
 
 `src/providers/raccoon/stream.rs`：帧解析
 * 空串 `delta.content`/`reasoning_content` 不产事件
