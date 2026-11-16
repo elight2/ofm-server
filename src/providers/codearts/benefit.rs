@@ -142,7 +142,7 @@ impl Envelope {
         let msg = self.error_msg.clone().unwrap_or_default();
         match code {
             "4000" => ProviderError::Protocol(format!(
-                "benefit: 4000 {msg}（账号未开通该权益渠道，签到/余额不可用）"
+                "benefit: 4000 {msg}（福利模型渠道未开通；此接口只管福利模型额度，与每日签到无关）"
             )),
             "4001" => ProviderError::Unauthorized(format!("benefit: 4001 {msg}")),
             "4002" => ProviderError::Unauthorized(format!("benefit: 4002 {msg}（凭证过期）")),
@@ -319,6 +319,8 @@ pub async fn fetch_config(
 ///
 /// 顺序与官方一致：`GET claim?channel=…` 领取 → 成功后 `POST claim {channel}` 启用渠道
 /// → 读余额。`benefit` 渠道的 GET/POST 均不带 channel。
+/// 保留但当前无调用点：真正的签到走 `ops` 模块（§7.2）。
+#[allow(dead_code)]
 pub async fn claim_channel(
     client: &reqwest::Client,
     cred: &Credential,
@@ -352,6 +354,8 @@ pub async fn claim_channel(
 }
 
 /// `POST /api/v1/benefit/claim`（启用渠道）。失败只记日志，不影响「已领取」的结论。
+/// 保留但当前无调用点（`claim_channel` 的内部步骤）。
+#[allow(dead_code)]
 async fn enable(
     client: &reqwest::Client,
     cred: &Credential,
@@ -387,6 +391,9 @@ async fn enable(
 /// * `4006` → 今日已签（`skipped`）
 /// * `4000` → 渠道未开通（`skipped`，不是故障）
 /// * 全部渠道都未开通时才返回错误，便于 `status`/CLI 显示原因
+///
+/// 保留但当前无调用点：签到已切换到 `ops::claim`（见 `provider-info/codearts.md` §7.2）。
+#[allow(dead_code)]
 pub async fn claim(client: &reqwest::Client, cred: &Credential) -> Result<ClaimReport, ProviderError> {
     let mut claimed = Vec::new();
     let mut already = Vec::new();
@@ -432,6 +439,8 @@ pub async fn claim(client: &reqwest::Client, cred: &Credential) -> Result<ClaimR
 /// 汇总文案（中文短句，风格对齐 trae：「签到成功」/「今日已签到」/「签到活动未开启」）。
 ///
 /// 渠道名只在**非默认路径**出现，正常账号看到的仍是三字短句。
+/// 保留但当前无调用点（`claim` 的汇总文案）。
+#[allow(dead_code)]
 fn claim_message(claimed: &[&str], already: &[&str], missing: &[&str]) -> String {
     if !claimed.is_empty() {
         return "签到成功".to_string();

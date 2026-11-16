@@ -13,6 +13,7 @@ pub mod catalog;
 pub mod chat;
 pub mod credential;
 pub mod dpop;
+pub mod ops;
 pub mod pkce;
 pub mod refresh;
 pub mod sign;
@@ -140,9 +141,15 @@ impl Provider for CodeartsProvider {
     }
 
     /// 签到：遍历 `benefit`/`education`/`examination` 三个渠道（IDE `SLc` 流程）。
+    /// 签到：走「限时福利 / 每日签到」的 `/v1/ops/*`（真正的积分签到）。
+    ///
+    /// 注意与历史实现的区别：旧实现走 benefit-service
+    /// （`/api/v1/benefit/claim`，福利模型额度渠道），那条路径对本账号恒返回
+    /// `4000 invalid channel, group not found`，**不是**界面上的「每日签到」。
+    /// 见 `provider-info/codearts.md` §7.2。
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
         let cred = self.valid_credential().await?;
-        benefit::claim(&self.client, &cred).await
+        ops::claim(&self.client, &cred).await
     }
 
     /// 余额：benefit-service 返回剩余额度（总量 − 已用）；未开通权益时报错。

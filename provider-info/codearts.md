@@ -898,7 +898,7 @@ token 限额告警阈值：90% / 100%。
 > | 体系 | 域名 / 端点 | UI 入口 | 能否用 AKSK 调通 |
 > |-|-|-|-|
 > | benefit-service（福利模型额度） | `opengw.developer.huaweicloud.com/api/v1/{benefit/claim,gateway/config,user/tokens/balance}` | 无独立页面；加载「福利模型」时自动前置调用 | 是（AKSK 签名，业务码 `4000`） |
-> | **限时福利 / 每日签到领积分** | `snap-access.cn-north-4.myhuaweicloud.com/v1/ops/*` | 综合栏「限时福利」面板（`workbench.action.showActivityWelfare`，图标 `gift`）、福利弹窗 | **否**：网关强制 `x-auth-token`，AKSK 不被接受 |
+> | **限时福利 / 每日签到领积分** | `snap-access.cn-north-4.myhuaweicloud.com/v1/ops/*` | 综合栏「限时福利」面板（`workbench.action.showActivityWelfare`，图标 `gift`）、福利弹窗 | **是**：AKSK 签名即可（须带 `Agent-Type`、query 须签名） |
 >
 > 本节 **7.1/7.3** 描述 benefit-service；**7.2** 描述真正的「每日签到」。
 
@@ -974,42 +974,81 @@ POST /v1/ops/events/trigger                 # 事件触发（另有 events/conve
 
 #### 7.2.3 认证头 `[打包JS + 实测]`
 
-**两套头形态不同，但都强制 `x-auth-token`**：
+**只需 AKSK SDK-HMAC-SHA256 签名，不需要 `x-auth-token`**（此前的结论是错的，见下方勘误）。
 
 ```
-# workbench（华为云 SDK 签名）
+# workbench（华为云 SDK 签名，getHeaders + getSignedHeaders）
 Agent-Type: PromptCenter
 X-Language: zh-cn | en-us
-x-auth-token: <IAM 用户 token>   ← getHeaders() 之外的额外头，网关强校验
-(HuaweiRequestService.getHeaders 补 SDK-HMAC-SHA256 签名头)
+(credential 来自 huaweicloud.authentication 的 secret
+ HuaweiCloudSession = {accessKey, secretKey, securitytoken}
+ → sign() 补 X-Security-Token / X-Sdk-Date / Authorization)
 
-# 扩展（Kx()，无 AKSK 签名）
+# 扩展（Kx()，同样无 x-auth-token）
 x-snap-traceid: <uuid 去 ->
 Content-Type: application/json
-x-auth-token: await Tr()
+x-auth-token: await Tr()      ← 商用版恒为 ""，发出即空串
 Agent-Type: PromptCenter
 X-Language: zh-cn | en-us
 ```
 
-`Tr()` 的三分支（`extension.js` @4474864）：
-1. `productConfigs.isDefaultToken` → `productConfigs.developersToken`（写死 token，非商用版）
-2. `productConfigs.isInnerVersion` → `userInfo.cloudDragonToken`（华为内网）
-3. **商用版（本客户端）** → 返回 `""`，注释 `Hc version, token is transferred by the toolkit.`
+`Tr()` 三分支（`extension.js` @4474864）：`isDefaultToken`→`developersToken`；
+`isInnerVersion`→`userInfo.cloudDragonToken`；商用版→ `""`。
+空串意味着「这次请求不带/带空 `x-auth-token`」，而非「必须由 toolkit 注入」。
 
-即商用版的 `x-auth-token` 由 **DevKit toolkit** 从 IDE 外部注入，扩展自身拿不到。
+`product.json` 实测字段（`extensions/huaweicloud.codearts-snap/product.json`）：
+`isDefaultToken=false`、`isInnerVersion=false`、`isCommercialVersion=true`、`scenario=null`。
+`out/main.js` 的 `getW3AuthHeaders()` 仅在 `scenario === Scenario.HW`（华为内网）时
+才补 `x-auth-token = getPassword('huaweicloud.huawei-authentication','CloudDragonToken')`，
+商用版该分支直接跳过。
 
-#### 7.2.4 实测（2026-11-16，`testdata` 凭证，AKSK 已正确签名）
+**唯一硬性业务头是 `Agent-Type`**：缺失返回 `400 {"error_code":"TM.00001001","error_msg":"请求头Agent-Type为空"}`。
+
+**签名差异（与 benefit 不同）**：query **必须**参与签名。
+`channel=IDE` 需编码进 canonical query；不签会得
+`401 {"error_msg":"Incorrect IAM authentication information: verify ak sk signature fail","error_code":"APIG.0301"}`。
+
+#### 7.2.4 实测（2026-11-16，`testdata` 凭证）
 
 | 请求 | 结果 |
 |-|-|
-| `GET /v1/ops/delivery?channel=IDE`（只带 AKSK 签名，含 `X-Security-token`） | `401 {"error_msg":"Incorrect IAM authentication information: x-auth-token not found","error_code":"APIG.0301"}` |
-| 同上 + `x-auth-token: <本账号 security_token>` | `401 … decrypt token fail` |
-| 同上 + `Agent-Type` / `X-Language` | 仍 `x-auth-token not found` |
+| AKSK 签名 + `Agent-Type`/`X-Language` + **query 参与签名** | **`200 {"code":0,"message":"ok",...}`** |
+| AKSK 签名 + `Agent-Type`，但 query **不**参与签名 | `401 APIG.0301 verify ak sk signature fail` |
+| AKSK 签名，缺 `Agent-Type` | `400 TM.00001001 请求头Agent-Type为空` |
+| **不签名**（仅 `x-auth-token: <security_token>`） | `401 APIG.0301 x-auth-token not found` |
 
-结论：该网关**不接受 AKSK 替代** `x-auth-token`；且 `security_token`（STS 临时凭据的一部分）
-不是合法的 `x-auth-token`（网关要 IAM 用户级 token，报 `decrypt token fail`）。
-**ofm-server 现有登录链路（`/v1/oauth2/tokens` 换 STS 凭据）拿不到该 token**，
-所以「每日签到领 100 积分」**无法在 server 侧复刻**，除非另行实现华为云 IAM 用户登录。
+> ⚠️ **勘误**：早前记录「网关强制 `x-auth-token`、AKSK 不被接受、签到无法复刻」是**误判**。
+> 当时的两次失败分别是「带 `Agent-Type` 但不签名」和「签名但漏 `Agent-Type`」，
+> 被误读为该头不可替代。真实情况：AKSK 签名完全够用，`x-auth-token` 商用版本就是空串。
+
+实领全流程已验证（本账号 2026-11-16 13:31 UTC）：
+
+```
+GET  /v1/ops/delivery?channel=IDE
+ → items[0] = {campaignId:34, title:"每日签到领100积分", type:"USER_LOGIN",
+               benefitAmount:100, benefitUnit:"CREDIT", status:"ELIGIBLE",
+               claimable:true, pendingCount:1, pendingTotalAmount:100.0,
+               extra:{triggerEvent:"user.login", triggerMode:"MANUAL_CLAIM",
+                      startTime:"2026-10-26T16:00:00Z", endTime:"2026-12-31T15:59:59Z"}}
+POST /v1/ops/claim {"campaignId":34,"channel":"IDE","idempotentKey":"claim_34_all_<ms>"}
+ → {"code":0,"data":{"status":"CLAIMED","totalAmount":100.0,"remainingAmount":100.0,
+                     "pointBucket":"GENERAL","bucketLabel":"通用积分",
+                     "claimedAt":"2026-11-16T13:31:34.866705458Z",
+                     "expireAt":"2026-11-17T13:31:34.866705458Z"}}
+POST /v1/ops/confirm {"campaignId":34}
+ → {"code":0,"data":{"status":"CONFIRMED","totalAmount":1800.0,"remainingAmount":1763.48,
+                     "confirmedAt":"..."}}
+GET  /v1/ops/delivery?channel=IDE
+ → items[0] = {status:"CONFIRMED", claimable:false, pendingCount:0}
+```
+
+即：领取后 `totalAmount` 记的是**账户积分总额**（本次 100 已并入），
+`remainingAmount` 是剩余可用；积分**次日 13:31 过期**（`expireAt` = claimedAt + 24h）。
+`status` 走完 `ELIGIBLE → CLAIMED → CONFIRMED` 一轮；次日 `claimable` 重新变 `true`。
+
+同一 `delivery` 里还有 `campaignId:4`「新用户注册送 4000 积分」（`status:CLAIMED`、
+`triggerMode:AUTO_GRANT`，已自动发放）与 `campaignId:2`「学生认证领积分」（`status:null`，
+未认证 → 不显示）。可见「100 积分」是**服务端下发的活动配置**，不是客户端硬编码。
 
 #### 7.2.5 业务语义 `[打包JS]`
 
@@ -1083,11 +1122,10 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 `4000` 不是签到逻辑错误（§6.4 中 `RFn.claim` 把 4000 视为「参数错误」，但服务端实际语义是 `group not found`）。
 
 > ⚠️ **重要更正**：本节实测的 benefit-service **不是** UI 上「限时福利 → 每日签到领 100 积分」的后端。
-> 真正的签到走 `snap-access.cn-north-4/v1/ops/*`（见 §7.2），本账号因缺 `x-auth-token`（IAM 用户 token）
-> 无法调用。之前把「今天能否领到 100 取决于账号是否开通权益」的结论归到 benefit-service 上是**错的**；
-> benefit-service 只决定「福利模型」（`maas_type: benefit`）的额度能否加载。
-> 因此 `ofm-server` 的 `claim` 子命令**无法实现真正的每日签到**，它是 benefit-service 的
-> 「福利模型额度预取」，对外语义应理解为「福利渠道就绪检查」而非「签到领积分」。
+> 真正的签到走 `snap-access.cn-north-4/v1/ops/*`（见 §7.2），本账号**可以**调通并已实领成功。
+> benefit-service 只决定「福利模型」（`maas_type: benefit`）的额度能否加载，与签到无关。
+> 因此 `ofm-server` 的 `claim` 子命令已改为走 §7.2 的 `/v1/ops/*`，真正的签到功能可用；
+> benefit-service 的 claim 流程仍保留在 `benefit.rs` 中但已无调用点（仅 `fetch_balance` 用于余额展示）。
 
 补充实测（签名细节）：
 * `X-Security-token` **必须**进签名头集合，否则 401（AK 查不到）。
@@ -1101,11 +1139,24 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 * 三渠道结果映射：`0000` 领取成功、`4006` 今日已签、`4000` 渠道未开通（均不计为故障）；
   仅当 HTTP 非 2xx / 其它业务码才报错。
 * `ClaimReport.message` 用短句：`签到成功` / `今日已签到` / `权益渠道未开通（签到不可用）`。
+  （以上是 benefit-service 版文案；**已停用**，`claim` 子命令现在走 §7.2 的 `ops::claim`。）
 * `claim` 子命令新增可选 `provider` 参数（`ofm-server claim codearts` 只签一家）。
 * 单测覆盖：`GET claim → POST {} → balance` 调用顺序、`4006` 不触发 POST、
   全渠道 `4000` 归为跳过、HTTP 401 必须报错（本地 mock 校验 method/顺序/签名头/body）。
 * `gateway/config` 已实现（`fetch_config`），但 server 暂不消费其模型表：福利模型走 chat 需
   `maas_type: benefit`（§5.2），而本账号无福利模型可测。
+
+**真正的签到实现**（`src/providers/codearts/ops.rs`）：
+
+* `fetch_delivery` / `claim_campaign` / `confirm_campaign` / `claim`。
+* 签名沿用 `sign` 模块，但 **query 传 `sign::Request.query`**（必须参与签名，与 benefit 相反）。
+* 固定头：`agent-type: PromptCenter`、`x-language: zh-cn`、`x-snap-traceid`、`X-Security-Token`。
+* `claim` 流程：`delivery` → 筛 `claimable` → `claim`（带 `idempotentKey`）→ `confirm`。
+  无可领时 `skip_message` 会区分「今日已签到（`USER_LOGIN` 已 `CLAIMED`/`CONFIRMED`）」与
+  「已到账待用 N 积分」。
+* 单测覆盖：壳解析、`delivery` 字段（camelCase）、`Agent-Type` 必在、query 变化必须改变签名值、
+  跳过文案两分支。
+* 实测：`ofm-server claim codearts` → `签到跳过: 今日已签到（每日签到领100积分）`（2026-11-16）。
 
 ## 8. 未验证清单（实现时优先实测）
 
@@ -1137,8 +1188,9 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
     `refresh_token` 与签发方 `client_id` 强绑定、一次性使用。
 
 > **加密对本项目的影响**：客户端对 `/api/v2/chat/completions` 强制加密，但有明文回退分支（key 协商失败/网络错误/非 2xx 时 `falling back to plaintext`）。若服务端接受明文 → 无需碰 SM4-GCM，直接明文转发；若强制加密 → 须用 Rust 复刻整条链路（ECDH+SM4-GCM，格式已全暴露）。**实现第一步先用明文 curl 探测，再定夺**。
-16. **真正的「每日签到领积分」**（`/v1/ops/*`，§7.2）**无法复刻**：网关强制 `x-auth-token`（IAM 用户 token），
-    商用版由 DevKit toolkit 从外部注入，`Tr()` 自身返回 `""`；AKSK 签名与 STS `security_token` 均被拒
-    （`x-auth-token not found` / `decrypt token fail`，已实测）。除非另实现华为云 IAM 用户登录，否则放弃。
-17. 「签到领 100 积分」的数值与每日判定均在**服务端 `displayConfig`/`campaignId`** 中，客户端无硬编码，
-    需一次真实登录后的 delivery 响应才能取证（依赖第 16 项）。
+16. ~~真正的「每日签到领积分」无法复刻~~ → **已证伪并已实现**（§7.2.4）：AKSK 签名即可调通
+    `/v1/ops/*`，`x-auth-token` 商用版本就是空串。关键条件是「带 `Agent-Type`」+「query 参与签名」。
+    `src/providers/codearts/ops.rs` 已完成 delivery / claim / confirm，`claim` 子命令已切到该实现。
+17. ~~「100 积分」需真实 delivery 响应取证~~ → **已取证**：`campaignId:34`「每日签到领100积分」，
+    `benefitAmount:100`、`benefitUnit:"CREDIT"`、`triggerMode:"MANUAL_CLAIM"`、
+    有效期 `2026-10-26T16:00:00Z ~ 2026-12-31T15:59:59Z`；领取后积分 24h 过期。
