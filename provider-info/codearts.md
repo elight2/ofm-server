@@ -501,7 +501,7 @@ key    = sha256(shared) 前 16 字节          （FLn(n)，IV 长度常量 FN=12
 | `messages` | 直通；`tool_calls` / `tool` role 直通 |
 | `tools[].function.parameters` | 直通（JSON Schema 对象） |
 | `max_tokens` | 仅 `cU(model)`：`o1`/`o3`/`o4`/`gpt-5`/`gpt-6` 系列 → 重命名为 `max_completion_tokens`（`BP()`），日志 `[openai-reasoning-model] adaptMaxTokensParam applied` |
-| `reasoning_effort` | 仅 `fU(model)`：`gpt-5` 全系、`gpt-6` 除 `gpt-6-astra`/`gpt-6.1-sol`；且 `tools` 非空 → **强制 `"none"`**（`AP()`） |
+| `reasoning_effort` | 见 §3.3.1。**客户端不校验、不改写**非 OpenAI 模型的值，原样透传 |
 | `response_format` | 仅当 AI SDK `responseFormat.type === "json"`：有 schema 且 `supportsStructuredOutputs` → `json_schema`；否则 `json_object`；`text` 不发该字段 |
 | `strictJsonSchema` | 默认 `true`，用作 `json_schema.strict`（不是顶层字段） |
 | `user` / `stop` / `seed` / `verbosity` | `user`、`stop`、`seed` 透传；`verbosity` 取 `providerOptions.textVerbosity` |
@@ -509,6 +509,34 @@ key    = sha256(shared) 前 16 字节          （FLn(n)，IV 长度常量 FN=12
 | `stream_options.include_usage` | 由 inferhub provider 配置 `includeUsage` 决定，**不是**下游 CC 字段透传 |
 
 `openai-compatible` 模式有弃用警告。`transformRequestBody` 两个调用点分别是 `{...u, stream:false}` 与 `{...u, stream:true}`。
+
+#### 3.3.1 `reasoning_effort` 的实际处理 `[打包JS]`
+
+模型名判定（`D6` = `openai-reasoning-model` 服务，offset 99395952 区）：
+
+```js
+function l1(n,u){ return new RegExp(`^${u}([.\\-]|$)`).test(n) }
+const $Vn = ["gpt-6-astra","gpt-6.1-sol"];
+function fU(n){                       // 是否走 OpenAI 推理改写
+  let u=n.toLowerCase();
+  if(l1(u,"gpt-5")) return true;
+  if(l1(u,"gpt-6")) return !$Vn.some(t=>l1(u,t));
+  return false;
+}
+function AP(b){                       // 唯一改写：带 tools 的 OpenAI 推理模型强制关思考
+  if(typeof b.model!=="string"||!fU(b.model)) return b;   // ← 非 gpt-5/gpt-6 直接返回
+  if(!Array.isArray(b.tools)||b.tools.length===0) return b;
+  if(b.reasoning_effort==="none") return b;
+  b.reasoning_effort = "none";        // 日志 adaptReasoningEffort applied
+  return b;
+}
+```
+
+结论：
+
+* **只有** `gpt-5` 全系、`gpt-6`（除 `gpt-6-astra`/`gpt-6.1-sol`）在 `tools` 非空时被强改为 `"none"`。
+* `glm` / `sn-*` / 其它模型**不匹配 `fU`**，`reasoning_effort` 原样透传给上游，客户端不做合法性校验。
+* 改写在 request body 层（`AP(body)`），只影响该次请求；`stream`/非流式两条路径共用。
 
 ### 3.4 响应映射（上游 SSE → CC chunk）`[打包JS]`
 
@@ -709,6 +737,56 @@ body {"model_names":[<前 50 个>]}                  （VFn=50）
 → data.variants
 ```
 `XCENTER_BASE_URLS` 为空时日志 `XCENTER_BASE_URLS is empty` 直接返回。用于给每个模型补 `variants`（思考强度档位）。
+
+#### 4.2.1 思考档位完整链路 `[打包JS]`
+
+CodeArts 的思考档位**不来自本地规则**，全部由服务端下发。证据：本地档位生成函数
+`kS.variants`（`q(L)`，offset 111131407 区）对 GLM 等模型明确返回空：
+
+```js
+function q(L){
+  if(!L.capabilities.reasoning) return {};
+  let F = L.id.toLowerCase(), ...;
+  if(F.includes("deepseek")||F.includes("minimax")||F.includes("glm")||
+     F.includes("mistral")||F.includes("kimi")||F.includes("k2p5")) return {};   // ← glm 排除
+  ...
+}
+```
+
+于是 `glm-*` 的档位只能由 `thinking-variants` 提供，链路如下：
+
+1. **模型能力**：`GET …/gpts/models` → `model_parameters.thinking_type != null` → `capabilities.reasoning`；
+   同时 `variants_key = model_type === "third" ? model_parameters.third_party_model : model_id`。
+   注意 `variants_key` **不必等于模型 id**，第三方模型用 `third_party_model`。
+2. **拉档位**（`CJ()` = `fetchThinkingVariants`，offset 99272736 区）：
+   ```js
+   POST {XCENTER_BASE}/v1/model/thinking-variants
+   { "model_names": [variants_key, ...] }        // 只发前 50 个（VFn=50）
+   → data.variants[variants_key].strengths        // string[]，缺省视为 []
+   ```
+   重试：`retries:2`，遇网络错/`ECONNABORTED`/429/≥500 重试；多 base URL 轮询。
+3. **档位 → AI SDK variants**（`QJ()`）：
+   ```js
+   function QJ(n){ let u={}; for(let t of n) u[t]={reasoningEffort:t}; return u }
+   ```
+   即 `strengths` 里的字符串**本身就是** `reasoning_effort` 的取值，一字不改。
+4. **挂到模型**：
+   ```js
+   variants: (()=>{ let $=y?.variants_key, E=$?f[$]:void 0;
+                    return E?.length>0 ? QJ(E) : void 0 })()
+   ```
+   无 `strengths` 的模型 `variants` 为 `undefined`（UI 不显示滑杆）。
+
+**UI 档位文案**（通用 i18n 表，非 GLM 专有）：
+`thinkingLevelMinimal/Low/Medium/High/Xhigh/Max/None/Auto` → 最小/低/中/高/超高/最大/默认/自动。
+滑杆只在 `variants` 存在时出现，故只有服务端下发了 `strengths` 的模型（如两个 GLM 5.2）可控。
+
+**发往上游**：选中档位 → `providerOptions.reasoningEffort` → request body `reasoning_effort`（原值）。
+与 §3.3.1 一致：GLM 不被 `fU` 匹配，故即使带 `tools` 也不会被改成 `none`。
+
+**推论（未实测）**：`ofm-server` 若要支持 CodeArts 思考档位，正确做法是自行调用
+`POST /v1/model/thinking-variants` 取 `strengths`，再把用户档位作为 `reasoning_effort` 透传；
+不应硬编码 `low`/`high`，因为档位集合是逐模型、服务端下发的。
 
 ### 4.3 IDE 扩展：PromptCenter `[打包JS]`
 
