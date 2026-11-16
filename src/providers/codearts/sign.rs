@@ -12,6 +12,9 @@
 //! body → payload hash 恒为空体 SHA256；签名用的头为
 //! `content-type` / `x-snap-traceid` / `X-Security-token`（可选），
 //! 签名器补 `host` 与 `X-Sdk-Date`。
+//!
+//! 只读目录类接口（`/v1/model/builtin` 等）走官方 `signSimple`：payload 固定
+//! `UNSIGNED-PAYLOAD`，`X-Security-Token` 参与签名；用 [`sign_unsigned`]。
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
@@ -43,6 +46,28 @@ pub struct Request<'a> {
 ///
 /// 与官方一致：返回值即请求头全集，调用方原样作为 fetch headers。
 pub fn sign(req: &Request<'_>, ak: &str, sk: &str) -> Result<Vec<(String, String)>, String> {
+    sign_inner(req, ak, sk, false)
+}
+
+/// `signSimple` 变体：payload hash 固定 `UNSIGNED-PAYLOAD`，用于
+/// `/v1/model/builtin` 等只读接口（官方 `signSimple`，见 `provider-info/codearts.md` §4.5）。
+///
+/// 调用方需把实际参与签名的业务头放进 `req.headers`，通常包括
+/// `content-type`、`x-security-token`；本函数会自动补 `x-sdk-content-sha256`。
+pub fn sign_unsigned(
+    req: &Request<'_>,
+    ak: &str,
+    sk: &str,
+) -> Result<Vec<(String, String)>, String> {
+    sign_inner(req, ak, sk, true)
+}
+
+fn sign_inner(
+    req: &Request<'_>,
+    ak: &str,
+    sk: &str,
+    unsigned_payload: bool,
+) -> Result<Vec<(String, String)>, String> {
     let parsed = url::Url::parse(req.url).map_err(|e| format!("解析 URL 失败: {e}"))?;
     let host = parsed
         .host_str()
@@ -84,6 +109,12 @@ pub fn sign(req: &Request<'_>, ak: &str, sk: &str) -> Result<Vec<(String, String
         .iter()
         .map(|(k, v)| (k.to_lowercase(), v.clone()))
         .collect();
+    if unsigned_payload && !signed.iter().any(|(k, _)| k == "x-sdk-content-sha256") {
+        signed.push((
+            "x-sdk-content-sha256".to_string(),
+            "UNSIGNED-PAYLOAD".to_string(),
+        ));
+    }
     signed.push(("host".to_string(), host));
     if !provided_date {
         signed.push(("x-sdk-date".to_string(), sdk_date.clone()));
@@ -113,10 +144,15 @@ pub fn sign(req: &Request<'_>, ak: &str, sk: &str) -> Result<Vec<(String, String
 
     let canonical_uri = canonical_uri(&pathname);
     let canonical_query = canonical_query(req.query);
-    // payload hash：有 body 哈希 body，无 body 用空体 SHA256（见 Request::body 注释）。
-    let payload_hash = match req.body {
-        Some(b) => hex_lower(&Sha256::digest(b.as_bytes())),
-        None => EMPTY_BODY_SHA256.to_string(),
+    // payload hash：`signSimple` 固定 UNSIGNED-PAYLOAD；benefit 则有 body 哈希 body，
+    // 无 body 用空体 SHA256（见 Request::body 注释）。
+    let payload_hash = if unsigned_payload {
+        "UNSIGNED-PAYLOAD".to_string()
+    } else {
+        match req.body {
+            Some(b) => hex_lower(&Sha256::digest(b.as_bytes())),
+            None => EMPTY_BODY_SHA256.to_string(),
+        }
     };
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
@@ -125,8 +161,8 @@ pub fn sign(req: &Request<'_>, ak: &str, sk: &str) -> Result<Vec<(String, String
 
     let hashed = hex_lower(&Sha256::digest(canonical_request.as_bytes()));
     let string_to_sign = format!("SDK-HMAC-SHA256\n{sdk_date}\n{hashed}");
-    let mut mac = HmacSha256::new_from_slice(sk.as_bytes())
-        .map_err(|e| format!("HMAC 密钥无效: {e}"))?;
+    let mut mac =
+        HmacSha256::new_from_slice(sk.as_bytes()).map_err(|e| format!("HMAC 密钥无效: {e}"))?;
     mac.update(string_to_sign.as_bytes());
     let signature = hex_lower(&mac.finalize().into_bytes());
 
@@ -208,10 +244,7 @@ fn sdk_date_now() -> String {
 /// 仅在可解析为日期时规范化为 `YYYYMMDDTHHMMSSZ`，否则原样使用。
 /// 我们只生成本地头，不依赖此分支，但保持语义完整。
 fn normalize_sdk_date(v: &str) -> String {
-    if let Ok(dt) = time::OffsetDateTime::parse(
-        v,
-        &time::format_description::well_known::Rfc3339,
-    ) {
+    if let Ok(dt) = time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339) {
         return format!(
             "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
             dt.year(),
@@ -273,6 +306,54 @@ mod tests {
     }
 
     #[test]
+    fn sign_unsigned_uses_unsigned_payload_and_security_token() {
+        let headers = vec![
+            ("content-type", "application/json".to_string()),
+            ("agent-type", "PromptCenter".to_string()),
+            ("x-language", "zh-cn".to_string()),
+            ("x-security-token", "test-st".to_string()),
+            ("x-sdk-date", "20260218T000000Z".to_string()),
+        ];
+        let req = Request {
+            method: "GET",
+            url: "https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/builtin",
+            headers,
+            query: None,
+            body: None,
+        };
+        let out = sign_unsigned(&req, "test-ak", "test-sk").expect("签名失败");
+        assert!(
+            out.iter()
+                .any(|(k, v)| k == "x-sdk-content-sha256" && v == "UNSIGNED-PAYLOAD")
+        );
+        assert!(out.iter().any(|(k, _)| k == "x-security-token"));
+        let auth = out
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v)
+            .expect("缺 Authorization");
+        // 安全 token 与 UNSIGNED-PAYLOAD 都必须出现在 SignedHeaders 里。
+        assert!(auth.contains("x-security-token"));
+        assert!(auth.contains("x-sdk-content-sha256"));
+
+        // 与 benefit 的「空体 SHA256」模式必须产生不同签名。
+        let empty = Request {
+            method: "GET",
+            url: "https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/builtin",
+            headers: req.headers.clone(),
+            query: None,
+            body: None,
+        };
+        let auth_empty = sign(&empty, "test-ak", "test-sk")
+            .expect("签名失败")
+            .into_iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v)
+            .expect("缺 Authorization");
+        assert_ne!(auth.as_str(), auth_empty.as_str());
+    }
+
+    #[test]
     fn post_body_hash_differs_from_empty() {
         // 实测：POST body={} 时 payload hash 必须是 sha256("{}")，
         // 签空体 hash 会被服务端拒（APIG.0301）。
@@ -281,8 +362,20 @@ mod tests {
             ("content-type", "application/json".to_string()),
             ("x-sdk-date", "20260218T000000Z".to_string()),
         ];
-        let empty = Request { method: "POST", url, headers: headers.clone(), query: None, body: None };
-        let with_body = Request { method: "POST", url, headers, query: None, body: Some("{}") };
+        let empty = Request {
+            method: "POST",
+            url,
+            headers: headers.clone(),
+            query: None,
+            body: None,
+        };
+        let with_body = Request {
+            method: "POST",
+            url,
+            headers,
+            query: None,
+            body: Some("{}"),
+        };
         let auth = |r: &Request| {
             sign(r, "test-ak", "test-sk")
                 .expect("签名失败")

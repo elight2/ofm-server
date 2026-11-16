@@ -453,7 +453,12 @@ usage（`wl(n)`）：
 > Agent-Type: PromptCenter
 > X-Language: zh-cn
 > X-Security-Token: <security_token>   # 参与 AKSK 签名（SDK-HMAC-SHA256，同 §4.5 算法族）
+> X-Sdk-Content-Sha256: UNSIGNED-PAYLOAD   # payload hash 固定值，不是空体 SHA256
 > ```
+>
+> 签名器还会补 `Host`、`X-Sdk-Date`、`Authorization`；`SignedHeaders` 必须包含
+> `content-type`、`agent-type`、`x-language`、`x-security-token`、`x-sdk-content-sha256`、
+> `host`、`x-sdk-date`。
 >
 > 响应 `{count, builtinModels:[{model_id, model_name, enable, credit[{ratio, ratio_display}],
 > supports_images, max_tokens, context_window, channel_source:"codearts", provider:"internal", …}]}`。

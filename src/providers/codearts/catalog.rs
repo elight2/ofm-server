@@ -2,8 +2,9 @@
 //!
 //! 内核 `provider-models-plugin` 的 `$D`（`agentkernelServer-linux-x64`
 //! @101236408）：`GET {agentCenterApiUrl}/v1/model/builtin`（snap-access
-//! 网关），AKSK 签名头（`sign` 模块）+ `Agent-Type: PromptCenter` +
-//! `X-Language`。响应 `{count, builtinModels: [...]}`。
+//! 网关），AKSK `signSimple` 签名（payload 固定 `UNSIGNED-PAYLOAD`，
+//! `X-Security-Token` 参与签名）+ `Agent-Type: PromptCenter` + `X-Language`。
+//! 响应 `{count, builtinModels: [...]}`。
 //!
 //! 注：extension 侧的 benefit-service（`opengw.../api/v1/gateway/config`）
 //! 需账号开通权益（PromptCenter `benefit-gateway-config.enabled`），未开通
@@ -71,7 +72,11 @@ impl BuiltinModel {
     /// 计费倍率：取首个费率时段的 `ratio` 数字。官方支持按时段切换倍率
     /// （`time_slots`），server 侧仅取一个静态值。
     fn rate(&self) -> Option<f64> {
-        self.credit.first().and_then(|c| c.ratio.as_deref())?.parse().ok()
+        self.credit
+            .first()
+            .and_then(|c| c.ratio.as_deref())?
+            .parse()
+            .ok()
     }
 }
 
@@ -81,10 +86,13 @@ pub async fn fetch_models(
     cred: &Credential,
 ) -> Result<Vec<ModelInfo>, ProviderError> {
     let url = format!("{SNAP_GATEWAY}{BUILTIN_PATH}");
+    // `X-Security-Token` 必须参与签名（内核 `vD`/`signSimple`：accessToken →
+    // `X-Security-Token`）；payload hash 是 `UNSIGNED-PAYLOAD`，不是空体 SHA256。
     let headers = vec![
         ("content-type", "application/json".to_string()),
         ("agent-type", "PromptCenter".to_string()),
         ("x-language", "zh-cn".to_string()),
+        ("x-security-token", cred.security_token.clone()),
     ];
     let req = sign::Request {
         method: "GET",
@@ -93,16 +101,14 @@ pub async fn fetch_models(
         query: None,
         body: None,
     };
-    let signed = sign::sign(&req, &cred.access_key_id, &cred.secret_access_key)
+    let signed = sign::sign_unsigned(&req, &cred.access_key_id, &cred.secret_access_key)
         .map_err(|e| ProviderError::Other(format!("AKSK 签名失败: {e}")))?;
 
-    // securityToken 作为普通头参与签名（内核 `vD`：accessToken → X-Security-token）。
-    let mut http = client.get(&url).timeout(std::time::Duration::from_secs(TIMEOUT_SECS));
+    let mut http = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS));
     for (k, v) in &signed {
         http = http.header(k.as_str(), v.as_str());
-    }
-    if !cred.security_token.is_empty() {
-        http = http.header("X-Security-Token", &cred.security_token);
     }
 
     let resp = http.send().await?;
@@ -116,7 +122,10 @@ pub async fn fetch_models(
     }
 
     let catalog: BuiltinCatalog = serde_json::from_str(&body).map_err(|e| {
-        ProviderError::Protocol(format!("builtin models: 解析失败: {e}: {}", truncate(&body)))
+        ProviderError::Protocol(format!(
+            "builtin models: 解析失败: {e}: {}",
+            truncate(&body)
+        ))
     })?;
     let models = to_models(&catalog);
     if models.is_empty() {
@@ -155,10 +164,13 @@ pub fn to_models(catalog: &BuiltinCatalog) -> Vec<ModelInfo> {
 
 fn truncate(s: &str) -> String {
     if s.len() <= 300 {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..300])
+        return s.to_string();
     }
+    let mut end = 300;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]
