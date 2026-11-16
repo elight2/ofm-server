@@ -18,6 +18,7 @@ pub mod pkce;
 pub mod refresh;
 pub mod sign;
 pub mod stream;
+pub mod variants;
 
 use std::path::PathBuf;
 
@@ -37,17 +38,20 @@ pub struct CodeartsProvider {
     chat_client: reqwest::Client,
     /// AKSK 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
-    /// 思考强度。⚠︎ 暂未实测上游行为，先保留配置值。
-    #[allow(dead_code)]
+    /// 思考强度。
     effort: CodeartsReasoningEffort,
+    /// 上游思考档位缓存（逐模型，TTL [`variants::REFRESH_INTERVAL`]）。
+    variants: std::sync::Arc<variants::VariantsCache>,
 }
 
 impl CodeartsProvider {
     pub fn new(root: PathBuf, effort: CodeartsReasoningEffort) -> Self {
+        let chat_client = api::chat_client().expect("构建对话 HTTP 客户端失败");
         Self {
             root,
             client: api::token_client().expect("构建 HTTP 客户端失败"),
-            chat_client: api::chat_client().expect("构建对话 HTTP 客户端失败"),
+            variants: variants::VariantsCache::new(chat_client.clone()),
+            chat_client,
             refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             effort,
         }
@@ -142,7 +146,14 @@ impl Provider for CodeartsProvider {
 
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let cred = self.valid_credential().await?;
-        chat::stream(&self.chat_client, &cred, &req).await
+        // 思考档位需按模型查上游；取不到（或不支持）则不发送该字段。
+        let effort = self
+            .variants
+            .get(&cred, std::slice::from_ref(&req.model))
+            .await
+            .ok()
+            .and_then(|v| v.pick(&req.model, self.effort));
+        chat::stream(&self.chat_client, &cred, &req, effort.as_deref()).await
     }
 
     /// 签到：遍历 `benefit`/`education`/`examination` 三个渠道（IDE `SLc` 流程）。

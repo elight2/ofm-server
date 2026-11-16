@@ -738,6 +738,33 @@ body {"model_names":[<前 50 个>]}                  （VFn=50）
 ```
 `XCENTER_BASE_URLS` 为空时日志 `XCENTER_BASE_URLS is empty` 直接返回。用于给每个模型补 `variants`（思考强度档位）。
 
+**实测（2026-11-16，商业版账号）**：该接口在 `snap-access` 网关**可用**，与文档此前记录的
+「商业版禁用」结论相反（禁用的是 agent-center 的 `useragents`/`detail`，不含本接口）。
+
+```
+POST https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/thinking-variants
+Agent-Type: PromptCenter          ← 必须；AgentCenter 会被拒（400 TM.00001001）
+X-Security-Token: <security_token>
+body {"model_names":["GLM-5.2",...]}     ← 单次上限 50
+→ {"variants":{"GLM-5.2":{"strengths":["high","max"],"default_strength":"high"},
+                "kimi-k3":{"strengths":[],"default_strength":""}}}
+```
+
+* `sign` 与 `sign_unsigned`（UNSIGNED-PAYLOAD）**均可用**，返回一致。
+* `variants` 的键**就是模型 id**，无需 `third_party_model`（§4.1 的 `variants_key` 在商业版不适用）。
+* 除 `strengths` 外还有 `default_strength`（本地档位计算未使用）。
+* 模型名大小写不敏感（`GLM-5.2` 与 `glm-5.2` 均返回档位）。
+
+目录 12 个模型的实测档位，**仅两个有档位**（与 IDE 界面「只有两个 GLM 5.2 可调思考」一致）：
+
+| 模型 | `strengths` |
+|-|-|
+| `GLM-5.2` | `["high","max"]` |
+| `glm-5.2-sft-harmony` | `["high","max"]` |
+| 其余 10 个（`openpangu-*`、`glm-5.3*`、`deepseek-v4.1-flash*`、`kimi-k3*`、`speed`） | `[]` |
+
+两档 `["high","max"]` 正对应 IDE 滑杆「滑到最右端时『高』变成『最大』」。
+
 #### 4.2.1 思考档位完整链路 `[打包JS]`
 
 CodeArts 的思考档位**不来自本地规则**，全部由服务端下发。证据：本地档位生成函数
@@ -787,6 +814,22 @@ function q(L){
 **推论（未实测）**：`ofm-server` 若要支持 CodeArts 思考档位，正确做法是自行调用
 `POST /v1/model/thinking-variants` 取 `strengths`，再把用户档位作为 `reasoning_effort` 透传；
 不应硬编码 `low`/`high`，因为档位集合是逐模型、服务端下发的。
+
+**实现（已落地，见 §4.2.2）**。
+#### 4.2.2 本实现的落地方式 `src/providers/codearts/variants.rs`
+
+* 配置只暴露抽象档位 `[codearts] reasoning_effort = "low"|"high"`，**不暴露上游取值**。
+* 启动/首次使用时拉一次全量档位，缓存 `REFRESH_INTERVAL = 1h`（单一常量，便于调整）。
+* 每次请求按 `model` 就近映射：
+  * `low` → 该模型支持档位中**最浅**的一个；
+  * `high` → 该模型支持档位中**最深**的一个（"不抑制思考"语义）。
+  * 例：`["high","max"]` → `low` 得 `high`，`high` 得 `max`。
+* `strengths` 为空或模型未知 → **不发** `reasoning_effort`。
+* 拉取失败保留旧缓存（从未成功则视为"全不支持"），不影响对话可用性。
+
+⚠︎ 映射结果的**语义效果未经实测**（只验证了字段确实按上述规则发出）。
+`high`/`max` 哪个思考更深取决于上游，与 raccoon 一样可能存在非单调。
+
 
 ### 4.3 IDE 扩展：PromptCenter `[打包JS]`
 
