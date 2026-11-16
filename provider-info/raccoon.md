@@ -30,6 +30,7 @@
 * `n` / `logprobs` / `logit_bias` / `seed` / `stop` 之外的采样细节取决于上游网关，客户端不显式传
 * 思考档位**不能**用 `reasoning_effort` 表达：服务端接受 8 个枚举值但不产生效果；
   唯一有效通道是 `extra_body.thinking.type = enabled|disabled`(两态，见参考插件实测)
+* （**`tool_choice` 不在此列**：四种取值均实测生效，已实现透传，见 §3 `tool_choice` 实测）
 
 ### 本协议与官方客户端的出入
 * 官方桌面端登录有两条可用路径(深链 / loopback)。深链需 OS 注册协议，服务器收不到；
@@ -154,6 +155,40 @@
   客户端统一归一为 `vision`)时允许；注意按**请求体字节**限制 10MB，超限 `HTTP 413`
 * 思考：`extra_body.thinking = {"type":"enabled"|"disabled"}`
 * 流式：`stream:true` 走 SSE，与 OpenAI 帧一致(客户端直通转发)
+
+### `tool_choice` 实测：四种取值全部生效 `[curl，2026-11-16]`
+
+上游是标准 OpenAI 语义，`LLMUtilsChatRequest` 那类私有结构不存在，
+`tool_choice` **原样透传即可生效**。模型 `sn-deepseek-v4-1-flash`，工具 `get_weather`：
+
+| prompt | 不传 | `"none"` | `"required"` | 指定 `get_weather` |
+|-|-|-|-|-|
+| 「帮我查北京天气」（天然想用）| 调用 | **不调** ✅ | 调用 | 调用 |
+| 「不要查询任何天气…」（天然不想用）| 不调 | 不调 | **调用** ✅ | **调用** ✅ |
+
+第二行是决定性证据：`required` 能让**本来不想用工具的模型强制发起工具调用**。
+
+**强制指定函数确实生效**（两个工具 `get_weather`/`get_time`，prompt 问天气）：
+
+| 请求 | 模型实际调用 |
+|-|-|
+| 不传 `tool_choice` | `get_weather`（模型自选）|
+| 强制 `get_time` | **`get_time`**（违背 prompt 语义，说明约束生效）|
+| 强制不存在的 `no_such_tool` | HTTP 400 `invalid_request_error`:<br>`Invalid value for 'function_call': no function named 'no_such_tool' was specified in the 'functions' parameter.` |
+
+注：报错文案里的 `function_call`/`functions` 是上游沿用的旧版 OpenAI 字段名，
+但请求要发的是 `tool_choice`/`tools`（发旧名报错不认）。
+
+**经 ofm-server 端到端复核**（`stream:false` 聚合后看 `finish_reason`）：
+
+```
+场景1 想用工具:   无tc=tool_calls(1)  none=stop(0)  required=tool_calls(1)
+场景2 不想用工具: 无tc=stop(0)        none=stop(0)  required=tool_calls(1)  指定函数=tool_calls(1)
+```
+
+**实现要点**：`ChatBody.tool_choice` 用 `skip_serializing_if = "Option::is_none"`，
+`Auto`（含未指定、显式 `"auto"`、无法识别的形态）序列化为 `None` → 不发送字段，
+因为 `auto` 本就是有工具时的默认行为。复现脚本 `tmp/probe_raccoon_tc.py`、`tmp/probe_raccoon_force.py`。
 
 ### 实测(2026-11-16，本机，个人身份)
 

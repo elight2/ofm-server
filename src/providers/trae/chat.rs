@@ -26,6 +26,9 @@ pub struct ChatBody {
     pub stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
+    // ⚠️ 故意**不发送** `tool_choice`：上游 `LLMUtilsChatRequest` 虽有该字段（string 类型），
+    // 但实测 `required` / `none` / 指定函数三者**均不生效**，行为与不传完全一致
+    // （见 `provider-info/trae.md` §3.2.2）。CC 侧语义在 trae 预设模型上无法表达。
     pub messages: Vec<UpMessage>,
 }
 
@@ -89,6 +92,7 @@ pub struct UpFunctionCall {
 }
 
 impl ChatBody {
+    /// `req.tool_choice` 被**有意忽略**，原因见结构体字段注释。
     pub fn build(req: &ChatRequest) -> Self {
         Self {
             app_id: APP_ID,
@@ -187,7 +191,7 @@ mod tests {
                 description: Some("取时间".into()),
                 parameters: Some(serde_json::json!({"type": "object", "properties": {}})),
             }],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
 
         let v = serde_json::to_value(&body).unwrap();
@@ -226,7 +230,7 @@ mod tests {
                 },
             ],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
 
         let v = serde_json::to_value(&body).unwrap();
@@ -256,7 +260,7 @@ mod tests {
                 tool_name: None,
             }],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["messages"][0]["content"][0]["type"], "image_url");

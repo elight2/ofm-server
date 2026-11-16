@@ -21,6 +21,10 @@ pub struct ChatBody {
     pub messages: Vec<UpMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<UpTool>,
+    /// `tool_choice` 透传。上游是标准 OpenAI 语义，四种取值均实测生效
+    /// （见 `provider-info/raccoon.md` §3.6）。`Auto` 时不发送该字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +102,7 @@ impl ChatBody {
                     },
                 })
                 .collect(),
+            tool_choice: req.tool_choice.to_json(),
         }
     }
 }
@@ -184,7 +189,7 @@ mod tests {
             model: "sn-glm-5-3".into(),
             messages: vec![user_msg("你好")],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["model"], "sn-glm-5-3");
@@ -213,7 +218,7 @@ mod tests {
                 tool_name: None,
             }],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         let arr = v["messages"][0]["content"].as_array().unwrap();
@@ -237,7 +242,7 @@ mod tests {
                     "properties": {"city": {"type": "string"}}
                 })),
             }],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["tools"][0]["type"], "function");
@@ -263,7 +268,7 @@ mod tests {
                 tool_name: None,
             }],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         let tc = &v["messages"][0]["tool_calls"][0];
@@ -286,7 +291,7 @@ mod tests {
                 tool_name: Some("get_weather".into()),
             }],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["messages"][0]["role"], "tool");
@@ -307,7 +312,7 @@ mod tests {
                 tool_name: None,
             }],
             tools: vec![],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         let arr = v["messages"][0]["content"].as_array().unwrap();
@@ -327,9 +332,46 @@ mod tests {
                 description: None,
                 parameters: None,
             }],
-            require_tool: false,
+            tool_choice: Default::default(),
         });
         let v = serde_json::to_value(&body).unwrap();
         assert!(v["tools"][0]["function"].get("parameters").is_none());
+    }
+
+    /// `Auto` 不发送 `tool_choice` 字段——那是有工具时的默认行为。
+    #[test]
+    fn tool_choice_auto_不发送() {
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![user_msg("hi")],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
+        let v = serde_json::to_value(&body).unwrap();
+        assert!(v.get("tool_choice").is_none());
+    }
+
+    /// 其余三种取值按标准 OpenAI 形态透传（实测上游逐项生效）。
+    #[test]
+    fn tool_choice_透传三种取值() {
+        use crate::core::provider::ToolChoice;
+        let cases = [
+            (ToolChoice::None, serde_json::json!("none")),
+            (ToolChoice::Required, serde_json::json!("required")),
+            (
+                ToolChoice::Function("get_weather".into()),
+                serde_json::json!({"type":"function","function":{"name":"get_weather"}}),
+            ),
+        ];
+        for (choice, want) in cases {
+            let body = ChatBody::build(&ChatRequest {
+                model: "m".into(),
+                messages: vec![user_msg("hi")],
+                tools: vec![],
+                tool_choice: choice,
+            });
+            let v = serde_json::to_value(&body).unwrap();
+            assert_eq!(v["tool_choice"], want);
+        }
     }
 }

@@ -14,12 +14,58 @@ pub struct ChatRequest {
     /// 标准化消息。图片以 URL（支持 `data:`）内联。
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
-    /// 下游是否要求工具调用（`tool_choice="required"`）。
+    /// 下游的工具选择约束（CC 的 `tool_choice`）。
+    pub tool_choice: ToolChoice,
+}
+
+/// CC `tool_choice` 的四种取值。
+///
+/// 供应商支持程度不同：raccoon 逐项生效；trae 的上游接受该字段但**静默忽略**
+/// （实测见 `provider-info/trae.md` §3.2.2），故 trae 侧不发送。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ToolChoice {
+    /// 未指定或显式 `"auto"`：有工具时由模型自行决定。不发送该字段。
+    #[default]
+    Auto,
+    /// `"none"`：禁止调用工具。
+    None,
+    /// `"required"`：必须调用至少一个工具。
+    Required,
+    /// 强制调用指定函数。
+    Function(String),
+}
+
+impl ToolChoice {
+    /// 从 CC 的 `tool_choice` 值解析。
     ///
-    /// ⚠️ 两家上游都没有对应的 `tool_choice` 字段可传，当前**未生效**：
-    /// 该值只被解析、不参与请求构造。保留以便将来上游支持时接上。
-    #[allow(dead_code)]
-    pub require_tool: bool,
+    /// 未指定、`"auto"`、以及无法识别的形态一律视为 [`ToolChoice::Auto`]
+    /// （`auto` 是有工具时的默认行为，不发送字段即可）。
+    pub fn from_json(v: Option<&serde_json::Value>) -> Self {
+        match v {
+            Some(serde_json::Value::String(s)) if s == "none" => Self::None,
+            Some(serde_json::Value::String(s)) if s == "required" => Self::Required,
+            Some(serde_json::Value::Object(o)) => o
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|n| Self::Function(n.to_string()))
+                .unwrap_or(Self::Auto),
+            _ => Self::Auto,
+        }
+    }
+
+    /// 转成上游请求体里的 `tool_choice` 值；[`Auto`](Self::Auto) 返回 `None`（不发送）。
+    pub fn to_json(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Auto => None,
+            Self::None => Some(serde_json::Value::String("none".into())),
+            Self::Required => Some(serde_json::Value::String("required".into())),
+            Self::Function(name) => Some(serde_json::json!({
+                "type": "function",
+                "function": { "name": name }
+            })),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -87,13 +87,12 @@ pub fn to_provider_request(
         })
         .collect();
 
-    let require_tool =
-        matches!(&req.tool_choice, Some(serde_json::Value::String(s)) if s == "required");
+    let tool_choice = p::ToolChoice::from_json(req.tool_choice.as_ref());
 
     Ok(p::ChatRequest {
         model,
         messages,
         tools,
-        require_tool,
+        tool_choice,
     })
 }

@@ -90,7 +90,8 @@ impl RaccoonProvider {
     }
 
     /// 业务请求头。身份靠 Bearer + 这几个头；非 personal 才带 `X-Org-Code`。
-    fn headers(&self, token: &str, cred: &Credential) -> Vec<(&'static str, String)> {        let mut h = vec![
+    fn headers(&self, token: &str, cred: &Credential) -> Vec<(&'static str, String)> {
+        let mut h = vec![
             ("authorization", format!("Bearer {token}")),
             ("x-raccoon-language", "zh".to_string()),
             ("content-type", "application/json".to_string()),
