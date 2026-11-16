@@ -899,6 +899,7 @@ token 限额告警阈值：90% / 100%。
 > |-|-|-|-|
 > | benefit-service（福利模型额度） | `opengw.developer.huaweicloud.com/api/v1/{benefit/claim,gateway/config,user/tokens/balance}` | 无独立页面；加载「福利模型」时自动前置调用 | 是（AKSK 签名，业务码 `4000`） |
 > | **限时福利 / 每日签到领积分** | `snap-access.cn-north-4.myhuaweicloud.com/v1/ops/*` | 综合栏「限时福利」面板（`workbench.action.showActivityWelfare`，图标 `gift`）、福利弹窗 | **是**：AKSK 签名即可（须带 `Agent-Type`、query 须签名） |
+| **账户积分余额** | `snap-access.cn-north-4.myhuaweicloud.com/snap-manager/v1/statistics/plugin` | 「总已用积分: 2.78/9600」 | **是**：AKSK 签名即可 |
 >
 > 本节 **7.1/7.3** 描述 benefit-service；**7.2** 描述真正的「每日签到」。
 
@@ -1050,6 +1051,47 @@ GET  /v1/ops/delivery?channel=IDE
 `triggerMode:AUTO_GRANT`，已自动发放）与 `campaignId:2`「学生认证领积分」（`status:null`，
 未认证 → 不显示）。可见「100 积分」是**服务端下发的活动配置**，不是客户端硬编码。
 
+#### 7.2.4b 账户积分余额 `[打包JS + 实测]`
+
+UI 上「总已用积分: 2.78/9600」的数据源**不是** benefit-service，也不是 `/v1/ops/credit/usage`：
+
+```
+GET {chatDomain}/snap-manager/v1/statistics/plugin
+    （chatDomain = snap-access.cn-north-4.myhuaweicloud.com）
+    headers: x-auth-token: await Tr()   ← 商用版本应为空，AKSK 签名亦可
+```
+
+响应**没有** `{code,data}` 壳，直接是对象：
+
+```json
+{"metrics":[
+  {"name":"usageTokenChatMessages","usage_token_num":25209,"package_token_amount":1},
+  {"name":"usageTotalPackageCredit","package_credit_amount":9600.00,
+   "package_credit_used":2.78,"package_credit_remain":9597.22,
+   "package_credit_expiring_amount":7097.22},
+  {"name":"usageBasicPackageCredit","package_credit_amount":500.00,
+   "package_credit_used":0.00,"package_credit_remain":500.00},
+  {"name":"usageBonusPackageCredit","package_credit_amount":9100.0,
+   "package_credit_used":2.78,"package_credit_remain":9097.22,
+   "package_credit_expiring_amount":7097.22}
+ ],"model_metrics":[...]}
+```
+
+* 总积分看 `usageTotalPackageCredit`：`package_credit_amount`（总量）/
+  `package_credit_used`（已用）/ `package_credit_remain`（剩余）。
+* 分档：`usageBasicPackageCredit`（基础包 500）+ `usageBonusPackageCredit`（赠送包 9100，
+  含签到/活动所得）= 9600。`package_credit_expiring_amount` 为即将过期额度。
+* `model_metrics[]` 同时给出各模型的 `enable` / `status` / `usage_token_num`，
+  是「模型是否激活」的真源（`SubscriptionService.returnSubscriptionInfo`）。
+
+**`/v1/ops/credit/usage` 不是余额**：`type` 只接受 `msg`（单条消息）或 `session`（单个会话），
+`id` 为对应标识，返回 `{totalTokenUsed,promptTokenUsed,completionTokenUsed,cachedTokenUsed,
+cacheHitRatio,creditCost}`。传 `type=GENERAL` 等会得
+`400 {"error_code":"PROMPTCENTER.00000001","error_msg":"type : 参数无效"}`。
+
+`claim`/`confirm` 响应里的 `totalAmount` / `remainingAmount` 是**该活动积分包**的量
+（100、1800 等），不是账户总额，勿混用。
+
 #### 7.2.5 业务语义 `[打包JS]`
 
 `request()`（workbench）判定：HTTP 200 **且** `result.code === 0 && result.status === 0`，取 `result.data`；
@@ -1146,9 +1188,12 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 * `gateway/config` 已实现（`fetch_config`），但 server 暂不消费其模型表：福利模型走 chat 需
   `maas_type: benefit`（§5.2），而本账号无福利模型可测。
 
-**真正的签到实现**（`src/providers/codearts/ops.rs`）：
+**真正的签到与余额实现**（`src/providers/codearts/ops.rs`）：
 
-* `fetch_delivery` / `claim_campaign` / `confirm_campaign` / `claim`。
+* `fetch_delivery` / `claim_campaign` / `confirm_campaign` / `claim`；
+  `fetch_balance` / `fetch_credit_usage`（`/snap-manager/v1/statistics/plugin`）。
+* `send_raw` 返回原始 JSON，`send` 再解 `{code,message,data}` 壳——因为 statistics
+  端点没有壳。
 * 签名沿用 `sign` 模块，但 **query 传 `sign::Request.query`**（必须参与签名，与 benefit 相反）。
 * 固定头：`agent-type: PromptCenter`、`x-language: zh-cn`、`x-snap-traceid`、`X-Security-Token`。
 * `claim` 流程：`delivery` → 筛 `claimable` → `claim`（带 `idempotentKey`）→ `confirm`。
@@ -1156,7 +1201,8 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
   「已到账待用 N 积分」。
 * 单测覆盖：壳解析、`delivery` 字段（camelCase）、`Agent-Type` 必在、query 变化必须改变签名值、
   跳过文案两分支。
-* 实测：`ofm-server claim codearts` → `签到跳过: 今日已签到（每日签到领100积分）`（2026-11-16）。
+* 实测：`ofm-server claim codearts` → `签到跳过: 今日已签到（每日签到领100积分）`（2026-11-16）；
+  `ofm-server status codearts` → `余额: 9597.22`（= 9600 − 2.78，与 UI 一致）。
 
 ## 8. 未验证清单（实现时优先实测）
 

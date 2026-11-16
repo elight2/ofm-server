@@ -152,10 +152,13 @@ impl Provider for CodeartsProvider {
         ops::claim(&self.client, &cred).await
     }
 
-    /// 余额：benefit-service 返回剩余额度（总量 − 已用）；未开通权益时报错。
+    /// 余额：账户积分剩余量（`/snap-manager/v1/statistics/plugin`）。
+    ///
+    /// UI 显示「总已用积分: 已用/总量」，这里返回 `总量 − 已用`。
+    /// 旧实现走 benefit-service（福利模型额度渠道），对本账号恒 `4000`，已弃用。
     async fn balance(&self) -> Result<Option<f64>, ProviderError> {
         let cred = self.valid_credential().await?;
-        benefit::fetch_balance(&self.client, &cred).await
+        ops::fetch_balance(&self.client, &cred).await
     }
 
     /// 续期：复用持久化的 PKCE verifier + DPoP 密钥换新 AKSK。

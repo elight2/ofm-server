@@ -74,9 +74,11 @@ pub const DELIVERY_PATH: &str = "/v1/ops/delivery";
 pub const CLAIM_PATH: &str = "/v1/ops/claim";
 /// 到账确认。
 pub const CONFIRM_PATH: &str = "/v1/ops/confirm";
-/// 积分用量（UI 用量页用，本 server 暂不调用）。
+/// 单条消息/会话的积分用量（UI 用量页用，不是账户余额）。
 #[allow(dead_code)]
 pub const USAGE_PATH: &str = "/v1/ops/credit/usage";
+/// **账户积分余额**（`snap-manager` 统计插件，UI「总已用积分: 2.78/9600」的数据源）。
+pub const STATS_PATH: &str = "/snap-manager/v1/statistics/plugin";
 
 /// 渠道（固定 `IDE`）。
 const CHANNEL: &str = "IDE";
@@ -180,8 +182,11 @@ fn signed_headers(
         .map_err(|e| ProviderError::Other(format!("AKSK 签名失败: {e}")))
 }
 
-/// 请求公共部分。
-async fn send(
+/// 发请求并返回原始 JSON（**不解壳**）。
+///
+/// `/v1/ops/*` 有 `{code,message,data}` 壳，`/snap-manager/v1/statistics/plugin`
+/// 则直接返回对象，故拆成两层。
+async fn send_raw(
     client: &reqwest::Client,
     cred: &Credential,
     method: reqwest::Method,
@@ -216,9 +221,22 @@ async fn send(
             truncate(&text)
         )));
     }
-    let env: Envelope = serde_json::from_str(&text).map_err(|e| {
-        ProviderError::Protocol(format!("ops: 解析失败: {e}: {}", truncate(&text)))
-    })?;
+    serde_json::from_str(&text)
+        .map_err(|e| ProviderError::Protocol(format!("ops: 解析失败: {e}: {}", truncate(&text))))
+}
+
+/// 带 `{code,message,data}` 壳的端点（`/v1/ops/*`）。
+async fn send(
+    client: &reqwest::Client,
+    cred: &Credential,
+    method: reqwest::Method,
+    path: &str,
+    query: Option<&str>,
+    body: Option<&str>,
+) -> Result<serde_json::Value, ProviderError> {
+    let raw = send_raw(client, cred, method, path, query, body).await?;
+    let env: Envelope = serde_json::from_value(raw)
+        .map_err(|e| ProviderError::Protocol(format!("ops: 响应壳结构不符: {e}")))?;
     env.into_data()
 }
 
@@ -286,6 +304,53 @@ pub async fn confirm_campaign(
         Some(&body),
     )
     .await
+}
+
+/// 账户积分余额（`GET /snap-manager/v1/statistics/plugin`）。
+///
+/// 返回 `(已用, 总量)`，取自 `metrics` 里 `name == "usageTotalPackageCredit"`
+/// 的 `package_credit_used` / `package_credit_amount`。UI 文案
+/// 「总已用积分: 2.78/9600」即 `used/total`。
+///
+/// 同一响应还有分档明细（`usageBasicPackageCredit` 基础包、
+/// `usageBonusPackageCredit` 赠送包，用 `package_credit_expiring_amount`
+/// 表示即将过期额度），本函数只取总量。
+pub async fn fetch_balance(
+    client: &reqwest::Client,
+    cred: &Credential,
+) -> Result<Option<f64>, ProviderError> {
+    let (used, total) = fetch_credit_usage(client, cred).await?;
+    Ok(Some((total - used).max(0.0)))
+}
+
+/// 账户积分 `(已用, 总量)`。
+pub async fn fetch_credit_usage(
+    client: &reqwest::Client,
+    cred: &Credential,
+) -> Result<(f64, f64), ProviderError> {
+    let data = send_raw(client, cred, reqwest::Method::GET, STATS_PATH, None, None).await?;
+    pick_credit(&data)
+}
+
+/// 从 statistics 响应里取 `(已用, 总量)`。
+fn pick_credit(data: &serde_json::Value) -> Result<(f64, f64), ProviderError> {
+    let metrics = data
+        .get("metrics")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| ProviderError::Protocol("ops: statistics 缺 metrics".to_string()))?;
+    let total_metric = metrics
+        .iter()
+        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("usageTotalPackageCredit"))
+        .ok_or_else(|| {
+            ProviderError::Protocol("ops: statistics 缺 usageTotalPackageCredit".to_string())
+        })?;
+    let num = |key: &str| total_metric.get(key).and_then(serde_json::Value::as_f64);
+    match (num("package_credit_used"), num("package_credit_amount")) {
+        (Some(u), Some(t)) => Ok((u, t)),
+        _ => Err(ProviderError::Protocol(
+            "ops: statistics 缺 package_credit_used/amount".to_string(),
+        )),
+    }
 }
 
 /// 签到入口：拉列表 → 领可领的 → 确认。
@@ -466,6 +531,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(skip_message(&items), "今日无可领取福利");
+    }
+
+    /// statistics 里取 `usageTotalPackageCredit`，换算成剩余量。
+    #[test]
+    fn credit_usage_picks_total_metric() {
+        let raw = serde_json::json!({
+            "metrics": [
+                {"name": "usageTokenChatMessages", "usage_token_num": 25209},
+                {"name": "usageTotalPackageCredit",
+                 "package_credit_amount": 9600.0,
+                 "package_credit_used": 2.78,
+                 "package_credit_remain": 9597.22},
+                {"name": "usageBasicPackageCredit",
+                 "package_credit_amount": 500.0,
+                 "package_credit_used": 0.0}
+            ]
+        });
+        let (used, total) = pick_credit(&raw).unwrap();
+        assert_eq!(used, 2.78);
+        assert_eq!(total, 9600.0);
+        assert_eq!((total - used).max(0.0), 9597.22);
+    }
+
+    #[test]
+    fn credit_usage_missing_metric_is_error() {
+        let raw = serde_json::json!({"metrics": [{"name": "other"}]});
+        assert!(pick_credit(&raw).is_err());
     }
 
     /// 请求头必须带 `Agent-Type`（缺则 400）与 `x-language`。
