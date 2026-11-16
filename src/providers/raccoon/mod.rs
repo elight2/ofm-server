@@ -8,9 +8,11 @@
 pub mod api;
 pub mod auth;
 pub mod balance;
+pub mod chat;
 pub mod credential;
 pub mod models;
 pub mod refresh;
+pub mod stream;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,10 +20,20 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::core::events::EventStream;
+use crate::core::events::{ErrorKind, Event, EventStream, FinishReason, UpstreamError};
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
 use credential::Credential;
+
+/// 流式解析的可变状态。
+struct ChatStreamState {
+    decoder: crate::core::sse::SseDecoder,
+    parser: stream::FrameParser,
+    pending: std::collections::VecDeque<Event>,
+    finished: bool,
+    /// 已收到 finish_reason/错误，避免重复补 `Finish`。
+    saw_finish: bool,
+}
 
 pub const ID: &str = "raccoon";
 
@@ -165,8 +177,101 @@ impl Provider for RaccoonProvider {
             .map(|secs| secs * 1000)
     }
 
-    async fn chat(&self, _req: ChatRequest) -> Result<EventStream, ProviderError> {
-        Err(ProviderError::Unimplemented("raccoon 对话"))
+    async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        let body = chat::ChatBody::build(&req);
+        let url = format!("{}{}", api::HOST, chat::PATH);
+
+        // 自己序列化并 .body()：避免 .json() 追加第二个 content-type 头。
+        let payload = serde_json::to_vec(&body)
+            .map_err(|e| ProviderError::Other(format!("序列化请求体失败: {e}")))?;
+        let mut http = self.client.post(&url).body(payload);
+        for (k, v) in self.headers(&token, &cred) {
+            http = http.header(k, v);
+        }
+
+        let resp = http.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            // 413 = 请求体超 10MB（图片）。属于请求过大，不是凭证问题。
+            if status.as_u16() == 413 {
+                return Err(ProviderError::Protocol(format!(
+                    "请求体超过 10MB 上限: {}",
+                    api::truncate(&text, 200)
+                )));
+            }
+            return Err(ProviderError::from(api::HttpError::Status {
+                status: status.as_u16(),
+                body: api::truncate(&text, 300),
+            }));
+        }
+
+        // 上游恒回 SSE；分帧后逐帧转成中间事件。
+        let mut bytes_stream = resp.bytes_stream();
+        let state = ChatStreamState {
+            decoder: crate::core::sse::SseDecoder::new(),
+            parser: stream::FrameParser::new(),
+            pending: std::collections::VecDeque::new(),
+            finished: false,
+            saw_finish: false,
+        };
+
+        let out = futures_util::stream::unfold(
+            (bytes_stream, state),
+            |(mut bytes_stream, mut st)| async move {
+                loop {
+                    if let Some(ev) = st.pending.pop_front() {
+                        if matches!(ev, Event::Finish(_) | Event::Error(_)) {
+                            st.saw_finish = true;
+                        }
+                        return Some((ev, (bytes_stream, st)));
+                    }
+                    if st.finished {
+                        return None;
+                    }
+
+                    match futures_util::StreamExt::next(&mut bytes_stream).await {
+                        Some(Ok(chunk)) => {
+                            for ev in st.decoder.push(&chunk) {
+                                st.pending.extend(st.parser.parse(&ev.data));
+                            }
+                        }
+                        Some(Err(e)) => {
+                            st.finished = true;
+                            return Some((
+                                Event::Error(UpstreamError {
+                                    code: None,
+                                    message: format!("读取上游流失败: {e}"),
+                                    kind: ErrorKind::Api,
+                                }),
+                                (bytes_stream, st),
+                            ));
+                        }
+                        None => {
+                            if let Some(ev) = st.decoder.finish() {
+                                st.pending.extend(st.parser.parse(&ev.data));
+                            }
+                            if st.pending.is_empty() {
+                                st.finished = true;
+                                // 上游未发 finish_reason 就断流：按 stop 收尾，
+                                // 避免下游挂住。
+                                if !st.saw_finish {
+                                    return Some((
+                                        Event::Finish(FinishReason::Stop),
+                                        (bytes_stream, st),
+                                    ));
+                                }
+                                return None;
+                            }
+                        }
+                    }
+                }
+            },
+        );
+
+        Ok(Box::pin(out))
     }
 
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {

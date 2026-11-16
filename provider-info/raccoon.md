@@ -152,6 +152,55 @@
 * 思考：`extra_body.thinking = {"type":"enabled"|"disabled"}`
 * 流式：`stream:true` 走 SSE，与 OpenAI 帧一致(客户端直通转发)
 
+### 实测(2026-11-16，本机，个人身份)
+
+**响应确为标准 OpenAI SSE**：纯 `data:` 帧（无 `event:` 行），末尾 `data: [DONE]`。
+单帧样例：
+```json
+{"id":"85a2..","object":"chat.completion.chunk","created":1794791018,
+ "model":"sn-sensenova-6-8-flash","choices":[{"index":0,
+ "delta":{"reasoning_content":"好的"}}],"request_id":"85a2.."}
+```
+* 首帧 `delta:{"role":"assistant"}`；正文 `delta.content`；思考 `delta.reasoning_content`
+* 工具调用：`delta.tool_calls[{index,id,type,function:{name,arguments}}]`
+  **首帧给 `id`+`name`，后续分片给 `id:""`/`name:""` 与 arguments 片段**
+  （空串等同缺失，客户端不应覆盖首帧的 id/name）
+* `finish_reason`：`stop` / `tool_calls`，映射正常
+* usage 独立一帧：`{prompt_tokens, completion_tokens, total_tokens,
+  completion_tokens_details:{reasoning_tokens}, prompt_tokens_details:{cached_tokens}}`
+
+#### 思考开关实测：`extra_body.thinking` **不能可靠关闭思考**
+|模型|thinking=disabled|thinking=enabled|不传(基线)|
+|-|-|-|-|
+|`sn-sensenova-6-8-flash`|19~25 帧|6 帧|21~92 帧|
+|`sn-glm-5-3`|125 帧|—|80 帧|
+|`sn-glm-5-3-flash`|0 帧|0 帧|—|
+
+结论：
+* 对部分模型(如 `sn-sensenova-*`)有**部分抑制**效果，但不彻底且波动大
+* 对 `sn-glm-5-3` 完全无效（该模型强制思考）
+* 顶层 `thinking`、`thinking_budget`、`reasoning_effort` 实测**也均无效**
+  （`reasoning_effort=none` → 122 帧）
+⇒ 当前实现**不发送**思考开关，跟随上游默认；若下游传 `reasoning_effort` 不保证生效。
+
+#### 其它实测结论
+* 多轮工具结果回传正常（`role:tool` + `tool_call_id` 被上游正确理解）
+* 图片输入正常：`content` 数组 + `image_url` + `data:` URL，vision 模型能识别
+* **不存在的模型名不会报错**：上游会用默认模型兜底作答（返回 200 与正常内容）
+  故客户端无法用“模型不存在”做参数校验
+
+### 实现要点(已完成)
+`src/providers/raccoon/chat.rs`：请求体直接序列化为标准 OpenAI 形态
+* 单段纯文本用字符串 content（最兼容），含图片/多段时用内容数组
+* `tools[].function.parameters` 保持**对象**（与 trae 的字符串化不同）
+* 工具调用键名是标准 `function`（非 trae 的 `function_call`）
+* 无参数工具省略 `parameters` 字段
+
+`src/providers/raccoon/stream.rs`：帧解析
+* 空串 `delta.content`/`reasoning_content` 不产事件
+* 工具调用空串 `id`/`name` 视为缺失，不覆盖已累积值
+* 未发 `finish_reason` 就断流时补 `Finish(Stop)`，避免下游挂住
+
 ## 4. 模型列表获取
 * `GET https://xiaohuanxiong.com/api/web/llm/v2/model_catalog`
 * 头：`Authorization: Bearer <token>`，非 personal 加 `X-Org-Code`
