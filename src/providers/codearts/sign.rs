@@ -32,6 +32,11 @@ pub struct Request<'a> {
     /// 查询串（**值需已 percent-encode**），如 `Some("offset=0&limit=100")`。
     /// 签名按官方规则重排：键排序后逐键 `urlEncode`。
     pub query: Option<&'a str>,
+    /// 请求体（可选）。**实测（2026-02-18）：服务端对 POST body 的 payload
+    /// hash 强校验**——发 `{}` body 必须签 `sha256("{}")`，签空体 hash 会
+    /// 得 `APIG.0301`。无 body 时才用空体 SHA256。SDK 语义：有 body 哈希
+    /// body，无 body 用空体 hash（SDK-HMAC-SHA256 后端不支持免签 hash）。
+    pub body: Option<&'a str>,
 }
 
 /// 签名结果：返回应实际发送的头（追加 `host` / `X-Sdk-Date` / `Authorization`）。
@@ -108,9 +113,14 @@ pub fn sign(req: &Request<'_>, ak: &str, sk: &str) -> Result<Vec<(String, String
 
     let canonical_uri = canonical_uri(&pathname);
     let canonical_query = canonical_query(req.query);
+    // payload hash：有 body 哈希 body，无 body 用空体 SHA256（见 Request::body 注释）。
+    let payload_hash = match req.body {
+        Some(b) => hex_lower(&Sha256::digest(b.as_bytes())),
+        None => EMPTY_BODY_SHA256.to_string(),
+    };
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
-        req.method, canonical_uri, canonical_query, canonical_headers, signed_headers, EMPTY_BODY_SHA256
+        req.method, canonical_uri, canonical_query, canonical_headers, signed_headers, payload_hash
     );
 
     let hashed = hex_lower(&Sha256::digest(canonical_request.as_bytes()));
@@ -245,6 +255,7 @@ mod tests {
             url: "https://opengw.developer.huaweicloud.com/api/v1/gateway/config",
             headers: benefit_like_headers(),
             query: None,
+            body: None,
         };
         let out = sign(&req, "test-ak", "test-sk").expect("签名失败");
         let auth = out
@@ -259,6 +270,30 @@ mod tests {
         }
         // 官方语义：签名的头 + Authorization 就是实际发送的头。
         assert_eq!(out.len(), 5);
+    }
+
+    #[test]
+    fn post_body_hash_differs_from_empty() {
+        // 实测：POST body={} 时 payload hash 必须是 sha256("{}")，
+        // 签空体 hash 会被服务端拒（APIG.0301）。
+        let url = "https://opengw.developer.huaweicloud.com/api/v1/benefit/claim";
+        let headers = vec![
+            ("content-type", "application/json".to_string()),
+            ("x-sdk-date", "20260218T000000Z".to_string()),
+        ];
+        let empty = Request { method: "POST", url, headers: headers.clone(), query: None, body: None };
+        let with_body = Request { method: "POST", url, headers, query: None, body: Some("{}") };
+        let auth = |r: &Request| {
+            sign(r, "test-ak", "test-sk")
+                .expect("签名失败")
+                .into_iter()
+                .find(|(k, _)| k == "authorization")
+                .map(|(_, v)| v)
+                .expect("缺 Authorization")
+        };
+        let a = auth(&empty);
+        let b = auth(&with_body);
+        assert_ne!(a, b, "body 参与签名未生效");
     }
 
     #[test]

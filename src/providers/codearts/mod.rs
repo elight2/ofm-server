@@ -1,14 +1,15 @@
 //! CodeArts（华为云 CodeArts Snap / Agent）供应商。
 //!
 //! 已实现：登录（`auth`，PKCE + DPoP + 本地回调）、续期（`refresh`）、
-//! 模型列表（`benefit`，SDK-HMAC-SHA256 签名见 `sign`）。`chat` / `claim`
-//! 尚未实现——需先取得真实凭证实测上游明文/加密链路
-//! （见 `provider-info/codearts.md` §8 未验证清单）。
+//! 模型列表（`catalog`，PromptCenter builtin）、签到/余额（`benefit`，
+//! SDK-HMAC-SHA256 签名见 `sign`）。`chat` 尚未实现——需先实测上游
+//! 明文/加密链路（见 `provider-info/codearts.md` §8 未验证清单）。
 //!
 //! 协议实况见 `provider-info/codearts.md`。
 
 pub mod api;
 pub mod auth;
+pub mod benefit;
 pub mod catalog;
 pub mod credential;
 pub mod dpop;
@@ -126,7 +127,14 @@ impl Provider for CodeartsProvider {
     }
 
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
-        Err(ProviderError::Unsupported("codearts claim"))
+        let cred = self.valid_credential().await?;
+        benefit::claim(&self.client, &cred).await
+    }
+
+    /// 余额：benefit-service 返回剩余额度（总量 − 已用）；未开通权益时报错。
+    async fn balance(&self) -> Result<Option<f64>, ProviderError> {
+        let cred = self.valid_credential().await?;
+        benefit::fetch_balance(&self.client, &cred).await
     }
 
     /// 续期：复用持久化的 PKCE verifier + DPoP 密钥换新 AKSK。

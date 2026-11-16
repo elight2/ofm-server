@@ -91,6 +91,7 @@ pub async fn fetch_models(
         url: &url,
         headers,
         query: None,
+        body: None,
     };
     let signed = sign::sign(&req, &cred.access_key_id, &cred.secret_access_key)
         .map_err(|e| ProviderError::Other(format!("AKSK 签名失败: {e}")))?;
