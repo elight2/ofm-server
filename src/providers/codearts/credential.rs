@@ -45,6 +45,14 @@ impl Credential {
         credential::store(root, PROVIDER, self)
     }
 
+    /// AKSK 三元组是否已过期（留 60s 余量，与请求耗时同量级）。
+    pub fn aks_expired(&self) -> bool {
+        match self.expire_at_millis {
+            Some(ms) => now_millis() + 60_000 >= ms,
+            None => false,
+        }
+    }
+
     /// 由 token 响应 + 登录上下文构造凭证。字段缺失时返回 `HttpError::Protocol`。
     pub fn from_token(
         token: auth::TokenResponse,

@@ -7,8 +7,7 @@
 pub const PORTAL_AUTHORIZE: &str = "https://codearts.huaweicloud.com";
 /// IAM STS Open：token 端点（`iamStsOpenDomain`）。
 pub const IAM_STS_OPEN: &str = "https://sts.cn-north-4.myhuaweicloud.com";
-/// SnapEngine 网关（`chatDomain`），后续对话/签到走这里。
-#[allow(dead_code)] // 对话实现前的占位，域名先存档
+/// SnapEngine 网关（`chatDomain`）：模型目录 / 对话 / 签到走这里。
 pub const SNAP_GATEWAY: &str = "https://snap-access.cn-north-4.myhuaweicloud.com";
 /// 国内备用域（`snapApigBackupDomain`）。
 #[allow(dead_code)]
