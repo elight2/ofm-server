@@ -5,6 +5,7 @@
 * 自动签到: 定时检查签到, 领取每日积分
 * [资讯获取1](https://freeegg.top/)
 * [资讯获取2](https://jidan.si/)
+* 供应商信息参考: PROVIDERS.md
 
 ## 使用方式
 * `ofm-server`: 启动服务
@@ -13,12 +14,6 @@
 * `ofm-server status 供应商id`: 获取供应商当前信息(输出接入状态, 当前余额, 最近一次成功签到的时间与增量, 凭证到期时间, 模型列表)
 * `ofm-server config`: 打印默认配置文件
 * `ofm-server refresh 供应商id`: 刷新供应商登录令牌
-
-## 供应商信息
-|名称|id|厂家|
-|-|-|-|
-|TRAE|trae|字节|
-|商汤小浣熊|raccoon|商汤|
 
 ## 配置信息
 * 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
