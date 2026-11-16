@@ -47,6 +47,7 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 | `codeartsWebUrl`（=`toolkitHcOpenWebUrl`） | `https://devcloud.cn-north-4.huaweicloud.com` | 旧门户 |
 | 权益/余额（非生产或内网） | `https://snapengine-apig.cn-north-7.myhuaweicloud.com` | `/api/v1/benefit/claim`、`/api/v1/user/tokens/balance`、`/api/v1/gateway/config` |
 | 权益/余额（生产商用） | `https://opengw.developer.huaweicloud.com` | 同上；选择式 `MFn() = H()&&IS_PROD!=="true" ? 内网 : 生产`（offset 9940xxxx，`DFn()`） |
+| **限时福利 / 每日签到** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/v1/ops/delivery`、`/v1/ops/claim`、`/v1/ops/confirm`、`/v1/ops/invite/generate`、`/v1/ops/tasks/conversation`（见 §7.2）。**与上面 benefit-service 完全无关**：workbench 用 `productService.snapEngineUrl`，扩展用 `policyCenterDomain`，两者在生产环境都指向本域名 |
 | 内网兜底 | `http://snapengine.codemate.cce.prod-kwe-g.dragon.tools.huawei.com/api/v2/` | `py.inferhubBaseUrl` 默认值（offset 103554750） |
 | OTel | `collector-agents-access.{cn-north-4,ap-southeast-1}.myhuaweicloud.com` | `/collector/v1/traces`、`/collector/v1/logs` |
 
@@ -890,10 +891,19 @@ token 限额告警阈值：90% / 100%。
 
 ---
 
-## 7. 签到
+## 7. 签到 / 限时福利
 
-> 两条独立实现：**agent kernel**（`aD()`/`_D`/`RFn`，benefit-service，加载福利模型前的前置动作）
-> 与 **IDE 扩展**（`SLc()` @offset 8489727，签到按钮）。两者端点相同、方法不同。
+> **重要区分**：客户端里存在 **两套互不相干的「福利」**，此前分析把二者混为一谈，属错误。
+>
+> | 体系 | 域名 / 端点 | UI 入口 | 能否用 AKSK 调通 |
+> |-|-|-|-|
+> | benefit-service（福利模型额度） | `opengw.developer.huaweicloud.com/api/v1/{benefit/claim,gateway/config,user/tokens/balance}` | 无独立页面；加载「福利模型」时自动前置调用 | 是（AKSK 签名，业务码 `4000`） |
+> | **限时福利 / 每日签到领积分** | `snap-access.cn-north-4.myhuaweicloud.com/v1/ops/*` | 综合栏「限时福利」面板（`workbench.action.showActivityWelfare`，图标 `gift`）、福利弹窗 | **否**：网关强制 `x-auth-token`，AKSK 不被接受 |
+>
+> 本节 **7.1/7.3** 描述 benefit-service；**7.2** 描述真正的「每日签到」。
+
+> benefit-service 有两条独立实现：**agent kernel**（`aD()`/`_D`/`RFn`，加载福利模型前的前置动作）
+> 与 **IDE 扩展**（`SLc()` @offset 8489727）。两者端点相同、方法不同。
 
 ### 7.1 kernel：`POST /api/v1/benefit/claim` `[打包JS]`
 
@@ -914,7 +924,118 @@ timeout: 1e4ms（AbortController）
 `4003` 用户禁用、`4004` 权益不存在/已过期/user 不存在、`4006` 每日名额耗尽、`5000` internal。
 **kernel 代码注释写“4006 = daily claim limit exhausted”，实际操作上 kernel 把 4006 当失败处理（不加特殊分支）。**
 
-### 7.2 IDE 扩展：`GET /api/v1/benefit/claim` + `POST enableBenefitClaim` `[打包JS]`
+### 7.2 「限时福利 / 每日签到」`/v1/ops/*`（workbench 面板 + 扩展消息通道）`[打包JS]`
+
+这是用户在 UI 上看到的「限时福利 → 每日签到领 100 积分」。代码里叫 **welfare / activity**，
+**关键词不是「签到」**（`签到` 只出现在语言包里，见下），搜 `claim` / `benefit` 也搜不到，
+必须搜 `welfare` / `ops/claim`。
+
+#### 7.2.1 三个入口（同一套 HTTP 协议）
+
+| 入口 | 文件 / 符号 | 说明 |
+|-|-|-|
+| workbench 面板（**主入口**） | `out/vs/workbench/workbench.desktop.main.js` · `ActivityWelfarePane` | 命令 `workbench.action.showActivityWelfare`，标题 `localize2(3554, "Limited-Time Offer")`，`Codicon.gift`；显示条件 `shouldShowActivityWelfare()`：`packageInfo.isCreditPackage === true` |
+| 福利弹窗 | 同上 · `ActivityWelfarePane.showPopItems` / `popContent` | 服务端 `displayConfig.popTitle/popContent` 下发才弹 |
+| webview 侧（聊天窗内） | `extensions/huaweicloud.codearts-snap/dist/assets/SnapChat-CEg8_cfl.js`（@~396090）+ `index-BIyAOOK4.js`（@~384771） | 只发 VSCode 消息（`claimWelfare`/`getWelfareDelivery`/`confirmWelfare`/`generateInviteCode`/`reportCampaignRead`/`setDailyClaimDontRemind`），**不发 HTTP** |
+
+扩展侧真正的 HTTP 实现在 `extensions/huaweicloud.codearts-snap/out/extension.js` @~8587000（`hBi` 对象），
+用 `Kx()` 构造头、`Dt.instance.sendRequest()` 发请求，发完 `workbench.action.refreshActivityWelfare` 刷新面板。
+
+#### 7.2.2 端点与请求 `[打包JS]`
+
+Base URL：
+* workbench：`this.productService.snapEngineUrl`（= product.json `commercialVersionDomain.newFramework.productDomain.snapEngineDomain`）
+* 扩展：`Qe.getInstance().{welfareDelivery,welfareClaim,welfareConfirm,welfareInvite}Url`
+  = `${policyCenterDomain}/v1/ops/…`（新框架）/ `${policyCenterDomain}/PromptCenterService/v1/ops/…`（旧框架）
+* 生产值均为 `https://snap-access.cn-north-4.myhuaweicloud.com`（香港区 `ap-southeast-1`）
+
+```http
+GET  /v1/ops/delivery?channel=IDE           # 拉活动列表 → data.items[]
+GET  /v1/ops/tasks/conversation?channel=IDE # 会话任务（失败静默返回 []）
+POST /v1/ops/claim                          # 签到/领取
+POST /v1/ops/confirm                        # 领取后确认
+POST /v1/ops/invite/generate                # 邀请码
+POST /v1/ops/events/trigger                 # 事件触发（另有 events/conversation）
+```
+
+`POST /v1/ops/claim`：
+
+```json
+// 整活动领取（workbench ActivityWelfarePane 主路径）
+{"campaignId": <id>, "channel": "IDE"}
+// 单项领取（claimActions 分档位）
+{"campaignId": <id>, "channel": "IDE", "benefitId": <bid>}
+// 扩展/webview 形态：多带幂等键，bench 键格式 claim_<campaign>_[<benefit>|all]_<Date.now()>
+{"campaignId": <id>, "idempotentKey": "claim_<id>_all_<ts>", "channel": "IDE"}
+```
+
+`POST /v1/ops/confirm`：`{"campaignId": <id>}`（可带 `benefitId`）。
+`POST /v1/ops/invite/generate`：`{"campaignId": <id>, "channel": "IDE"}`。
+
+#### 7.2.3 认证头 `[打包JS + 实测]`
+
+**两套头形态不同，但都强制 `x-auth-token`**：
+
+```
+# workbench（华为云 SDK 签名）
+Agent-Type: PromptCenter
+X-Language: zh-cn | en-us
+x-auth-token: <IAM 用户 token>   ← getHeaders() 之外的额外头，网关强校验
+(HuaweiRequestService.getHeaders 补 SDK-HMAC-SHA256 签名头)
+
+# 扩展（Kx()，无 AKSK 签名）
+x-snap-traceid: <uuid 去 ->
+Content-Type: application/json
+x-auth-token: await Tr()
+Agent-Type: PromptCenter
+X-Language: zh-cn | en-us
+```
+
+`Tr()` 的三分支（`extension.js` @4474864）：
+1. `productConfigs.isDefaultToken` → `productConfigs.developersToken`（写死 token，非商用版）
+2. `productConfigs.isInnerVersion` → `userInfo.cloudDragonToken`（华为内网）
+3. **商用版（本客户端）** → 返回 `""`，注释 `Hc version, token is transferred by the toolkit.`
+
+即商用版的 `x-auth-token` 由 **DevKit toolkit** 从 IDE 外部注入，扩展自身拿不到。
+
+#### 7.2.4 实测（2026-11-16，`testdata` 凭证，AKSK 已正确签名）
+
+| 请求 | 结果 |
+|-|-|
+| `GET /v1/ops/delivery?channel=IDE`（只带 AKSK 签名，含 `X-Security-token`） | `401 {"error_msg":"Incorrect IAM authentication information: x-auth-token not found","error_code":"APIG.0301"}` |
+| 同上 + `x-auth-token: <本账号 security_token>` | `401 … decrypt token fail` |
+| 同上 + `Agent-Type` / `X-Language` | 仍 `x-auth-token not found` |
+
+结论：该网关**不接受 AKSK 替代** `x-auth-token`；且 `security_token`（STS 临时凭据的一部分）
+不是合法的 `x-auth-token`（网关要 IAM 用户级 token，报 `decrypt token fail`）。
+**ofm-server 现有登录链路（`/v1/oauth2/tokens` 换 STS 凭据）拿不到该 token**，
+所以「每日签到领 100 积分」**无法在 server 侧复刻**，除非另行实现华为云 IAM 用户登录。
+
+#### 7.2.5 业务语义 `[打包JS]`
+
+`request()`（workbench）判定：HTTP 200 **且** `result.code === 0 && result.status === 0`，取 `result.data`；
+否则抛 `result.message`。返回 `data.status` 枚举 `ELIGIBLE | CLAIMED | CONFIRMED | CONSUMED`，
+非 `ELIGIBLE` 直接 return（不重复领取）。
+
+领取成功后（`benefit.status === "CLAIMED"` 且 `benefit.id !== null`）→ 立即 `POST /v1/ops/confirm`
+→ 通知 `localize(3534/3545)` → 执行 `SETTINGS_GET_CONFIG.command.getFreeTokenSuccess` → `load()` 刷新面板。
+扩展侧同样：`returnWelfareClaim` 成功 → `confirmWelfare` → `getWelfareDelivery` + `getCreditPackageInfo`。
+
+`delivery` 返回的 `items[]` 关键字段：`campaignId`、`type`（`INVITE_USER` / `STUDENT_CERTIFIED` / …）、
+`status`、`claimable`、`unread`、`displayConfig`（**JSON 字符串**，含 `popTitle`/`popContent`/`claimButtonText` /
+`claimButtonTip` / `jumpUrl`）、`claimActions[]`（`benefitId`、`benefitText`、`status`）、`access[]`、`description`、
+`conversationTask`。
+
+UI 文案在 `extensions/vscode-language-pack-zh-hans/translations/main.i18n.json`：
+`vs/workbench/browser/parts/accountInfoPane/activityWelfarePane`（`activityWelfareSignedInTip: "今日已签到，明天再来吧"`、
+`activityWelfarePendingCredits: "待领取 {0} 积分"`、`activityWelfareClaimed: "成功领取福利"` …）；
+webview 侧在 `index-BIyAOOK4.js` @~322928（`freeBenefit: "限时福利"`、
+`freeBenefitTip: "活动期间每日发放 1000万免费 Tokens…"`——**注意这是福利模型 Tokens 文案，不是积分签到**）。
+
+> 「100 积分」这个具体数值**不在客户端任何静态资源里**，由服务端 `displayConfig` 下发，
+> 因此无法从代码确认；「每日签到」的判定也完全在服务端（`campaignId` 由 delivery 下发）。
+
+### 7.3 IDE 扩展 benefit-service：`GET /api/v1/benefit/claim` + `POST enableBenefitClaim` `[打包JS]`
 
 `SLc()` 流程：
 
@@ -936,7 +1057,7 @@ timeout: 1e4ms（AbortController）
 
 IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 
-### 7.3 结论与差异
+### 7.4 结论与差异（benefit-service）
 
 | 项 | kernel | IDE |
 |-|-|-|
@@ -945,7 +1066,7 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 | 前置条件 | 仅 `config` 有 models | 三个 `*-gateway-config` 开关 |
 | 后续动作 | 合并福利模型 | `enableBenefitClaim` POST + 余额 |
 
-### 7.4 实测与 server 实现（2026-11-16）
+### 7.5 benefit-service 实测与 server 实现（2026-11-16）
 
 **上游实测**（`testdata` 凭证，直连生产网关，逐项单独构造签名）：
 
@@ -959,8 +1080,14 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 | 缺 `X-Security-token` | `401 APIG.0301 ... access key is not found` |
 
 结论：本账号**权益渠道未开通**，四个端点一致返回 `4000`，与 method / channel / body 无关；
-`4000` 不是签到逻辑错误，**不能记为「签到失败」故障**（§6.4 中 `RFn.claim` 把 4000 视为「参数错误」，
-但服务端实际语义是 `group not found`）。今天能否领到 100 取决于账号是否开通权益，与客户端实现无关。
+`4000` 不是签到逻辑错误（§6.4 中 `RFn.claim` 把 4000 视为「参数错误」，但服务端实际语义是 `group not found`）。
+
+> ⚠️ **重要更正**：本节实测的 benefit-service **不是** UI 上「限时福利 → 每日签到领 100 积分」的后端。
+> 真正的签到走 `snap-access.cn-north-4/v1/ops/*`（见 §7.2），本账号因缺 `x-auth-token`（IAM 用户 token）
+> 无法调用。之前把「今天能否领到 100 取决于账号是否开通权益」的结论归到 benefit-service 上是**错的**；
+> benefit-service 只决定「福利模型」（`maas_type: benefit`）的额度能否加载。
+> 因此 `ofm-server` 的 `claim` 子命令**无法实现真正的每日签到**，它是 benefit-service 的
+> 「福利模型额度预取」，对外语义应理解为「福利渠道就绪检查」而非「签到领积分」。
 
 补充实测（签名细节）：
 * `X-Security-token` **必须**进签名头集合，否则 401（AK 查不到）。
@@ -988,8 +1115,8 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 4. `balance` 返回字段：字段名已从 webview 取证（`used_amount`/`total_quota`，
    education 为 `monthly_tokens_used`/`monthly_token_limit`，见 §5）；**数值形态仍未验证**
    ——本账号 `4000`（未开通），拿不到真实 `result`
-5. ~~`claim` 是否需要 `channel` 参数~~ → **已核实并实测**：kernel `POST` 不带 channel（默认 benefit）；IDE 用 `GET ?channel=education|examination` 分支，并对 education/examination 补 `POST enableBenefitClaim`（§7.2）。
-   实测本账号四端点恒 `4000`（渠道未开通），server 已按 IDE 流程实现（§7.4）
+5. ~~`claim` 是否需要 `channel` 参数~~ → **已核实并实测**：kernel `POST` 不带 channel（默认 benefit）；IDE 用 `GET ?channel=education|examination` 分支，并对 education/examination 补 `POST enableBenefitClaim`（§7.3）。
+   实测本账号四端点恒 `4000`（渠道未开通），server 已按 IDE 流程实现（§7.5）
 6. **上游是否真接受未加密（明文）chat 请求** ← 实现前最高优先级，用一次真实请求定夺，决定是否需复刻 SM4-GCM
 7. `response_format` / `logprobs` / `n>1` 上游支持情况
 8. 排队态是否发 notice 帧给下游
@@ -1010,3 +1137,8 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
     `refresh_token` 与签发方 `client_id` 强绑定、一次性使用。
 
 > **加密对本项目的影响**：客户端对 `/api/v2/chat/completions` 强制加密，但有明文回退分支（key 协商失败/网络错误/非 2xx 时 `falling back to plaintext`）。若服务端接受明文 → 无需碰 SM4-GCM，直接明文转发；若强制加密 → 须用 Rust 复刻整条链路（ECDH+SM4-GCM，格式已全暴露）。**实现第一步先用明文 curl 探测，再定夺**。
+16. **真正的「每日签到领积分」**（`/v1/ops/*`，§7.2）**无法复刻**：网关强制 `x-auth-token`（IAM 用户 token），
+    商用版由 DevKit toolkit 从外部注入，`Tr()` 自身返回 `""`；AKSK 签名与 STS `security_token` 均被拒
+    （`x-auth-token not found` / `decrypt token fail`，已实测）。除非另实现华为云 IAM 用户登录，否则放弃。
+17. 「签到领 100 积分」的数值与每日判定均在**服务端 `displayConfig`/`campaignId`** 中，客户端无硬编码，
+    需一次真实登录后的 delivery 响应才能取证（依赖第 16 项）。

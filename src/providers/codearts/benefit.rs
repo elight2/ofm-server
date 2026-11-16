@@ -1,5 +1,16 @@
 //! benefit-service「权益领取 / 余额 / 网关配置」复刻。
 //!
+//! # 与「限时福利 / 每日签到」的区别（重要）
+//!
+//! 本模块复刻的是 **benefit-service**（福利模型额度，`maas_type: benefit`），
+//! **不是** UI 上「限时福利 → 每日签到领 100 积分」。后者走完全不同的域名与协议：
+//! `https://snap-access.cn-north-4.myhuaweicloud.com/v1/ops/{delivery,claim,confirm}`，
+//! 且网关**强制** `x-auth-token`（IAM 用户 token）——商用版客户端由 DevKit toolkit 从外部注入
+//! （`Tr()` 返回 `""`），AKSK 签名与 STS `security_token` 均被拒（实测 `x-auth-token not found` /
+//! `decrypt token fail`）。因此**签到领积分无法在本 server 复刻**，详见 `provider-info/codearts.md` §7.2。
+//!
+//! 下方「签到」字样均指 benefit-service 的 claim（福利渠道就绪 / 额度预取）。
+//!
 //! 官方有**两套**实现（`provider-info/codearts.md` §7），端点相同、调用方式不同：
 //!
 //! | 来源 | 流程 |
@@ -23,7 +34,7 @@
 //!
 //! `Content-Type: application/json` + `x-snap-traceid`（uuid 无横线）+
 //! `X-Security-token` → SDK-HMAC-SHA256（`sign` 模块）。
-//! IDE 侧走 `x-auth-token` 而非 AKSK；server 只实现 AKSK 形态（实测两种形态等价）。
+//! 本网关接受 AKSK（与 `/v1/ops/*` 不同，后者强制 `x-auth-token`）。
 //!
 //! # 语义（实测 2026-02-18 / 2026-11-16）
 //!
