@@ -27,13 +27,18 @@ pub const CALLBACK_PATH: &str = "/oauth/callback";
 /// 等待回调超时（官方 kernel 为 5min）。
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// token 端点响应（扩展读取的字段）。
+/// token 端点响应。兼容官方两种形态（实测为扩展版形态，见 result.log）：
+/// * 扩展版（`bZe`/`Qri`）：`credentials.{access_key_id, secret_access_key,
+///   security_token, expiration}` + 顶层 `refresh_token`
+/// * kernel 版（`jri`）：`credential.{access, secret, securitytoken, expires_at}`
+///   + 顶层 `refresh_token` / `expiration`
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenResponse {
+    #[serde(alias = "credential")]
     pub credentials: Credentials,
     #[serde(default)]
     pub refresh_token: String,
-    /// 扩展读取的 `expiration` 字段（仅存档，实际有效期以 credentials.expires_at 为准）。
+    /// kernel 版顶层 `expiration`（仅存档）。
     #[serde(default)]
     #[allow(dead_code)]
     pub expiration: Option<String>,
@@ -41,17 +46,39 @@ pub struct TokenResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Credentials {
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub security_token: String,
-    /// ISO8601 时间串（如 `2026-02-13T07:38:53Z`）。
-    pub expires_at: String,
+    #[serde(default, alias = "access")]
+    pub access_key_id: Option<String>,
+    #[serde(default, alias = "secret")]
+    pub secret_access_key: Option<String>,
+    #[serde(default, alias = "securitytoken")]
+    pub security_token: Option<String>,
+    /// 扩展版叫 `expiration`，kernel 版叫 `expires_at`。
+    #[serde(default, alias = "expiration")]
+    pub expires_at: Option<String>,
 }
 
 impl TokenResponse {
-    /// `credentials.expires_at` → 毫秒时间戳（解析失败返回 None）。
-    pub fn expires_at_millis(&self) -> Option<i64> {
-        iso8601_to_millis(&self.credentials.expires_at)
+    /// 归一化为 `(AK, SK, security_token, refresh_token, expire_at_millis)`。
+    /// 必需字段缺失时返回 [`HttpError::Protocol`]。
+    pub fn into_parts(self) -> Result<(String, String, String, String, Option<i64>), HttpError> {
+        let c = self.credentials;
+        let missing = |name: &str| {
+            HttpError::Protocol(format!("token 响应缺少 {name}（原始字段形态与预期不符）"))
+        };
+        let ak = c
+            .access_key_id
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| missing("access_key_id"))?;
+        let sk = c
+            .secret_access_key
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| missing("secret_access_key"))?;
+        let st = c
+            .security_token
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| missing("security_token"))?;
+        let exp = c.expires_at.as_deref().and_then(iso8601_to_millis);
+        Ok((ak, sk, st, self.refresh_token, exp))
     }
 }
 
@@ -77,7 +104,8 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
 
     let client = api::token_client()?;
     let token = exchange_code(&client, &dpop_keys, &code, &callback_url, &verifier).await?;
-    let cred = Credential::from_token(token, verifier, dpop_keys);
+    let cred = Credential::from_token(token, verifier, dpop_keys)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     cred.store(&root)?;
 
     println!(
@@ -233,7 +261,23 @@ pub(crate) async fn request_token(
     if !(200..300).contains(&status) {
         return Err(HttpError::Status { status, body });
     }
-    serde_json::from_str(&body).map_err(|e| HttpError::Protocol(format!("解析 token 响应失败: {e}")))
+    serde_json::from_str(&body).map_err(|e| {
+        HttpError::Protocol(format!(
+            "解析 token 响应失败: {e}；响应片段: {}",
+            truncate(&body, 400)
+        ))
+    })
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// `application/x-www-form-urlencoded` 编码。
@@ -283,5 +327,54 @@ mod tests {
         assert!(parse_callback("code=abc&secret=xyz").is_ok());
         assert!(parse_callback("secret=xyz").is_err());
         assert!(parse_callback("code=").is_err());
+    }
+
+    /// 扩展版响应形态（bZe/Qri 读取的字段，实测 result.log 报错证实
+    /// `expires_at` 不存在，即扩展形态）。
+    #[test]
+    fn parses_vscode_shape() {
+        let body = r#"{
+            "credentials": {
+                "access_key_id": "AK",
+                "secret_access_key": "SK",
+                "security_token": "ST",
+                "expiration": "2026-02-13T07:38:53Z"
+            },
+            "refresh_token": "REF"
+        }"#;
+        let t: TokenResponse = serde_json::from_str(body).unwrap();
+        let (ak, sk, st, refresh, exp) = t.into_parts().unwrap();
+        assert_eq!(ak, "AK");
+        assert_eq!(sk, "SK");
+        assert_eq!(st, "ST");
+        assert_eq!(refresh, "REF");
+        assert!(exp.is_some());
+    }
+
+    /// kernel 版响应形态（jri：credential.{access,secret,securitytoken,expires_at}）。
+    #[test]
+    fn parses_kernel_shape() {
+        let body = r#"{
+            "credential": {
+                "access": "AK",
+                "secret": "SK",
+                "securitytoken": "ST",
+                "expires_at": "2026-02-13T07:38:53Z"
+            },
+            "refresh_token": "REF",
+            "expiration": "3600"
+        }"#;
+        let t: TokenResponse = serde_json::from_str(body).unwrap();
+        let (ak, sk, st, refresh, exp) = t.into_parts().unwrap();
+        assert_eq!((ak.as_str(), sk.as_str(), st.as_str(), refresh.as_str()),
+                   ("AK", "SK", "ST", "REF"));
+        assert!(exp.is_some());
+    }
+
+    #[test]
+    fn rejects_missing_fields() {
+        let body = r#"{ "credentials": { "access_key_id": "AK" } }"#;
+        let t: TokenResponse = serde_json::from_str(body).unwrap();
+        assert!(t.into_parts().is_err());
     }
 }

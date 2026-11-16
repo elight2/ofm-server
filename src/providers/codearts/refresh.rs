@@ -19,11 +19,8 @@ pub async fn refresh(client: &reqwest::Client, cred: &Credential) -> Result<Cred
         ("refresh_token", cred.refresh_token.as_str()),
     ];
     let token: TokenResponse = auth::request_token(client, &cred.dpop_key_pair, &url, &form).await?;
-    Ok(Credential::from_token(
-        token,
-        cred.code_verifier.clone(),
-        clone_keys(&cred.dpop_key_pair),
-    ))
+    Credential::from_token(token, cred.code_verifier.clone(), clone_keys(&cred.dpop_key_pair))
+        .map_err(|e| HttpError::Protocol(e.to_string()))
 }
 
 /// `KeyPair` 未实现 Clone 手动复制（PEM + JWK 都是小字符串）。

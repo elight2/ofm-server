@@ -9,6 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::core::credential;
+use crate::providers::codearts::api::HttpError;
 use crate::providers::codearts::{auth, dpop};
 
 pub const PROVIDER: &str = "codearts";
@@ -44,23 +45,23 @@ impl Credential {
         credential::store(root, PROVIDER, self)
     }
 
-    /// 由 token 响应 + 登录上下文构造凭证。
+    /// 由 token 响应 + 登录上下文构造凭证。字段缺失时返回 `HttpError::Protocol`。
     pub fn from_token(
         token: auth::TokenResponse,
         code_verifier: String,
         dpop_key_pair: dpop::KeyPair,
-    ) -> Self {
-        let expire_at_millis = token.expires_at_millis();
-        Self {
-            access_key_id: token.credentials.access_key_id,
-            secret_access_key: token.credentials.secret_access_key,
-            security_token: token.credentials.security_token,
-            refresh_token: token.refresh_token,
+    ) -> Result<Self, HttpError> {
+        let (ak, sk, st, refresh_token, expire_at_millis) = token.into_parts()?;
+        Ok(Self {
+            access_key_id: ak,
+            secret_access_key: sk,
+            security_token: st,
+            refresh_token,
             expire_at_millis,
             code_verifier,
             dpop_key_pair,
             last_auth_at: Some(now_millis()),
-        }
+        })
     }
 }
 
