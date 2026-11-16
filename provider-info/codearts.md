@@ -102,7 +102,12 @@ GET {portalHcAuthorizeUrl}/portal/authorize
 `CALLBACK_PATH = "/oauth/callback"`。国际站额外追加 `&quickcompfalg=1`。
 
 `PKCE.CODE_CHALLENGE_METHOD` 常量原文为 **`"SHA-256"`**（不是 `S256`）；
-`VERIFIER_LENGTH = 128`，verifier = `WordArray.random(128/2).toString(Hex)` = **64 个 hex 字符**。
+`VERIFIER_LENGTH = 128`，verifier = `WordArray.random(128/2).toString(Hex)` = **128 个 hex 字符（64 字节）**。
+（kernel 的 `UQ(128)` 同样是 `randomBytes(64).toString("hex")`。）
+
+回调请求可带 `code` 或旧版 `secret`：
+* `code` → §1.3 换 token；
+* `secret` → §1.6 `snap-manager/v1/login/ticket` 换票（扩展 `queryAuth` 为 90×3s 轮询，kernel 为 10×1s）。
 
 `portalHcAuthorizeUrl = productConfigs.codeartsWebNewUrl`；本包 product.json
 （isCommercialVersion=true，非 HK）实际值：
@@ -120,12 +125,18 @@ GET {portalHcAuthorizeUrl}/portal/authorize
 ### 1.2 授权 URL（agent kernel 版）`[打包JS]`
 
 ```
-GET {portalHcAuthorizeUrl}/portal/authorize
-  ?ticket_id=<…>
-  &auth_callback_url=http://127.0.0.1:<port>/<XQ>
-  &plugin-name=<Lf()>_vscode
-  &plugin-version=<…>
+GET {l}/authorize
+  ?locale=<language>
+  &client_id=CodeArts_Tui
+  &port=<callback 端口>
+  &code_challenge=<PKCE challenge>
+  &code_challenge_method=SHA-256
+  &ticket_id=<crypto.randomUUID()>
 ```
+`l` 是 kernel 配置里的门户基址（扩展版对应 `${portalHcAuthorizeUrl}/portal`）。
+kernel **不带** `auth_callback_url` / `plugin-name` / `plugin-version`，
+与扩展版 §1.1 不同，不能把两套参数混为一谈。
+
 `Bun.serve({port:0, hostname:"127.0.0.1"})`，`getCallbackUrl() = http://127.0.0.1:${port}${XQ}`。
 
 回调处理分支：
@@ -147,16 +158,18 @@ timeout: 60s, proxy: false
 
 body（`x-www-form-urlencoded`，`requestToken` 内拼装）：
 
-| grant_type | 字段 |
-|-|-|
-| `authorization_code` | `client_id=codearts-snap`、`code`、`code_verifier=<pkce verifier>`、`grant_type`、`redirect_uri=<callbackBase>${CALLBACK_PATH}` |
-| `refresh_token` | `client_id=codearts-snap`、`code_verifier`、`grant_type`、`refresh_token` |
+| 客户端 | grant_type | 字段 |
+|-|-|-|
+| 扩展 | `authorization_code` | `client_id=codearts-snap`、`code`、`code_verifier=<pkce verifier>`、`grant_type`、`redirect_uri=<callbackBase>${CALLBACK_PATH}` |
+| 扩展 | `refresh_token` | `client_id=codearts-snap`、`code_verifier`、`grant_type`、`refresh_token` |
+| kernel | `authorization_code` | `client_id=CodeArts_Tui`、`code`、`code_verifier`、`grant_type`、`redirect_uri=<callbackUrl>` |
+| kernel | `refresh_token` | `client_id=CodeArts_Tui`、`grant_type`、`refresh_token`（**不带** `code_verifier`，另带 `x-agent-user-account` 头） |
 
 DPoP（`Kti()`/`zti()`）：
 * 密钥：`crypto.subtle.generateKey({name:"ECDSA", namedCurve:"P-256"})`，`kty=EC`、`crv=P-256`
 * header `{typ:"dpop+jwt", alg:"ES256", jwk:publicKeyJwk}`
 * claims `{htm, htu, iat, jti}`，`jti = WordArray.random(32).toString(Hex)` = **64 个 hex 字符**
-* PKCE：verifier 见 §1.1（64 个 hex 字符）；`code_challenge = base64url(sha256(verifier))`，`+→-`、`/→_`、去 `=`
+* PKCE：verifier 见 §1.1（128 个 hex 字符）；`code_challenge = base64url(sha256(verifier))`，`+→-`、`/→_`、去 `=`
 * **DPoP 密钥对与 PKCE verifier 随登录上下文持久化，续期复用**（`refreshToken(e,r)` 直接读 `e.pkcePair.codeVerifier`）
 
 代理重试：无代理失败后读 `getProxyUrl()`，用 `HttpsProxyAgent` 重试一次。日志：
@@ -181,8 +194,13 @@ access_key_id, secret_access_key, security_token, expiration
 
 ### 1.5 落盘 `[打包JS]`
 
+> 下面是**官方客户端**的 secrets 结构（供对照）。本 server 的
+> `providers/codearts/credential.toml` 字段不同，见
+> `src/providers/codearts/credential.rs`（保存 AKSK、refresh_token、PKCE
+> verifier、DPoP 密钥对）。
+
 ```toml
-# providers/codearts/credential.toml
+# 官方客户端 secrets（非本 server 格式）
 type = "oauth"
 access = '<credentials JSON 原样>'
 refresh = "<refresh_token>"
@@ -197,8 +215,23 @@ JWT `user_profile`（第 2 段 base64url，`Hri()`）可解析出用户名等展
 
 ```
 GET {chatDomain}/snap-manager/v1/login/ticket?ticket_id=<…>&secret=<…>
+Content-Type: application/json;charset=UTF-8
+plugin-name: <Lf()>_vscode
+plugin-version: <Fr(!1)>
 ```
-成功返 IAM 凭证。用于 IDE 已登录时把凭证交给 kernel。
+响应直接为：
+
+```
+{domain_id, user_id, user_name,
+ credential: {access, secret, securitytoken, expires_at}}
+```
+
+扩展端将该响应交给 `jri()` 组装登录用户，不走 §1.3 的 OAuth token 端点；
+`jri()` 不读取 `refresh_token`，该响应通常也不含它。用于 IDE 已登录时把凭证交给 kernel。
+
+本 server 实现：`code` 优先；只有 `secret` 时按上表走 ticket 端点，
+采用 kernel 的 10×1s 重试。换票成功后写入 `credential.toml`（`refresh_token` 为空，
+无法用 `refresh` 子命令续期）。
 
 ---
 
@@ -710,10 +743,12 @@ headers: 同 §5（AKSK 签名 + X-Security-token）
     `codearts-snap`（26.11.100），`QH()` 返回该值；`"vscode-codebot"` 仅是 fallback 常量。
     kernel 版为 `CodeArts_Tui`。登录实现已按 `codearts-snap` 落地，**已实测接受**
     （登录/刷新均签发成功，见 credential.toml）
-11. 授权 URL 的 `port` 参数对服务端是否必需（官方为本地回调端口，本实现已带上）；
-    `secret` 轮询路径（queryAuth，90次×3s）未实现，`code` 直换应等价
+11. 授权 URL 的 `port` 参数对服务端是否必需（官方为本地回调端口，本实现已带上）。
+    `secret` 路径已按 §1.6 实现（10×1s 重试），但未做真实登录实测。
 12. token 响应的 `refresh_token` 在扩展侧读顶层字段（`t.refresh_token`），kernel 亦同；
-    与 `credentials` 平级。**响应确有 AKSK/STS 形态与其它形态两种**（`jri`/`bZe`），
-    实测时注意区分
+    与 `credentials` 平级，**已核实**。**响应确有 AKSK/STS 形态与其它形态两种**
+    （`jri`/`bZe`），实测时注意区分。
+13. 官方扩展的 token 请求在直连失败后会读代理并用 `HttpsProxyAgent` 重试一次；
+    本 server 的 `token_client()` 目前固定 `no_proxy`，未复刻该重试。
 
 > **加密对本项目的影响**：客户端对 `/api/v2/chat/completions` 强制加密，但有明文回退分支（key 协商失败/网络错误/非 2xx 时 `falling back to plaintext`）。若服务端接受明文 → 无需碰 SM4-GCM，直接明文转发；若强制加密 → 须用 Rust 复刻整条链路（ECDH+SM4-GCM，格式已全暴露）。**实现第一步先用明文 curl 探测，再定夺**。
