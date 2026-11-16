@@ -978,5 +978,7 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
     （`jri`/`bZe`），实测时注意区分。
 13. 官方扩展的 token 请求在直连失败后会读代理并用 `HttpsProxyAgent` 重试一次；
     本 server 的 `token_client()` 目前固定 `no_proxy`，未复刻该重试。
+14. ~~续期协议是否可用~~ → **已实测**（§2.1 实测段）：IDE 形态一次成功并轮换 `refresh_token`；
+    `refresh_token` 与签发方 `client_id` 强绑定、一次性使用。
 
 > **加密对本项目的影响**：客户端对 `/api/v2/chat/completions` 强制加密，但有明文回退分支（key 协商失败/网络错误/非 2xx 时 `falling back to plaintext`）。若服务端接受明文 → 无需碰 SM4-GCM，直接明文转发；若强制加密 → 须用 Rust 复刻整条链路（ECDH+SM4-GCM，格式已全暴露）。**实现第一步先用明文 curl 探测，再定夺**。
