@@ -7,7 +7,9 @@
 
 pub mod api;
 pub mod auth;
+pub mod balance;
 pub mod credential;
+pub mod models;
 pub mod refresh;
 
 use std::path::{Path, PathBuf};
@@ -75,8 +77,7 @@ impl RaccoonProvider {
     }
 
     /// 业务请求头。身份靠 Bearer + 这几个头；非 personal 才带 `X-Org-Code`。
-    fn headers(&self, token: &str, cred: &Credential) -> Vec<(&'static str, String)> {
-        let mut h = vec![
+    fn headers(&self, token: &str, cred: &Credential) -> Vec<(&'static str, String)> {        let mut h = vec![
             ("authorization", format!("Bearer {token}")),
             ("x-raccoon-language", "zh".to_string()),
             ("content-type", "application/json".to_string()),
@@ -86,6 +87,15 @@ impl RaccoonProvider {
             h.push(("x-org-code", org.to_string()));
         }
         h
+    }
+
+    /// 拉取模型目录（保留错误）。
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        models::fetch(&self.client, &self.headers(&token, &cred))
+            .await
+            .map_err(ProviderError::from)
     }
 
     /// 带头的 POST，返回原始字节（流式用）。
@@ -106,18 +116,12 @@ impl RaccoonProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(map_http_error(status.as_u16(), &text));
+            return Err(ProviderError::from(api::HttpError::Status {
+                status: status.as_u16(),
+                body: api::truncate(&text, 300),
+            }));
         }
         Ok(resp)
-    }
-}
-
-/// HTTP 层错误映射：401/403 视为凭证失效，其余为普通上游错误。
-fn map_http_error(status: u16, body: &str) -> ProviderError {
-    let snippet = api::truncate(body, 300);
-    match status {
-        401 | 403 => ProviderError::Unauthorized(snippet),
-        _ => ProviderError::Other(format!("上游 HTTP {status}: {snippet}")),
     }
 }
 
@@ -127,8 +131,30 @@ impl Provider for RaccoonProvider {
         ID
     }
 
+    /// 拉取模型目录。错误保留给 `models_checked`，这里只记日志。
     async fn models(&self) -> Vec<ModelInfo> {
-        Vec::new()
+        match self.fetch_models().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// 带错误的目录拉取：`status` 用它真实探测接入是否可用。
+    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        self.fetch_models().await
+    }
+
+    /// 读当前余额（主数字取 `available_points`）。
+    async fn balance(&self) -> Result<Option<f64>, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        let b = balance::fetch(&self.client, &self.headers(&token, &cred))
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(Some(b.main_points()))
     }
 
     fn credential_expire_at(&self) -> Option<i64> {

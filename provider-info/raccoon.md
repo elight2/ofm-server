@@ -162,8 +162,7 @@
       {type:"chat", default_model:"...", models:[
           {name, description, tags:[...], ability_level, params:{context_window, max_tokens},
            reasoning_efforts,
-           points_multiplier, billing_multiplier, billing_effective_multiplier,
-           billing_status:"normal"|"discount"|"limited_free", billing_status_note,
+           points_multiplier, billing_multiplier, billing_effective_multiplier, billing_status:"normal"|"discount"|"limited_free", billing_status_note,
            billing_discounts:[{name,multiplier,active,daily_start,daily_end,start_at,end_at}],
            display_description, visible}
       ]},
@@ -195,6 +194,15 @@
    "start_at":"2026-11-11T16:00:00Z","end_at":"2026-11-30T15:59:59Z"}]}
 ```
 注：文档早期写 `points_multiplier`，**实测响应里没有该字段**，只有 `billing_*` 系列。
+已核对全部 9 个模型的键集合，确认不含 `points_multiplier`。
+
+### 实现要点(已完成)
+`src/providers/raccoon/models.rs`：
+* 只取 `type=="chat"` 分类；同 `name` 先去重(保留首个)
+* `visible == Some(false)` 才过滤；**字段缺失视为可见**(不因上游省略字段丢模型)
+* 倍率映射 `ModelInfo.rate = billing_effective_multiplier`
+  注意 `Some(0.0)`(限免) 不等于 `None`，需原样保留
+* 未过滤前 9 个，过滤后 6 个
 
 ## 5. 余额获取
 * 积分余额：`GET https://xiaohuanxiong.com/api/web/points/v1/balance`
@@ -320,6 +328,11 @@ HTTP 400 {"code":200035,"message":"authorization_code_not_found_error","details"
 实测样例(11-15)：`available_points: 7713 = daily 300 + reward 7413`，
 `topup_points: 0`、`enterprise_reserved: false`、`owner_type: users`。
 注意 `reward_points` 无到期字段，与每日 300 分是不同池子。
+
+### 实现要点(已完成)
+`src/providers/raccoon/balance.rs`：`GET /api/web/points/v1/balance`，
+主数字取 `available_points`（实测 = 各分池之和）。
+字段均加 `#[serde(default)]`——余额是展示项，上游删字段时不应整条解析失败。
 
 唯一与「登录」相关的写接口是 `POST /api/web/desktop/v1/login/points/grant`
 (需 `X-Client-Platform: desktop-linux`、`X-Client-Version: v1.2.0`，

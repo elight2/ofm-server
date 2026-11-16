@@ -148,9 +148,36 @@ where
     let resp = http.send().await?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
+    parse_envelope::<R>(status.as_u16(), &text)
+}
+
+/// 发 GET 并解信封。
+///
+/// 模型目录、余额都是 GET，且同样可能业务错误回非 2xx，
+/// 故解析逻辑与 [`post_envelope`] 完全共用 [`parse_envelope`]。
+pub async fn get_envelope<R>(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(&str, String)],
+) -> Result<R, HttpError>
+where
+    R: DeserializeOwned,
+{
+    let mut http = client.get(url);
+    for (k, v) in headers {
+        http = http.header(*k, v);
+    }
+    let resp = http.send().await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    parse_envelope::<R>(status.as_u16(), &text)
+}
+
+/// 把 HTTP 状态 + 原文解析成 `data`。两种请求方式的公共部分。
+fn parse_envelope<R: DeserializeOwned>(status: u16, text: &str) -> Result<R, HttpError> {
     // ⚠️ 业务错误可能返回非 2xx（实测 200035 → HTTP 400），
     // 所以先尝试按信封解析，能拿到业务码就报业务错，保留错误码。
-    if let Ok(env) = serde_json::from_str::<Envelope<R>>(&text) {
+    if let Ok(env) = serde_json::from_str::<Envelope<R>>(text) {
         if !env.is_ok() {
             return Err(HttpError::Business {
                 code: env.code,
@@ -158,14 +185,14 @@ where
             });
         }
     }
-    if !status.is_success() {
+    if !(200..300).contains(&status) {
         return Err(HttpError::Status {
-            status: status.as_u16(),
-            body: truncate(&text, 300),
+            status,
+            body: truncate(text, 300),
         });
     }
-    let env: Envelope<R> = serde_json::from_str(&text)
-        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate(&text, 300))))?;
+    let env: Envelope<R> = serde_json::from_str(text)
+        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate(text, 300))))?;
     // 2xx 但缺 data：换 token 这类端点 data 必有，缺失即异常。
     env.data
         .ok_or_else(|| HttpError::Decode("响应缺少 data".to_string()))
