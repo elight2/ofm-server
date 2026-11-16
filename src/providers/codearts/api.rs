@@ -35,6 +35,16 @@ pub fn token_client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
+/// 对话客户端：不能设总超时（SSE 可持续数分钟），只限制连接/空闲读取。
+pub fn chat_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .user_agent("codearts/1.0.0 (ofm-server)")
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(600))
+        .no_proxy()
+        .build()
+}
+
 /// HTTP 层错误（登录/续期共用）。
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {

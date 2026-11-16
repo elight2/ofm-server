@@ -338,7 +338,11 @@ POST {base}/chat/completions
 调试日志：`[header-debug] _existingHeaders=…, alsModelName=…, finalModelName=…`、
 `[header-debug] hc headers model-id=…, model-name=…`。
 
-### 3.2 传输加密（SM4-GCM，**实现必须复刻**）`[打包JS]`
+### 3.2 传输加密（SM4-GCM，官方客户端路径）`[打包JS]`
+
+> **server 实现现状（2026-11-16）**：`src/providers/codearts/chat.rs` 走明文分支，
+> 不发送 `X-Encrypt-Capable`、不实现 SM4-GCM；实测明文 POST 能正常返回 SSE。
+> 本节保留官方加密链路，供后续上游强制加密时补全。
 
 配置 `S1`（offset 151428000 区）：
 
@@ -512,6 +516,31 @@ raw = 原始 usage
 兜底正则：`/"error_msg"\s*:\s*"([^"]+)"/`、`/"desensitizeHint"\s*:\s*"([^"]+)"/`。
 这里只是**旁路扫描并弹提示**，不会删除/替换内容，也不终止流；最后重新包
 `new Response(d, {status, headers})`，body 内容保持一致。
+
+### 3.8 server 实现状态（2026-11-16）
+
+已落地 `src/providers/codearts/chat.rs` / `stream.rs`：
+
+* `POST {SNAP_GATEWAY}/api/v2/chat/completions`，`stream:true`；非流式由 server 聚合。
+* AKSK 签名头：`content-type`、`x-sdk-content-sha256`（body SHA256）、
+  `x-security-token`、可选 `maas_type:benefit`；trace/model 头在签名后追加。
+* 请求体：`model`/`messages`/`stream`/`max_tokens:65536`/`tool_stream`/`tools`/
+  `tool_choice`/`prompt_cache_key`；assistant 历史恒带 `reasoning_content`。
+* 响应：标准 CC SSE，解析 `content`、`reasoning_content`/`reasoning`、`tool_calls`、
+  `finish_reason`、`usage`；错误帧兼容 `error` 与顶层 `error_code/error_msg`。
+* `TM.00001041` 并发会话满：HTTP 400 时每 10s 重试，最多 180 次（30 分钟）。
+
+**未实现/已知限制**：
+
+* SM4-GCM 加密链路（§3.2）未实现；当前依赖上游明文回退，实测可用。
+* SSE 流内 `TM.00001041` 等排队错误不会自动重连（HTTP 400 会重试）。
+* 首帧租户冻结/内容安全扫描/客户端断开取消未复刻。
+* `glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型：本账号带
+  `maas_type:benefit` 实测返回 `InferHub.APIG.0101.404`（疑似账号无 benefit 权益），
+  普通模型 `GLM-5.2`、`glm-5.3` 正常。
+
+**已实测**：`GLM-5.2` 流式/非流式、工具调用（`get_time`）、工具结果回传均正常；
+`test` 用户的 pi 通过本地 `ofm` provider 完成纯文本对话和工具获取系统信息测试。
 
 ---
 

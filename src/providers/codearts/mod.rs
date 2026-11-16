@@ -2,8 +2,7 @@
 //!
 //! 已实现：登录（`auth`，PKCE + DPoP + 本地回调）、续期（`refresh`）、
 //! 模型列表（`catalog`，PromptCenter builtin）、签到/余额（`benefit`，
-//! SDK-HMAC-SHA256 签名见 `sign`）。`chat` 尚未实现——需先实测上游
-//! 明文/加密链路（见 `provider-info/codearts.md` §8 未验证清单）。
+//! SDK-HMAC-SHA256 签名见 `sign`）、对话（`chat`，明文 CC SSE）。
 //!
 //! 协议实况见 `provider-info/codearts.md`。
 
@@ -11,11 +10,13 @@ pub mod api;
 pub mod auth;
 pub mod benefit;
 pub mod catalog;
+pub mod chat;
 pub mod credential;
 pub mod dpop;
 pub mod pkce;
 pub mod refresh;
 pub mod sign;
+pub mod stream;
 
 use std::path::PathBuf;
 
@@ -31,6 +32,7 @@ pub const ID: &str = "codearts";
 pub struct CodeartsProvider {
     root: PathBuf,
     client: reqwest::Client,
+    chat_client: reqwest::Client,
     /// AKSK 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
@@ -40,6 +42,7 @@ impl CodeartsProvider {
         Self {
             root,
             client: api::token_client().expect("构建 HTTP 客户端失败"),
+            chat_client: api::chat_client().expect("构建对话 HTTP 客户端失败"),
             refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -122,8 +125,9 @@ impl Provider for CodeartsProvider {
         self.fetch_models().await
     }
 
-    async fn chat(&self, _req: ChatRequest) -> Result<EventStream, ProviderError> {
-        Err(ProviderError::Unsupported("codearts chat"))
+    async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
+        let cred = self.valid_credential().await?;
+        chat::stream(&self.chat_client, &cred, &req).await
     }
 
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {

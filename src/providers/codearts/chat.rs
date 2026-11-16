@@ -1,0 +1,395 @@
+//! CodeArts Chat Completions 请求。
+//!
+//! 上游就是 OpenAI CC 兼容端点：`POST {SNAP_GATEWAY}/api/v2/chat/completions`。
+//! 按 `provider-info/codearts.md` §3 与已实测的 ofm 插件实现，本模块只负责：
+//! * 内部 [`ChatRequest`] → 上游 CC JSON；
+//! * AKSK 签名（body hash + `X-Security-token`）；
+//! * 发送并把字节流交给通用 SSE 驱动器。
+//!
+//! 加密链路（SM4-GCM）不是本实现的必经路径：实测明文请求可正常出流；
+//! 若后续需要强制加密，可在本模块的发送层加拦截，见文档 §3.2。
+
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+use crate::core::events::EventStream;
+use crate::core::provider::{ChatRequest, Message, Part, ProviderError, Role};
+
+use super::api::SNAP_GATEWAY;
+use super::credential::Credential;
+use super::pkce::uuid_v4;
+use super::sign;
+
+pub const CHAT_PATH: &str = "/api/v2/chat/completions";
+const CHAT_UA: &str = "codearts/1.0.0 (ofm-server)";
+const CLIENT_VERSION: &str = "1.0.0";
+const DEFAULT_MAX_TOKENS: u64 = 65536;
+
+/// 请求体。字段对齐 CodeArts 网关（明文分支）：
+/// * `tool_stream` 让工具参数分片流式返回，避免大参数被网关掐断；
+/// * `max_tokens` 给足输出空间（参考实现默认 65536）。
+#[derive(Debug, Serialize)]
+struct ChatBody {
+    model: String,
+    messages: Vec<serde_json::Value>,
+    stream: bool,
+    max_tokens: u64,
+    tool_stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
+    /// 前缀缓存 / 会话标识；缺失时缓存命中恒为 0。
+    prompt_cache_key: String,
+}
+
+impl ChatBody {
+    fn build(req: &ChatRequest) -> Self {
+        Self {
+            model: req.model.clone(),
+            messages: req.messages.iter().map(convert_message).collect(),
+            stream: true,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            tool_stream: true,
+            tools: req
+                .tools
+                .iter()
+                .map(|t| {
+                    let mut f = serde_json::Map::new();
+                    f.insert("name".into(), serde_json::Value::String(t.name.clone()));
+                    if let Some(d) = &t.description {
+                        f.insert("description".into(), serde_json::Value::String(d.clone()));
+                    }
+                    if let Some(p) = &t.parameters {
+                        f.insert("parameters".into(), p.clone());
+                    }
+                    serde_json::json!({
+                        "type": "function",
+                        "function": serde_json::Value::Object(f),
+                    })
+                })
+                .collect(),
+            tool_choice: req.tool_choice.to_json(),
+            prompt_cache_key: format!("ofm-{}", uuid_v4().replace('-', "")),
+        }
+    }
+}
+
+fn convert_message(m: &Message) -> serde_json::Value {
+    let only_text = m.parts.iter().all(|p| matches!(p, Part::Text(_)));
+    let content = if only_text {
+        serde_json::Value::String(
+            m.parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<String>(),
+        )
+    } else {
+        let parts: Vec<serde_json::Value> = m
+            .parts
+            .iter()
+            .map(|p| match p {
+                Part::Text(t) => serde_json::json!({"type": "text", "text": t}),
+                Part::Image { url, .. } => {
+                    serde_json::json!({"type": "image_url", "image_url": {"url": url}})
+                }
+            })
+            .collect();
+        serde_json::Value::Array(parts)
+    };
+
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "role".into(),
+        serde_json::Value::String(role_str(m.role).into()),
+    );
+    obj.insert("content".into(), content);
+
+    // deepseek-v4 后端要求历史 assistant 消息必须带 reasoning_content 字段；
+    // 内部没有持久化思考内容，给空串即可。
+    if m.role == Role::Assistant {
+        obj.insert(
+            "reasoning_content".into(),
+            serde_json::Value::String(String::new()),
+        );
+    }
+
+    if !m.tool_calls.is_empty() {
+        obj.insert(
+            "tool_calls".into(),
+            serde_json::Value::Array(
+                m.tool_calls
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": c.arguments}
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    if m.role == Role::Tool {
+        if let Some(id) = &m.tool_call_id {
+            obj.insert("tool_call_id".into(), serde_json::Value::String(id.clone()));
+        }
+        if let Some(name) = &m.tool_name {
+            obj.insert("name".into(), serde_json::Value::String(name.clone()));
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn role_str(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+/// benefit 模型必须带 `maas_type: benefit` 且参与签名，否则网关报
+/// `InferHub.002002009.404 model is not registered`。
+/// 兜底集合来自 ofm 插件实测；带日期后缀的变体也按前缀识别。
+fn is_benefit_model(model: &str) -> bool {
+    model.starts_with("glm-5.3-flash") || model.starts_with("deepseek-v4.1-flash")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn header_map(
+    pairs: impl IntoIterator<Item = (String, String)>,
+) -> Result<HeaderMap, ProviderError> {
+    let mut map = HeaderMap::new();
+    for (k, v) in pairs {
+        let name = HeaderName::from_bytes(k.as_bytes())
+            .map_err(|e| ProviderError::Other(format!("非法请求头 {k}: {e}")))?;
+        let value = HeaderValue::from_str(&v)
+            .map_err(|e| ProviderError::Other(format!("非法请求头值 {k}: {e}")))?;
+        map.insert(name, value);
+    }
+    Ok(map)
+}
+
+/// 发起 chat 请求，返回内部事件流。
+pub async fn stream(
+    client: &reqwest::Client,
+    cred: &Credential,
+    req: &ChatRequest,
+) -> Result<EventStream, ProviderError> {
+    let url = format!("{SNAP_GATEWAY}{CHAT_PATH}");
+    for attempt in 0..=QUEUE_MAX_ATTEMPTS {
+        if attempt > 0 {
+            tracing::warn!(
+                "[codearts] 并发会话已满（TM.00001041），{}s 后重试（{attempt}/{QUEUE_MAX_ATTEMPTS}）",
+                QUEUE_RETRY_SECS
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(QUEUE_RETRY_SECS)).await;
+        }
+
+        let body = serde_json::to_string(&ChatBody::build(req))
+            .map_err(|e| ProviderError::Other(format!("序列化 chat 请求失败: {e}")))?;
+        let body_hash = sha256_hex(body.as_bytes());
+
+        // 与已验证的 ofm 插件一致：content-type、body hash、security token 和
+        // maas_type 参与签名；trace/model 头在签名后追加（不参与验签）。
+        let mut signed_headers: Vec<(&'static str, String)> = vec![
+            ("content-type", "application/json".to_string()),
+            ("x-sdk-content-sha256", body_hash),
+            ("x-security-token", cred.security_token.clone()),
+        ];
+        if is_benefit_model(&req.model) {
+            signed_headers.push(("maas_type", "benefit".to_string()));
+        }
+        let signed = sign::sign(
+            &sign::Request {
+                method: "POST",
+                url: &url,
+                headers: signed_headers,
+                query: None,
+                body: Some(&body),
+            },
+            &cred.access_key_id,
+            &cred.secret_access_key,
+        )
+        .map_err(|e| ProviderError::Other(format!("AKSK 签名失败: {e}")))?;
+
+        let session_id = uuid_v4().replace('-', "");
+        let created = timestamp_ms();
+        let msg_id = format!("{session_id}-{created}");
+        let mut extra: Vec<(String, String)> = vec![
+            ("user-agent".into(), CHAT_UA.into()),
+            ("accept".into(), "text/event-stream".into()),
+            ("app-id".into(), "CodeAgent3.0".into()),
+            ("is-need-queue".into(), "true".into()),
+            ("x-language".into(), "zh-cn".into()),
+            ("x-ot-client-type".into(), "IDE".into()),
+            ("x-ot-client-version".into(), CLIENT_VERSION.into()),
+            ("x-ot-function".into(), "agent-tui".into()),
+            ("x-ot-trace-id".into(), session_id.clone()),
+            ("x-ot-span-id".into(), session_id.clone()),
+            ("x-snap-traceid".into(), session_id.clone()),
+            ("x-ot-session-id".into(), session_id.clone()),
+            ("user-session-id".into(), session_id.clone()),
+            ("user-msg-id".into(), msg_id),
+            ("created-time".into(), created.to_string()),
+            ("model-id".into(), req.model.clone()),
+            ("model-name".into(), req.model.clone()),
+        ];
+        // 签名结果优先；附加头不参与验签，可覆盖同名默认值。
+        extra.retain(|(k, _)| !signed.iter().any(|(sk, _)| sk.eq_ignore_ascii_case(k)));
+        let mut pairs: Vec<(String, String)> = signed;
+        pairs.extend(extra);
+        let headers = header_map(pairs)?;
+
+        let resp = client
+            .post(&url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await
+            .map_err(ProviderError::Transport)?;
+        let status = resp.status();
+        if status.is_success() {
+            let mut parser = super::stream::FrameParser::new();
+            return Ok(crate::core::stream::drive(resp.bytes_stream(), move |ev| {
+                parser.parse(ev)
+            }));
+        }
+
+        let text = resp.text().await.unwrap_or_default();
+        if is_queue_error(status.as_u16(), &text) && attempt < QUEUE_MAX_ATTEMPTS {
+            continue;
+        }
+        let snippet = truncate(&text, 500);
+        return Err(match status.as_u16() {
+            401 | 403 => {
+                ProviderError::Unauthorized(format!("codearts chat HTTP {status}: {snippet}"))
+            }
+            400 if is_queue_error(400, &text) => {
+                ProviderError::Protocol(format!("codearts 排队超时: {snippet}"))
+            }
+            _ => ProviderError::Protocol(format!("codearts chat HTTP {status}: {snippet}")),
+        });
+    }
+    unreachable!("循环必然在成功或重试耗尽时返回")
+}
+
+/// 并发会话满：HTTP 400 + `TM.00001041`（有时伴随 peak usage 文案）。
+fn is_queue_error(status: u16, body: &str) -> bool {
+    status == 400
+        && (body.contains("TM.00001041")
+            || body.to_ascii_lowercase().contains("peak usage")
+            || body.to_ascii_lowercase().contains("high demand"))
+}
+
+const QUEUE_RETRY_SECS: u64 = 10;
+const QUEUE_MAX_ATTEMPTS: usize = 180;
+
+fn timestamp_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::provider::{Message, Part, Role, ToolCall, ToolChoice, ToolSpec};
+
+    fn user(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            parts: vec![Part::Text(text.into())],
+            tool_calls: vec![],
+            tool_call_id: None,
+            tool_name: None,
+        }
+    }
+
+    #[test]
+    fn body_is_standard_cc_and_streams() {
+        let req = ChatRequest {
+            model: "GLM-5.2".into(),
+            messages: vec![user("你好")],
+            tools: vec![ToolSpec {
+                name: "get_time".into(),
+                description: Some("取时间".into()),
+                parameters: Some(serde_json::json!({"type": "object"})),
+            }],
+            tool_choice: ToolChoice::Auto,
+        };
+        let v = serde_json::to_value(ChatBody::build(&req)).unwrap();
+        assert_eq!(v["stream"], true);
+        assert_eq!(v["messages"][0]["content"], "你好");
+        assert_eq!(v["tools"][0]["function"]["parameters"]["type"], "object");
+        assert!(v.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn assistant_always_has_reasoning_content_and_tool_calls() {
+        let req = ChatRequest {
+            model: "deepseek-v4.1-flash".into(),
+            messages: vec![Message {
+                role: Role::Assistant,
+                parts: vec![],
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "get_time".into(),
+                    arguments: "{}".into(),
+                }],
+                tool_call_id: None,
+                tool_name: None,
+            }],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+        };
+        let v = serde_json::to_value(ChatBody::build(&req)).unwrap();
+        assert_eq!(v["messages"][0]["reasoning_content"], "");
+        assert_eq!(
+            v["messages"][0]["tool_calls"][0]["function"]["name"],
+            "get_time"
+        );
+    }
+
+    #[test]
+    fn queue_error_detection() {
+        assert!(is_queue_error(400, r#"{"error_code":"TM.00001041"}"#));
+        assert!(!is_queue_error(
+            400,
+            r#"{"error_code":"InferHub.4291.200"}"#
+        ));
+        assert!(!is_queue_error(401, "TM.00001041"));
+    }
+
+    #[test]
+    fn benefit_models_are_identified() {
+        assert!(is_benefit_model("glm-5.3-flash"));
+        assert!(is_benefit_model("deepseek-v4.1-flash-1017"));
+        assert!(!is_benefit_model("GLM-5.2"));
+    }
+}
