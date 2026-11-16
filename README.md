@@ -32,3 +32,7 @@
 ## 技术信息
 * 使用Rust语言
 * 日志可适配systemd, 也支持独立运行
+
+## 构建
+* release模式: `cargo build --release`
+
