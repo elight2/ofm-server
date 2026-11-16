@@ -257,6 +257,19 @@ plugin-version: <Fr(!1)>
 * 响应处理与登录完全一致（IDE 走 `validateTokenResponse`，kernel 走 `$.credentials`），取 `credentials.access_key_id/secret_access_key/security_token/expiration` 与顶层 `refresh_token`。
 * kernel 只在 `Error.message` 含 `401` 时清 auth store（视为 refresh token 已吊销）；IDE 无此分支。
 
+**实测（2026-11-16，`testdata` 令牌）**：用 IDE 形态（`codearts-snap` + `code_verifier` + DPoP）
+一次成功，返回新 AKSK + 轮换后的 `refresh_token`（JWT `iat` 更新、`counter` 1→2、`family_id` 不变），
+新 AKSK 可正常拉模型目录。
+
+**关键结论：`refresh_token` 与签发它的 `client_id` 绑定，且一次性轮换。**
+
+* 用 `CodeArts_Tui` 携带 `codearts-snap` 签发的令牌 → `400 STS5.1806 invalid refresh token: 'invalid client id: codearts-snap'`；
+* 用 `codearts-snap` 携带已被用过的令牌 → `400 STS5.1806 invalid refresh token: 'the refresh token has been used'`。
+
+因此 `client_id` **绝不能跨客户端借用**（kernel 形态只适用于 kernel 签发的令牌，且那种令牌续期后
+`refresh_token` 返回空串）；服务端拒绝 `client_id` 不匹配时**不会消耗**令牌，但一旦成功就必须立即
+用响应里的新 `refresh_token` 覆盖旧值并落盘。
+
 ### 2.2 续期决策与调度 `[打包JS]`
 
 阈值：
@@ -321,6 +334,23 @@ extension `ensureTokenValid()` 在 `kr`（IDE 宿主模式）下改为执行命�
 kernel 轮询 `n = 120000`ms（120s）；`T()` 另有限流：仅当带 `CODEARTS_CLI_AK/SK` 或
 `HW_ACCESS_KEY/SECRET_KEY/SECURITY_TOKEN` 时按 `xQ = 3600000`ms（1h）节流重建会话。
 检测失败 → `LQ()` 打印/派发 `FORCED_LOGOUT` 并 `process.exit(0)`。
+
+### 2.6 server 实现状态（2026-11-16）
+
+`src/providers/codearts/refresh.rs` + `mod.rs`：
+
+| 项 | 做法 |
+|-|-|
+| 请求 | IDE 形态（`client_id=codearts-snap` + `code_verifier` + `DPoP` + `Accept`） |
+| 回退 | 仅在非 `invalid_grant` 类失败（5xx/网络/其它 4xx）时试一次 kernel 形态（`CodeArts_Tui`，不带 `code_verifier`） |
+| 轮换 | 响应 `refresh_token` 为空时沿用旧值；否则覆盖落盘 |
+| 串行 | `refresh_lock` 保护，避免 `refresh_token` 轮换冲突 |
+| 被动 | `valid_credential()`：`expire_at < now+60s` 即续期（比官方 10min 更保守） |
+| 主动 | `refresh` 子命令不检查是否过期，直接续期 |
+| 错误 | 401 / `invalid_grant` / `invalid_token` / 包含 `expired` → `Unauthorized`（提示重新登录）；其余保留上游报文 |
+| 未做 | IDE 的 120s 首次定时器与 `scheduleRenewal` 节奏（被动续期在请求前按需触发）、失败重试周期、`softLogout`、代理重试 |
+
+实测：`ofm-server refresh codearts` 对 `testdata` 令牌成功；新凭证 `status` 显示 12 个模型。
 
 ---
 

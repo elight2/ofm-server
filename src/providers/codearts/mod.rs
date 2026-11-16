@@ -71,16 +71,25 @@ impl CodeartsProvider {
         if !cred.aks_expired() {
             return Ok(cred);
         }
+        self.refresh_locked(&cred).await
+    }
+
+    /// 续期并落盘（调用方必须已持 `refresh_lock`）。
+    async fn refresh_locked(
+        &self,
+        cred: &credential::Credential,
+    ) -> Result<credential::Credential, ProviderError> {
+        if cred.refresh_token.is_empty() {
+            return Err(ProviderError::Unauthorized(
+                "凭证没有 refresh_token（ticket 换票登录），请重新运行 `ofm-server login codearts`"
+                    .to_string(),
+            ));
+        }
 
         tracing::info!("[{ID}] AKSK 已过期，正在续期");
-        let new = refresh::refresh(&self.client, &cred)
+        let new = refresh::refresh(&self.client, cred)
             .await
-            .map_err(|e| match e {
-                HttpError::Status { status: 401, .. } => {
-                    ProviderError::Unauthorized("refresh_token 已失效，请重新登录".to_string())
-                }
-                other => ProviderError::Other(format!("续期失败: {other}")),
-            })?;
+            .map_err(refresh_error)?;
         new.store(&self.root)
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
         tracing::info!("[{ID}] AKSK 续期成功");
@@ -142,22 +151,33 @@ impl Provider for CodeartsProvider {
     }
 
     /// 续期：复用持久化的 PKCE verifier + DPoP 密钥换新 AKSK。
+    ///
+    /// 与被动续期不同，这里**不检查是否过期**：用户显式要求刷新就刷新
+    /// （`refresh_token` 会轮换，刷新后旧令牌即失效，需立即落盘）。
     async fn refresh(&self) -> Result<String, ProviderError> {
         let _guard = self.refresh_lock.lock().await;
         let cred = self.credential()?;
-        let new = refresh::refresh(&self.client, &cred)
-            .await
-            .map_err(|e| match e {
-                HttpError::Status { status: 401, .. } => {
-                    ProviderError::Unauthorized("refresh_token 已失效，请重新登录".to_string())
-                }
-                other => ProviderError::Other(format!("续期失败: {other}")),
-            })?;
-        new.store(&self.root)
-            .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
+        let new = self.refresh_locked(&cred).await?;
         Ok(match new.expire_at_millis {
             Some(ms) => format!("续期成功，新凭证到期时间 {}", crate::core::fmt_ms(ms)),
             None => "续期成功（上游未返回有效期）".to_string(),
         })
+    }
+}
+
+/// 续期错误归一：令牌确实失效时提示重新登录，其余保留上游原因。
+fn refresh_error(e: HttpError) -> ProviderError {
+    match &e {
+        HttpError::Status { status, body }
+            if *status == 401
+                || body.contains("invalid_grant")
+                || body.contains("invalid_token")
+                || body.contains("expired") =>
+        {
+            ProviderError::Unauthorized(format!(
+                "refresh_token 已失效（{e}），请重新运行 `ofm-server login {ID}`"
+            ))
+        }
+        _ => ProviderError::Other(format!("续期失败: {e}")),
     }
 }

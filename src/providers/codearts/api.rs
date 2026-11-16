@@ -16,6 +16,8 @@ pub const SNAP_GATEWAY_BACKUP: &str = "https://snap-access.cn-north-4.myhuaweicl
 /// `client_id` = 扩展 package.json 的 `name`（`QH()` 的实际返回值）。
 /// 注意 `provider-info/codearts.md` 早期写的是 `vscode-codebot`，那是 fallback。
 pub const CLIENT_ID: &str = "codearts-snap";
+/// agent kernel 的 `client_id`（`CodeArts_Tui`）。续期回退形态与 kernel 版授权 URL 用。
+pub const CLIENT_ID_KERNEL: &str = "CodeArts_Tui";
 /// 授权 URL 的 `plugin-name`（`${Lf()}_vscode`，非内部版为 `snap`）。
 pub const PLUGIN_NAME: &str = "snap_vscode";
 /// `plugin-version`（扩展 package.json `version`）。
