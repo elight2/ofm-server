@@ -35,8 +35,11 @@ pub enum Command {
         /// 供应商 id（如 trae）
         provider: String,
     },
-    /// 签到所有供应商
-    Claim,
+    /// 签到（不带参数签所有供应商，带 `provider` 只签该供应商）
+    Claim {
+        /// 供应商 id（如 codearts）
+        provider: Option<String>,
+    },
     /// 获取供应商当前信息（接入状态、余额、签到记录、凭证到期、模型列表）
     Status {
         /// 供应商 id（如 trae）

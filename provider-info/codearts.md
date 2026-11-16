@@ -945,14 +945,40 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 | 前置条件 | 仅 `config` 有 models | 三个 `*-gateway-config` 开关 |
 | 后续动作 | 合并福利模型 | `enableBenefitClaim` POST + 余额 |
 
-**实测记录（2026-02-18）**：未开通权益账号 claim 返回 `4000 invalid channel, group not found`
-（POST body `{}` 与空 body 均试过）。**该 4000 在 `RFn.config` 中意为 `group not found`，属“账号未开通该渠道”，
-不应记为签到失败故障。**
+### 7.4 实测与 server 实现（2026-11-16）
 
-本 server 现状：`benefit.rs` 只复刻了 kernel 的 `POST {}`，缺 IDE 的 GET + channel 分支；
-并请求一次 `gateway/config` 判断可用性（见 §5.1）。签到记录写 `providers/codearts/claim.log`。
+**上游实测**（`testdata` 凭证，直连生产网关，逐项单独构造签名）：
 
----
+| 请求 | 结果 |
+|-|-|
+| `GET /api/v1/benefit/claim` | `200 {"error_code":"4000","error_msg":"invalid channel, group not found"}` |
+| `GET /api/v1/benefit/claim?channel=education` | 同上（query 参与/不参与 canonical query 结果相同） |
+| `POST /api/v1/benefit/claim` body `{}` | 同上 |
+| `GET /api/v1/gateway/config` | 同上 |
+| `GET /api/v1/user/tokens/balance` | 同上 |
+| 缺 `X-Security-token` | `401 APIG.0301 ... access key is not found` |
+
+结论：本账号**权益渠道未开通**，四个端点一致返回 `4000`，与 method / channel / body 无关；
+`4000` 不是签到逻辑错误，**不能记为「签到失败」故障**（§6.4 中 `RFn.claim` 把 4000 视为「参数错误」，
+但服务端实际语义是 `group not found`）。今天能否领到 100 取决于账号是否开通权益，与客户端实现无关。
+
+补充实测（签名细节）：
+* `X-Security-token` **必须**进签名头集合，否则 401（AK 查不到）。
+* 有 body 时必须签 `sha256(body)`；`X-Sdk-Date` 必须参与签名。
+* 发出去的 `Authorization.SignedHeaders` **不含 query 键**，canonical query 留空即可。
+
+**server 实现**（`src/providers/codearts/benefit.rs`）：
+
+* 复刻 **IDE 的 GET 流程**（含 channel 分支），成功后补 `POST enableBenefitClaim`
+  （benefit → `{}`，education/examination → `{"channel":"…"}`），最后读余额。
+* 三渠道结果映射：`0000` 领取成功、`4006` 今日已签、`4000` 渠道未开通（均不计为故障）；
+  仅当 HTTP 非 2xx / 其它业务码才报错。
+* `ClaimReport.message` 用短句：`签到成功` / `今日已签到` / `权益渠道未开通（签到不可用）`。
+* `claim` 子命令新增可选 `provider` 参数（`ofm-server claim codearts` 只签一家）。
+* 单测覆盖：`GET claim → POST {} → balance` 调用顺序、`4006` 不触发 POST、
+  全渠道 `4000` 归为跳过、HTTP 401 必须报错（本地 mock 校验 method/顺序/签名头/body）。
+* `gateway/config` 已实现（`fetch_config`），但 server 暂不消费其模型表：福利模型走 chat 需
+  `maas_type: benefit`（§5.2），而本账号无福利模型可测。
 
 ## 8. 未验证清单（实现时优先实测）
 
@@ -960,8 +986,10 @@ IDE 成功判定 `c?.statusCode === 200 && c?.data?.error_code === "0000"`。
 2. ~~`/v1/oauth2/tokens` 响应字段名~~ → **已核实**：`{credentials:{access_key_id, secret_access_key, security_token, expiration}, refresh_token}`，`refresh_token` 与 `credentials` 平级。续期时 IDE 带 `code_verifier`、kernel 不带且加 `x-agent-user-account`（§2.1）
 3. ~~`/snap-manager/v1/token/renew` 的 method 与响应结构~~ → **已核实为死端点**：IDE 端点表仅声明 + getter，无调用方；kernel 无此字符串。续期唯一链路是 `refresh_token` 重放（§2.3）
 4. `balance` 返回字段：字段名已从 webview 取证（`used_amount`/`total_quota`，
-   education 为 `monthly_tokens_used`/`monthly_token_limit`，见 §5）；数值形态未验证
-5. ~~`claim` 是否需要 `channel` 参数~~ → **已核实**：kernel `POST` 不带 channel（默认 benefit）；IDE 用 `GET ?channel=education|examination` 分支，并对 education/examination 补 `POST enableBenefitClaim`（§7.2）
+   education 为 `monthly_tokens_used`/`monthly_token_limit`，见 §5）；**数值形态仍未验证**
+   ——本账号 `4000`（未开通），拿不到真实 `result`
+5. ~~`claim` 是否需要 `channel` 参数~~ → **已核实并实测**：kernel `POST` 不带 channel（默认 benefit）；IDE 用 `GET ?channel=education|examination` 分支，并对 education/examination 补 `POST enableBenefitClaim`（§7.2）。
+   实测本账号四端点恒 `4000`（渠道未开通），server 已按 IDE 流程实现（§7.4）
 6. **上游是否真接受未加密（明文）chat 请求** ← 实现前最高优先级，用一次真实请求定夺，决定是否需复刻 SM4-GCM
 7. `response_format` / `logprobs` / `n>1` 上游支持情况
 8. 排队态是否发 notice 帧给下游

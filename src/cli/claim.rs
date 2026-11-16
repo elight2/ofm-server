@@ -1,8 +1,10 @@
-//! `ofm-server claim`：串行签到所有供应商。
+//! `ofm-server claim [供应商id]`：签到。
+//!
+//! 不带参数时串行签到所有供应商；带参数只签该供应商（便于单测与排障）。
 //!
 //! 串行而非并发：签到要读余额前后对比，并发会让对账混在一起。
 //!
-//! 每次签到（成功/跳过/失败）都写一条 `providers/<id>/claim.log` 记录。
+//! 每次签到（领取/已领/未开通/失败）都写一条 `providers/<id>/claim.log` 记录。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,9 +13,17 @@ use crate::core::claimlog::{self, Entry};
 use crate::core::provider::Provider;
 use crate::core::registry::Registry;
 
-pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
+pub async fn run(root: std::path::PathBuf, provider_id: Option<&str>) -> anyhow::Result<()> {
     let registry = crate::providers::build_registry(&root);
-    claim_all(&registry, &root).await;
+    match provider_id {
+        Some(id) => {
+            let provider = registry
+                .get(id)
+                .ok_or_else(|| anyhow::anyhow!("未知供应商 `{id}`"))?;
+            claim_one(&provider, &root).await;
+        }
+        None => claim_all(&registry, &root).await,
+    }
     Ok(())
 }
 
@@ -24,7 +34,7 @@ pub async fn claim_all(registry: &Registry, root: &Path) {
     }
 }
 
-/// 签到单个供应商。成功/跳过/失败均写一条 `claim.log`。
+/// 签到单个供应商。结果均写一条 `claim.log`。
 ///
 /// 自动签到按供应商独立计时，直接调本函数。
 pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
@@ -32,13 +42,14 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
         let id = provider.id();
         let (result, balance, delta) = match provider.claim().await {
             Ok(report) => {
+                // `skipped` 覆盖两种「本次没领到」：今日已领、渠道未开通；
+                // 具体原因在 message 里，不要一概记成「成功」。
                 if report.skipped {
                     tracing::info!("[{id}] 签到跳过: {}", report.message);
-                    (format!("跳过: {}", report.message), report.balance, None)
                 } else {
                     tracing::info!("[{id}] 签到完成: {}", report.message);
-                    ("成功".to_string(), report.balance, report.credits_delta)
                 }
+                (report.message, report.balance, report.credits_delta)
             }
             Err(e) => {
                 tracing::warn!("[{id}] 签到失败: {e}");

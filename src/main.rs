@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => cli::serve::run(root).await,
         Command::Login { provider } => cli::login::run(root, &provider).await,
-        Command::Claim => cli::claim::run(root).await,
+        Command::Claim { provider } => cli::claim::run(root, provider.as_deref()).await,
         Command::Status { provider } => cli::status::run(root, &provider).await,
         Command::Refresh { provider } => cli::refresh::run(root, &provider).await,
         Command::Config => {

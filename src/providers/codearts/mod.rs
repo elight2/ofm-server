@@ -139,6 +139,7 @@ impl Provider for CodeartsProvider {
         chat::stream(&self.chat_client, &cred, &req).await
     }
 
+    /// 签到：遍历 `benefit`/`education`/`examination` 三个渠道（IDE `SLc` 流程）。
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
         let cred = self.valid_credential().await?;
         benefit::claim(&self.client, &cred).await
