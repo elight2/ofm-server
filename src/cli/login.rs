@@ -9,20 +9,24 @@
 //! * trae：PKCE S256 + `ExchangeToken`（`trae::auth`）
 //! * raccoon：loopback 兼容登录，本地收货后 `login_with_authorization_code`
 //!   （`raccoon::auth`，自带一次性回调服务，不走 `wait_callback_on`）
+//! * codearts：PKCE(SHA-256) + DPoP(ES256)，门户授权 + STS 换 AKSK
+//!   （`codearts::auth`，自带回调服务）
 
 use std::time::Duration;
 
-use crate::providers::{raccoon, trae};
+use crate::providers::{codearts, raccoon, trae};
 
 /// 浏览器 OAuth 登录。
 pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<()> {
     match provider_id {
         trae::ID => trae::auth::login(root).await,
         raccoon::ID => raccoon::auth::run(root).await,
+        codearts::ID => codearts::auth::run(root).await,
         other => anyhow::bail!(
-            "未知供应商 `{other}`，可用: {}, {}",
+            "未知供应商 `{other}`，可用: {}, {}, {}",
             trae::ID,
-            raccoon::ID
+            raccoon::ID,
+            codearts::ID
         ),
     }
 }
