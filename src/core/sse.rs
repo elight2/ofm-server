@@ -61,32 +61,47 @@ impl SseDecoder {
                 }
                 continue;
             }
-            if line.starts_with(':') {
-                continue; // 注释
-            }
-            let (field, value) = match line.split_once(':') {
-                Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
-                None => (line, ""),
-            };
-            match field {
-                "event" => self.frame.event = Some(value.to_string()),
-                "data" => {
-                    if self.frame.has_data {
-                        self.frame.data.push('\n');
-                    }
-                    self.frame.data.push_str(value);
-                    self.frame.has_data = true;
-                }
-                _ => {}
-            }
+            self.feed_line(line);
         }
         // 上游偶有不以空行结尾，流结束时需 flush。
         out
     }
 
     /// 流结束时冲掉残余帧。
+    ///
+    /// 上游偶有不以空行结尾，甚至最后一行没有 `\n`：须先把缓冲里剩下的
+    /// 半行按行处理一遍，否则该字段会被静默丢弃。
     pub fn finish(&mut self) -> Option<SseEvent> {
+        if !self.buf.is_empty() {
+            let rest = std::mem::take(&mut self.buf);
+            let line = std::str::from_utf8(&rest)
+                .unwrap_or("")
+                .trim_end_matches('\r');
+            self.feed_line(line);
+        }
         self.frame.take()
+    }
+
+    /// 处理一行字段（已去行尾）。空行表示帧结束，由调用方处理。
+    fn feed_line(&mut self, line: &str) {
+        if line.is_empty() || line.starts_with(':') {
+            return;
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
+            None => (line, ""),
+        };
+        match field {
+            "event" => self.frame.event = Some(value.to_string()),
+            "data" => {
+                if self.frame.has_data {
+                    self.frame.data.push('\n');
+                }
+                self.frame.data.push_str(value);
+                self.frame.has_data = true;
+            }
+            _ => {}
+        }
     }
 }
 

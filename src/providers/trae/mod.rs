@@ -20,12 +20,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use tokio::sync::Mutex;
 
-use crate::core::events::{Event, EventStream, FinishReason, UpstreamError};
+use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
-use crate::core::sse::SseDecoder;
 
 use api::{
     HttpError, APP_VERSION, APP_VERSION_CODE, HOST_API5, IDE_VERSION_CODE, UA_TTNET, UA_VSCODE,
@@ -55,7 +53,7 @@ impl TraeProvider {
             Ok(Some(c)) => Ok(c),
             Ok(None) => Err(ProviderError::NotLoggedIn(format!(
                 "{}（请先运行 `ofm-server login {ID}`）",
-                self.root.join("providers/trae/credential.toml").display()
+                crate::config::Config::credential_path(&self.root, ID).display()
             ))),
             Err(e) => Err(ProviderError::Other(e.to_string())),
         }
@@ -263,14 +261,6 @@ fn flow_traceparent() -> String {
     format!("04-{}-{}-01", hex(&buf[..16]), hex(&buf[16..24]))
 }
 
-/// 流式解析状态。
-struct StreamState {
-    decoder: SseDecoder,
-    parser: stream::FrameParser,
-    pending: std::collections::VecDeque<Event>,
-    finished: bool,
-}
-
 #[async_trait]
 impl Provider for TraeProvider {
     fn id(&self) -> &'static str {
@@ -327,67 +317,10 @@ impl Provider for TraeProvider {
         }
 
         // 上游恒回 SSE；分帧后逐帧转成中间事件。
-        let bytes_stream = resp.bytes_stream();
-        let state = StreamState {
-            decoder: SseDecoder::new(),
-            parser: stream::FrameParser::new(),
-            pending: std::collections::VecDeque::new(),
-            finished: false,
-        };
-
-        // `unfold` 保存解析状态：每次取出一个事件，待发队列空且无终止事件时继续读流。
-        let out = futures_util::stream::unfold(
-            (bytes_stream, state),
-            |(mut bytes_stream, mut st)| async move {
-                loop {
-                    if let Some(ev) = st.pending.pop_front() {
-                        let terminal = matches!(ev, Event::Finish(_) | Event::Error(_));
-                        if terminal {
-                            st.finished = true;
-                        }
-                        return Some((ev, (bytes_stream, st)));
-                    }
-                    if st.finished {
-                        return None;
-                    }
-
-                    match bytes_stream.next().await {
-                        Some(Ok(chunk)) => {
-                            for ev in st.decoder.push(&chunk) {
-                                st.pending.extend(st.parser.parse(&ev.event, &ev.data));
-                            }
-                        }
-                        Some(Err(e)) => {
-                            st.finished = true;
-                            return Some((
-                                Event::Error(UpstreamError {
-                                    code: None,
-                                    message: format!("读取上游流失败: {e}"),
-                                    kind: crate::core::events::ErrorKind::Api,
-                                }),
-                                (bytes_stream, st),
-                            ));
-                        }
-                        None => {
-                            // 流结束：冲掉残余帧。
-                            if let Some(ev) = st.decoder.finish() {
-                                st.pending.extend(st.parser.parse(&ev.event, &ev.data));
-                            }
-                            if st.pending.is_empty() {
-                                // 上游未发 done 就断流：按 stop 收尾，避免下游挂住。
-                                st.finished = true;
-                                return Some((
-                                    Event::Finish(FinishReason::Stop),
-                                    (bytes_stream, st),
-                                ));
-                            }
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(out))
+        let mut parser = stream::FrameParser::new();
+        Ok(crate::core::stream::drive(resp.bytes_stream(), move |ev| {
+            parser.parse(&ev.event, &ev.data)
+        }))
     }
 
     /// 主动刷新令牌（`ofm-server refresh trae`）。

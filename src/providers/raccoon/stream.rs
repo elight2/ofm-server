@@ -21,7 +21,8 @@ impl FrameParser {
         Self
     }
 
-    pub fn parse(&mut self, data: &str) -> Vec<Event> {
+    pub fn parse(&mut self, ev: &crate::core::sse::SseEvent) -> Vec<Event> {
+        let data = ev.data.as_str();
         let data = data.trim();
         if data.is_empty() {
             return Vec::new();
@@ -181,8 +182,13 @@ fn classify_error(err: &Value) -> ErrorKind {
 mod tests {
     use super::*;
 
+    /// 测试辅助：只关心 `data`，事件名对 raccoon 恒为空。
     fn parse(s: &str) -> Vec<Event> {
-        FrameParser::new().parse(s)
+        let ev = crate::core::sse::SseEvent {
+            event: String::new(),
+            data: s.to_string(),
+        };
+        FrameParser::new().parse(&ev)
     }
 
     /// 真实首帧：delta 只有 role。

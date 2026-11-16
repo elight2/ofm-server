@@ -6,6 +6,7 @@ pub mod events;
 pub mod provider;
 pub mod registry;
 pub mod sse;
+pub mod stream;
 
 /// 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS`（UTC）。
 ///

@@ -1,7 +1,7 @@
 //! Raccoon（商汤小浣熊 / Raccoon Work）供应商。
 //!
-//! 已实现：登录（`auth`）、续期（`refresh`）。
-//! `models` / `chat` / `claim` 仍为占位，后续按 `provider-info/raccoon.md` 补齐。
+//! 已实现：登录（`auth`）、`models`、`balance`、`chat`、`claim`。
+//! `refresh` 不支持：官方客户端对 IAM token 直接拒绝续期，详见 [`RaccoonProvider::refresh`]。
 //!
 //! 协议实况见 `provider-info/raccoon.md`。
 
@@ -21,20 +21,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::core::events::{ErrorKind, Event, EventStream, FinishReason, UpstreamError};
+use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
 use credential::Credential;
-
-/// 流式解析的可变状态。
-struct ChatStreamState {
-    decoder: crate::core::sse::SseDecoder,
-    parser: stream::FrameParser,
-    pending: std::collections::VecDeque<Event>,
-    finished: bool,
-    /// 已收到 finish_reason/错误，避免重复补 `Finish`。
-    saw_finish: bool,
-}
 
 pub const ID: &str = "raccoon";
 
@@ -185,69 +175,10 @@ impl Provider for RaccoonProvider {
         }
 
         // 上游恒回 SSE；分帧后逐帧转成中间事件。
-        let bytes_stream = resp.bytes_stream();
-        let state = ChatStreamState {
-            decoder: crate::core::sse::SseDecoder::new(),
-            parser: stream::FrameParser::new(),
-            pending: std::collections::VecDeque::new(),
-            finished: false,
-            saw_finish: false,
-        };
-
-        let out = futures_util::stream::unfold(
-            (bytes_stream, state),
-            |(mut bytes_stream, mut st)| async move {
-                loop {
-                    if let Some(ev) = st.pending.pop_front() {
-                        if matches!(ev, Event::Finish(_) | Event::Error(_)) {
-                            st.saw_finish = true;
-                        }
-                        return Some((ev, (bytes_stream, st)));
-                    }
-                    if st.finished {
-                        return None;
-                    }
-
-                    match futures_util::StreamExt::next(&mut bytes_stream).await {
-                        Some(Ok(chunk)) => {
-                            for ev in st.decoder.push(&chunk) {
-                                st.pending.extend(st.parser.parse(&ev.data));
-                            }
-                        }
-                        Some(Err(e)) => {
-                            st.finished = true;
-                            return Some((
-                                Event::Error(UpstreamError {
-                                    code: None,
-                                    message: format!("读取上游流失败: {e}"),
-                                    kind: ErrorKind::Api,
-                                }),
-                                (bytes_stream, st),
-                            ));
-                        }
-                        None => {
-                            if let Some(ev) = st.decoder.finish() {
-                                st.pending.extend(st.parser.parse(&ev.data));
-                            }
-                            if st.pending.is_empty() {
-                                st.finished = true;
-                                // 上游未发 finish_reason 就断流：按 stop 收尾，
-                                // 避免下游挂住。
-                                if !st.saw_finish {
-                                    return Some((
-                                        Event::Finish(FinishReason::Stop),
-                                        (bytes_stream, st),
-                                    ));
-                                }
-                                return None;
-                            }
-                        }
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(out))
+        let mut parser = stream::FrameParser::new();
+        Ok(crate::core::stream::drive(resp.bytes_stream(), move |ev| {
+            parser.parse(ev)
+        }))
     }
 
     /// 领取移动端登录积分（等价官方客户端的「登录送积分」）。
