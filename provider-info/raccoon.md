@@ -1,15 +1,8 @@
 # 商汤小浣熊(Raccoon Work)客户端协议
 
-## 0. 总结
-* 客户端版本: 桌面 `1.2.0`(`@raccoon/office-desktop`，包名`商汤小浣熊-1.2.0-amd64.deb`)；
-  移动 `1.1.0`(`raccoon-1.1.0.apk`)
-* 分析方式: 解包 deb(`tmp/raccoon-extract`) + 解析 `resources/app.asar` 内 `build/`(未混淆的编译 JS) + 渲染层 webpack chunk
-  (`out/_next/static/chunks/`)；APK 为 Capacitor 套壳(`tmp/raccoon-apk/assets/public/_next/`)。
-  **未抓包**，未反编译 `box-agent-acp`(PyInstaller)、未反编译 `classes.dex`
-* UA: 无固定 UA。身份靠请求头(见下)。`GET /api/web/llm/v2/model_catalog` 等端点**不校验 UA**
+**源码定位**（`tmp/raccoon-extract`）：`app.asar` 里有两层可读源码，**协议逻辑全在主进程
+`build/electron/main/`**。
 
-### 可用的现成源码
-`app.asar` 里有两层可读源码，**协议逻辑全在主进程 `build/electron/main/`**：
 |路径|内容|
 |-|-|
 |`.env.electron`|全部服务地址、各 API 前缀|
@@ -25,6 +18,14 @@
 |`build/src/lib/agent/localAgentModelRoutingCore.js`|模型目录响应结构校验|
 |`dist/electron/main.cjs`|本地 relay(`/v1/chat/completions` → 上游)|
 |`out/_next/static/chunks/*`|渲染层：积分、验证码、手机号加密|
+
+## 0. 总结
+* 客户端版本: 桌面 `1.2.0`(`@raccoon/office-desktop`，包名`商汤小浣熊-1.2.0-amd64.deb`)；
+  移动 `1.1.0`(`raccoon-1.1.0.apk`)
+* 分析方式: 解包 deb(`tmp/raccoon-extract`) + 解析 `resources/app.asar` 内 `build/`(未混淆的编译 JS) + 渲染层 webpack chunk
+  (`out/_next/static/chunks/`)；APK 为 Capacitor 套壳(`tmp/raccoon-apk/assets/public/_next/`)。
+  **未抓包**，未反编译 `box-agent-acp`(PyInstaller)、未反编译 `classes.dex`
+* UA: 无固定 UA。身份靠请求头(见下)。`GET /api/web/llm/v2/model_catalog` 等端点**不校验 UA**
 
 ### 本协议不支持, 但 Chat Completions 有的功能
 * `n` / `logprobs` / `logit_bias` / `seed` / `stop` 之外的采样细节取决于上游网关，客户端不显式传
@@ -130,7 +131,8 @@
 (提前 300s 窗口)。由于服务端可能原样返还，不要用“token 是否变化”
 判断续期是否成功。
 
-## 3. Chat Completions 协议转换
+## 3. Chat Completions 映射
+
 实测版本：客户端 `1.2.0`，依据 `hostedModels.js`、`boxAgentConfig.js`、`dist/electron/main.cjs`
 
 * 上游地址：`POST https://xiaohuanxiong.com/api/web/llm/v2/chat/completions`
@@ -239,7 +241,8 @@
 * 工具调用空串 `id`/`name` 视为缺失，不覆盖已累积值
 * 未发 `finish_reason` 就断流时补 `Finish(Stop)`，避免下游挂住
 
-## 4. 模型列表获取
+## 4. models 端点映射
+
 * `GET https://xiaohuanxiong.com/api/web/llm/v2/model_catalog`
 * 头：`Authorization: Bearer <token>`，非 personal 加 `X-Org-Code`
 * 超时 10s，超时重试 1 次(仅该幂等接口)；401 时刷新 token 重试一次

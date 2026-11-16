@@ -203,7 +203,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
    字段名可直接实现 `[推断，未验证]`。唯一真正未知的是 **RefreshToken 是否轮换**（若轮换，
    我方必须持久化新值，旧值作废）。→ 不阻塞实现；定案选项见 §8.1。
 
-## 3. Chat Completions协议转换
+## 3. Chat Completions 映射
 
 以下每条都属 Trae CN 1.107.1 / appVersion 3.4.18，实测方式标注在行内。
 
@@ -245,7 +245,6 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | `messages[].role: user` | `{role:"user",content:[{type:"text",text:"…"}]}` | `[curl t8]` `content` 为字符串 → `cannot unmarshal string into …LLMRawMessage.messages.content of type []*idecopilot.LLMRawMessageContent` |
 | `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §6.2）|
 | `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | 两个可能的位置均已实测证伪：**顶层** `{"reasoning_effort_level":…}`（20 次，p=0.70~0.83）与 **`model_info` 嵌套** `{"model_info":{"reasoning_effort_level":…}}`（12 次，p=0.790，区间重叠且方向相反）。`llm_utils_chat` 上该字段被**静默忽略**，非法值也不报错（宽松绑定）。旁证：`support_thinking:false` 的模型行为与可调档模型无法区分。<br>**完整方法、数据、检验力边界与已排除的其他思路见 §3.2.1。** 档位真实能力见 §4.4。<br>**早期反例已撤销**：曾记「`support_thinking` 不门控，`glm-5.2` 标 false 仍出 reasoning」系跨 function 混用数据的误判；`glm-5.2` 在 `solo_agent` 下实为 `true`。|
-|
 | 思考档位能力 | — | 见 §4.4。官方客户端可见 18 个模型中 10 个三档齐全、4 个仅 `light`+`high`、4 个不可调；`options` 形态按模型不同，禁止硬编码映射 |
 | `messages[].role: system` | `{role:"system",content:[{type:"text",text:"…"}]}` | **`[curl f2]` 实测被消费**：system「你必须只回复数字1」+ user「你好」→ 正文回 `1`，reasoning 明确复述「系统提示：“你必须只回复数字1”」。原未验证项解除 |
 | `messages[].role: assistant` + `tool_calls` | `content:[]` + `tool_calls:[{id,type:"function",function_call:{name,arguments}}]` | `[curl t7]` 键名是 **`function_call`** 非 CC 的 `function`；与参考实现 `transformSOLOMessage` 一致 |
@@ -473,7 +472,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
 `llm_utils_chat` 明文路径实测直接生效（§3.2，1×1 红 PNG 被识别为粉色调），无需上传、无需工具、
 无需 TOS 凭证。差异属 §0 出入 8。
 
-## 4. 模型列表获取
+## 4. models 端点映射
 
 ### 4.1 上游请求 `[抓包 + curl，Trae CN 1.107.1]`
 
