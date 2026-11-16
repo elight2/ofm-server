@@ -39,7 +39,7 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 | 键 | 域名 | 用途 |
 |-|-|-|
 | `chatDomain` / `policyDomain` / `agentModeDomain` / `codeGenDomain` / `snapApigDomain` | `https://snap-access.cn-north-4.myhuaweicloud.com` | 主业务（inferhub `/api/v2/`、policy `/v1/`、snap-manager `/snap-manager/v1/`） |
-| `snapApigBackupDomain` | 同上但 `.com.cn` | 备用 |
+| `snapApigBackupDomain` | 同上但 `.cn`（`https://snap-access.cn-north-4.myhuaweicloud.cn`） | 备用 |
 | `grayUserDomain` | `https://ide.cn-north-4.myhuaweicloud.com` | 灰度 |
 | `toolkitDomain` | `https://iam.myhuaweicloud.com` | IAM：`/v3/auth/tokens`、`/v3.0/OS-CREDENTIAL/securitytokens`、`/v3/auth/domains` |
 | `iamStsOpenDomain` | `https://sts.cn-north-4.myhuaweicloud.com` | 登录换 token：`/v1/oauth2/tokens`、`/v5/caller-identity` |
@@ -268,21 +268,34 @@ inferhubBaseUrl = `${agentChatDomain}/api/v2/`   →  https://snap-access.cn-nor
   certPin:{ enabled:false, pins:[] } }
 ```
 可由 env `TRANSPORT_SECURITY_CONFIG` 覆盖（`pN()`）。算法标识 `dl = "sm4-gcm"`。
-加密路径白名单：`/api/v2/chat/completions`。
+加密路径白名单：`/api/v2/chat/completions`（`KLn`）；key-exchange 路径自身不加密（`zLn`）。
+算法 `LN="sm4-gcm"`，密文走 `application/octet-stream`。
 
 **密钥协商**：
 
 ```
-POST {base}/api/v1/security/key-exchange    （ECDH P-256）
-→ 响应含 serverPublicKey
+POST {base}/api/v1/security/key-exchange    （ECDH P-256，crypto.createECDH）
+请求 body: { clientPublicKey:<base64>, sessionId:<16B随机→hex>, timestamp:<Date.now()> }
+           clientPublicKey = createECDH("prime256v1").generateKeys().toString("base64")
+→ 响应: { serverPublicKey:<base64 DER 裸，非 PEM/JWK>, keyId, expiresIn }
+           服务端公钥直接 Buffer.from(serverPublicKey,"base64") 喂 computeSecret
 shared = ECDH(clientPriv, serverPub)
-key    = sha256(shared) 前 16 字节          （FLn(n)）
+key    = sha256(shared) 前 16 字节          （FLn(n)，IV 长度常量 FN=12）
 ```
 
-**报文格式**：
-* 请求：`AAD = ${method}|${pathname}|${ts}`（`ts` 参与），body 为密文
-* 响应：逐 chunk 解密，`AAD = ${aadPrefix}|${chunkIndex}`
+**请求报文格式**（iv/tag/ts 走 header，**不在 body 内联**）：
+* `AAD = ${method}|${pathname}|${ts}`（`MLn`，ts 参与）
+* body = base64(密文)
+* headers 追加：`X-Encrypt-Algo: sm4-gcm`、`X-Encrypt-Key-Id: <keyId>`、
+  `X-Encrypt-Iv: base64(iv)`、`X-Encrypt-Tag: base64(tag)`、`X-Encrypt-Ts: <ts>`、
+  `Content-Type: application/octet-stream`
+* 加密后须对 AKSK 头**重新签名**（`b_(url,method,"application/octet-stream")`，跳过 host）；无 AKSK 则保留原 Authorization
+
+**响应报文格式**：
+* 响应侧 `aadPrefix = keyId`（`new s5(m.key, m.keyId)`），逐 chunk 解密
+* `AAD_chunk = ${aadPrefix}|${chunkIndex}` = `${keyId}|${chunkIndex}`
 * chunk 文本以 `:` 分 3 段：`iv:tag:ciphertext`，均 base64；IV 12B、key 16B、tag 独立
+* 判定是否加密响应：`X-Encrypt-Algo === "sm4-gcm"`，否则明文透传
 
 **回退**：任何失败转明文，日志：
 `Encrypting fetch bypass (URL not in encrypt paths), sending plaintext`、
@@ -464,6 +477,8 @@ Authorization: SDK-HMAC-SHA256 Access=<ak>, SignedHeaders=<signedHeaders>, Signa
 
 ## 5. 余额获取
 
+> 本节（`_D`/`PFn`/`DFn`/`MFn`）代码位于 **agent kernel** 的 `benefit-service`，非 IDE 扩展。
+
 **注意：余额/签到走独立网关（`opengw.developer.huaweicloud.com` 生产 / `snapengine-apig` 内网），与 chat 域名不同。**
 
 ```
@@ -512,6 +527,8 @@ X-Security-token: <security_token>     # 若有
 ---
 
 ## 6. 上游异常响应
+
+> 本节（错误码表 `hVn`/`RFn`、流内错误 `_P`、4291→402 映射）代码位于 **agent kernel**（`benefit-service` 等），非 IDE 扩展。
 
 ### 6.1 业务错误码 `hVn` `[打包JS]`
 
@@ -579,6 +596,8 @@ token 限额告警阈值：90% / 100%。
 
 ## 7. 签到
 
+> 本节（`aD()`/`_D`/`RFn`）代码位于 **agent kernel** 的 `benefit-service`，非 IDE 扩展。
+
 ```
 POST {benefitBase}/api/v1/benefit/claim
 body: {}
@@ -600,12 +619,14 @@ headers: 同 §5（AKSK 签名 + X-Security-token）
 
 ## 8. 未验证清单（实现时优先实测）
 
-1. SM4-GCM 密钥协商报文（`serverPublicKey` 编码：PEM / base64 DER / JWK？）与响应 AAD 的 `aadPrefix` 具体构成
+1. ~~SM4-GCM 密钥协商报文与 AAD 构成~~ → **已从源码解析**：协商 body=`{clientPublicKey,sessionId,timestamp}`，响应 `{serverPublicKey(base64 DER),keyId,expiresIn}`；key=`sha256(shared)[0..16]`；请求 AAD=`method|pathname|ts`（iv/tag/ts 走 header），响应 AAD=`${keyId}|${chunkIndex}`。仅剩「服务端是否真接受明文回退」需实测
 2. `/v1/oauth2/tokens` 响应的完整字段名（`data.credentials.*` 已确认，`refresh_token` 位置未确认）
 3. `/snap-manager/v1/token/renew` 的 method 与响应结构
-4. `balance` 返回字段（仅见 `balance` 一处）
-5. `claim` 是否需要 `channel` 参数
-6. 上游是否真接受未加密（明文）chat 请求
+4. `balance` 返回字段（仅见 `Dce()` 取 `balance`）
+5. `claim` 是否需要 `channel` 参数（已核实代码 `_D("claim","POST")` 未带，推测默认 `benefit`）
+6. **上游是否真接受未加密（明文）chat 请求** ← 实现前最高优先级，用一次真实请求定夺，决定是否需复刻 SM4-GCM
 7. `response_format` / `logprobs` / `n>1` 上游支持情况
 8. 排队态是否发 notice 帧给下游
 9. `X-Remote-Origin-Url`、`maas_type`、`client-ip` 是否服务端强校验
+
+> **加密对本项目的影响**：客户端对 `/api/v2/chat/completions` 强制加密，但有明文回退分支（key 协商失败/网络错误/非 2xx 时 `falling back to plaintext`）。若服务端接受明文 → 无需碰 SM4-GCM，直接明文转发；若强制加密 → 须用 Rust 复刻整条链路（ECDH+SM4-GCM，格式已全暴露）。**实现第一步先用明文 curl 探测，再定夺**。
