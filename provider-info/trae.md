@@ -28,6 +28,9 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 * `response_format` / `verbosity` / `modalities` / `audio` `[未验证字段级]`
 * `stream_options` `[curl g1]` — 上游无条件发 `event:token_usage`，无需开关
 * `tools[].function.strict` `[抓包]` — 上游 tool schema 只有 `name`/`description`/`parameters`
+* `tool_choice` `[curl，2026-11-16]` — 上游**有** `LLMUtilsChatRequest.tool_choice`（string 类型），
+  但 `"required"`/`"none"`/指定函数三者**均不生效**，行为与不传完全一致。
+  `"auto"` 是有工具时的默认行为，无需转发。详见 §3.2.2
 * `functions` / `function_call`（**请求顶层**旧形态）`[抓包]` — 上游顶层只有 `tools`。注意别和 `messages[].tool_calls[].function_call` 混淆，后者是上游的**必填键名**（§3.2）
 * `prediction` / `store` / `service_tier` / `web_search_options` / `prompt_cache_options` / `moderation` `[未验证字段级]`
 
@@ -250,6 +253,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | `tools[].function.parameters`（对象）| **字符串化 JSON** | `[curl t5]` 对象 → `cannot unmarshal object into …FunctionDefinition.tools.function.parameters of type string` |
 | `tools[].function.{name,description}` | 同名 | `[curl t7]` |
 | `max_tokens` 等忽略字段 | 不发 | `[curl f1]` 未知字段被宽松忽略，不发更稳妥 |
+| `tool_choice`（CC）| **上游接受但完全不生效，本实现不发** | `[curl，2026-11-16]` 见 §3.2.2 |
 
 对话 body（实测通过，200 + 正常中文回答；`function` 此处用当时实测的 `solo_work_lite`，**实现须发 `solo_agent`**）：
 
@@ -276,6 +280,38 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
    {"role":"tool","tool_call_id":"call_00_gu39…","name":"get_system_info",
     "content":[{"type":"text","text":"OS=Arch Linux; CPU=…"}]}]}
 ```
+
+### 3.2.2 `tool_choice` 实测：上游有字段但被静默忽略 `[curl，2026-11-16]`
+
+**背景**：官方客户端的 `OpenAIRequest{model,max_tokens,stream,temperature,tools,tool_choice}`
+只用于**自定义模型**（§3.6）；预设模型的 `llm_utils_chat` 私有协议是否支持 `tool_choice` 未测。
+
+**字段确实存在**（Go 报错揭示结构体与类型）：
+```
+tool_choice: {"type":"function","function":{"name":"get_weather"}}
+→ HTTP 400 {"code":4001,"message":"bad request: json: cannot unmarshal object into
+   Go struct field LLMUtilsChatRequest.tool_choice of type string"}
+```
+⇒ 上游 `LLMUtilsChatRequest` **有** `tool_choice` 字段，**类型是 string**
+⇒ 只接受枚举字符串，**不接受** CC 规范的「指定函数对象」形态
+
+**但三种取值均不生效**。模型 `deepseek-v4.1-flash`，`function: solo_agent`，
+工具 `get_weather`，每组独立请求：
+
+| prompt | 不传 `tool_choice` | `"required"` | `"none"` |
+|-|-|-|-|
+| 「帮我查一下北京现在的天气」（模型天然想用工具）| 调用 ✅ | 调用 ✅ | **仍调用 ✅** |
+| 「不要查询任何天气，直接告诉我穿什么」（天然不想用）| 不调 ❌ | **仍不调 ❌** | 不调 ❌ |
+
+结论：
+* `"none"` **无法抑制**工具调用（模型想调就调）
+* `"required"` **无法强制**工具调用（模型不想调就不调）
+* 行为与不传该字段完全一致 → **字段被静默忽略**（宽松绑定，与 `reasoning_effort_level` 同理）
+
+**处置**：本实现**不发送** `tool_choice`。CC 侧的 `tool_choice` 语义（`none`/`required`/指定函数）
+在 trae 预设模型上**无法表达**，写入 §0 出入。
+
+**复现**：`tmp/probe_tool_choice.py`、`tmp/probe3.py`（需 `testdata/providers/trae/credential.toml`）。
 
 ### 3.2.1 思考强度实测：两个位置均证伪 `[curl，Trae CN 1.107.1 的 API 端点，2026-11-15]`
 
