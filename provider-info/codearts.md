@@ -411,6 +411,34 @@ usage（`wl(n)`）：
 
 ## 4. 模型列表获取
 
+> **实现结论（2026-02-18，已实测并落地 `catalog.rs`）**：商业版（非 gamma、无权益）真实可用的
+> 模型目录路径是内核 `$D`（provider-models-plugin）：
+>
+> ```http
+> GET https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/builtin
+> Content-Type: application/json
+> Agent-Type: PromptCenter
+> X-Language: zh-cn
+> X-Security-Token: <security_token>   # 参与 AKSK 签名（SDK-HMAC-SHA256，同 §4.5 算法族）
+> ```
+>
+> 响应 `{count, builtinModels:[{model_id, model_name, enable, credit[{ratio, ratio_display}],
+> supports_images, max_tokens, context_window, channel_source:"codearts", provider:"internal", …}]}`。
+> 实测返回 12 个模型（GLM-5.2、openpangu-2.0-flash/pro、glm-5.3 系列、deepseek-v4.1 系列、
+> kimi-k3 系列、speed 等），倍率取 `credit[0].ratio`（如 GLM-5.2 → x0.05）。
+>
+> **排除记录**：
+> - benefit-service `opengw…/api/v1/gateway/config`：AKSK 签名被服务端接受（HTTP 200），
+>   但业务恒报 `{"error_code":"4000","error_msg":"invalid channel, group not found"}`——账号未
+>   开通权益（extension 先查 `{policyCenterDomain}/v1/benefit-gateway-config`，`enabled=false`
+>   时不走 benefit 网关），属预期；已开通权益的账号才会从 §5.1 拿到福利模型。
+> - xCenter/agent-center（§4.1/4.2）：商业版内核 `XCENTER_BASE_URLS=[]`、`CODEAGENT_ID=""`
+>   硬编码为空，`BD()` 直接短路，整条路径禁用。
+> - extension PromptCenter（§4.3）：商业版 `x-auth-token` 为空串（`Tr()`：`isDefaultToken=false`
+>   且非内部版 → `""`），不可复刻。
+> - 内部域名 `snapengine-apig.cn-north-7.myhuaweicloud.com`：仅 `IS_PROD!="true"` 的 HC 内部
+>   环境生效，公网 DNS 不解析。
+
 两套来源，按进程区分。
 
 ### 4.1 kernel：AgentCenter（inferhub provider）`[打包JS]`
@@ -505,6 +533,13 @@ Authorization: SDK-HMAC-SHA256 Access=<ak>, SignedHeaders=<signedHeaders>, Signa
 > 本节（`_D`/`PFn`/`DFn`/`MFn`）代码位于 **agent kernel** 的 `benefit-service`，非 IDE 扩展。
 
 **注意：余额/签到走独立网关（`opengw.developer.huaweicloud.com` 生产 / `snapengine-apig` 内网），与 chat 域名不同。**
+
+> **实测记录（2026-02-18，未开通权益账号）**：`gateway/config`、`tokens/balance`、`benefit/claim`
+> 三端点在 AKSK 签名被服务端接受的前提下（HTTP 200，非 APIG 签名错误）均返回
+> `{"error_code":"4000","error_msg":"invalid channel, group not found"}`。已排除变量：channel
+> 参数（无/`benefit`/`education`）、`Content-Type`+`x-snap-traceid` 头有无、claim body
+> （`{}`/空）、`X-Security-Token` 头大小写。判定：账号无权益分组时服务端直接拒绝，其余
+> 行为无需再验证；注意响应错误字段名是 `error_msg`（无 `error_message`）。
 
 ```
 GET {benefitBase}/api/v1/user/tokens/balance?channel=<benefit|education|examination>
@@ -636,7 +671,9 @@ headers: 同 §5（AKSK 签名 + X-Security-token）
 * 超时 10s
 
 `channel` 参数：`ELc(t,e,r)` 会并发拉 `getGatewayConfig` 的 `benefit` / `education` / `examination` 三个 channel；
-**`claim` 是否也需要 channel 参数 `[未验证]`**（代码中 `_D("claim","POST")` 未带 channel，推测默认 `benefit`）。
+**`claim` 是否也需要 channel 参数 `[未验证]`**（代码中 `_D("claim","POST")` 未带 channel，推测默认 `benefit`；未开通权益账号无法实测，恒 4000）。
+
+**实测记录（2026-02-18）**：未开通权益账号 claim 返回同 §5 的 `4000 invalid channel, group not found`（POST body `{}` 与空 body 均试过）。
 
 签到记录建议写 `providers/codearts/claim.log`。
 
@@ -656,7 +693,8 @@ headers: 同 §5（AKSK 签名 + X-Security-token）
 
 10. ~~`client_id` 实际值~~ → **已从 product.json/package.json 取证**：扩展 `name` 为
     `codearts-snap`（26.11.100），`QH()` 返回该值；`"vscode-codebot"` 仅是 fallback 常量。
-    kernel 版为 `CodeArts_Tui`。登录实现已按 `codearts-snap` 落地，**服务端是否接受此 id 仍需实测**
+    kernel 版为 `CodeArts_Tui`。登录实现已按 `codearts-snap` 落地，**已实测接受**
+    （登录/刷新均签发成功，见 credential.toml）
 11. 授权 URL 的 `port` 参数对服务端是否必需（官方为本地回调端口，本实现已带上）；
     `secret` 轮询路径（queryAuth，90次×3s）未实现，`code` 直换应等价
 12. token 响应的 `refresh_token` 在扩展侧读顶层字段（`t.refresh_token`），kernel 亦同；
