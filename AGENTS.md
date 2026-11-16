@@ -5,15 +5,13 @@
 * 未经允许, **禁止修改项目目录外文件**
 
 # 工作文件
-* `./TODO.md`：用户设定的目标，禁止修改除了完成标记的部分
 * `./TROUBLESHOOT.md`：疑难排查记录
 * `./MAINTAIN.md`: 插件维护标准
 * `./provider-info/`: 各种供应商的协议分析以及写分析的模板
 
 # 资料文件
-* 软件功能介绍：`README.md`
 * 项目内, 临时目录使用`./tmp/`
-* 每个供应商的官方客户端：`~/tools/docs/agent-clients/`
+* 供应商官方客户端：`~/tools/docs/agent-clients/`
 * openai api完整文档: `~/tools/docs/openai-openapi/`
 * `./testdata/`是测试ofm-server用的目录
 * `./tmp/`里有ofm插件和ofm插件重写版本的代码, **仅供参考**, server版本需重写

@@ -18,10 +18,11 @@
 ## 配置信息
 * 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
 * 转发出的模型名称: `供应商id/模型名 (x供应商标的倍率)`
-* 配置文件: `运行目录/config.toml`
+* 配置文件: `运行目录/config.toml`, [默认配置](./config.example.toml)
 * 端口: 默认`3060`
 * 登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 签到记录: `运行目录/providers/供应商id/claim.log`
+* 由于OpenAI协议没有获取模型推理强度列表的部分, 思考强度设置只能在软件配置文件手动改
 
 ## 技术信息
 * 使用Rust语言
