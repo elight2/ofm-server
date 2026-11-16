@@ -278,46 +278,69 @@ remote-session 轮询 `GET {chatDomain}/v1/sessions`（1h 刷新 / 120s 轮询�
 
 ## 3. Chat Completions 协议转换
 
-上游为 **OpenAI Chat Completions 兼容**，端点：
+上游为 **OpenAI Chat Completions 兼容**，chat provider（`IP()` → `aU`）端点：
 
 ```
-POST {inferhubBaseUrl}chat/completions
-inferhubBaseUrl = `${agentChatDomain}/api/v2/`   →  https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/
+POST {base}/chat/completions
 ```
-即实际 `https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions` `[打包JS]`。
+
+当前生产 base 为 `https://snap-access.cn-north-4.myhuaweicloud.com/api/v2`，即实际
+`https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions` `[打包JS]`。
 旧框架另有 `chatUrl = /v1/chat/chat`（`construtNewFrameWorkAllUrl`，offset 2375900），新框架用 `/api/v2/chat/completions`。
 
-`inferhubBaseUrl` 来源优先级：`XCENTER_BASE_URLS`(env) → `W.get().inferhubBaseUrl` 去 `/api/v2/` 尾 → 空。环境变量 `INFERHUB_BASE_URL`（逗号分隔取首个，`Am()`/`JHn()`）。缺失抛 `InferhubBaseUrlMissing`（`error_code: MP`、`statusCode: 555`、`isRetryable: false`）`[打包JS]`。
+**base URL 解析（更正）**：chat provider 只取 `options.baseURL` 或全局
+`W.get().inferhubBaseUrl`；两者都为空才抛 `InferhubBaseUrlMissing`
+（`error_code: "CodeAgent.Config.InferhubBaseUrlMissing"`、`statusCode: 555`、
+`isRetryable: false`，offset 150700745 区）。
+`XCENTER_BASE_URLS` **不参与 chat base**，只用于 AgentCenter/模型详情（§4.1）。
+`INFERHUB_BASE_URL`（逗号分隔取首个）是全局配置/启动初始化的来源之一。
+`Am()`/`oZ()`（offset 151466780）是 SnapEngine 的解析器：显式值 →
+`globalThis.__codeagentGlobalConfig.inferhubBaseUrl` → `INFERHUB_BASE_URL`，并把 URL
+截成 `origin` 后拼 `/api/v2/`；不要把它当成 chat provider 的 base 解析。
 
 ### 3.1 请求头 `[打包JS]`
 
-`getInferhubHcHeaders(n, u)`（offset 99296691 区）分两模式。
+`getInferhubHcHeaders(n, u)`（offset 150672502）只在 `H()`（商业版/AKSK 路径）为真时
+走 AKSK 分支；否则走 `t.userToken` 的 `x-auth-token` 分支。
 
-**公共**：
+**HTTP 层补充**：`P6` 设置 `Content-Type: application/json`；代码**未显式设置**
+`Accept` 头（不要依赖 `Accept: text/event-stream`）。`getInferhubHcHeaders` 只返回业务头。
+
+**两模式共有的业务头**：
 
 | 头 | 值 |
 |-|-|
-| `Content-Type` | `application/json` |
-| `Accept` | `text/event-stream`（流式） |
 | `x-ot-client-type` | CLI 固定 `CLI`；否则 `u["x-ot-client-type"] \|\| t.clientType \|\| ""` |
 | `x-ot-client-version` | CLI 固定 `126.11.1-20261110192452`；否则取入参 |
 | `x-ot-function` | CLI 固定 `agent-tui`；否则 `u["x-ot-function"] ?? ""` |
-| `x-codearts-doer-scenario-type` | `u["x-codearts-doer-scenario-type"] ?? ""` |
-| `X-Language` | `zh` / `en`（`jwn()`：`language` 以 `zh` 开头→`zh`，否则 `en`） |
-| 透传 | `plugin-name`、`plugin-version`、`ide-name`、`ide-version` |
+| `x-codearts-doer-scenario-type` | 仅当 `u["x-codearts-doer-scenario-type"]` 非空才加 |
+| 透传 | `plugin-name`、`plugin-version`、`ide-name`、`ide-version`（仅当入参存在） |
+| trace | `x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`、`x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`user-msg-id`、`created-time`；缺失时随机 UUID 或空串 |
+| 模型 | `model-id`；`model-name` 在 AKSK 分支用 `VP(...)` 归一，token 分支原样 |
+| `maas_type` | 仅当入参提供 |
 
-**trace 组**：`x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`、`x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`（缺省 `randomUUID().replace(/-/g,"")`）、`user-msg-id`、`created-time`。
+**AKSK 分支追加**：
 
-**模型**：`model-id`、`model-name`（`VP(...)` 归一）、`maas_type`。
+| 头 | 值 |
+|-|-|
+| `X-Security-token` | `userInfo.accessToken`（进入签名头） |
+| `X-Language` | `me()`：`zh` / `en` |
+| `X-Remote-Origin-Url` | 入参存在才加 |
+| `client-ip` | `LP()` |
+| `model-name` | `VP((Xu.getStore()?.modelName \|\| u["model-name"]) ?? "")` |
 
-**AKSK 模式追加**：`X-Security-token`、`X-Remote-Origin-Url`、`client-ip`（`LP()`），
-再 `G6.sign(req, new V6(ak, sk))` 生成华为云 SDK-HMAC-SHA256 签名（见 §3.2）。
+然后 `G6.sign(req, new V6(ak, sk))` 生成 SDK-HMAC-SHA256 签名；签名器补
+`Content-Type`、`X-Sdk-Content-Sha256`、`Host`、`X-Sdk-Date`、`Authorization`。
 
-调试日志：`[header-debug] _existingHeaders=…, alsModelName=…, finalModelName=…`、`[header-debug] hc headers model-id=…, model-name=…`。
+**token 分支**：只返回 `x-auth-token` + 上表共有头；**不加** `X-Language`、
+`client-ip`、`X-Remote-Origin-Url`，也不做 `model-name` 的 `VP` 归一。
+
+调试日志：`[header-debug] _existingHeaders=…, alsModelName=…, finalModelName=…`、
+`[header-debug] hc headers model-id=…, model-name=…`。
 
 ### 3.2 传输加密（SM4-GCM，**实现必须复刻**）`[打包JS]`
 
-配置 `S1`：
+配置 `S1`（offset 151428000 区）：
 
 ```js
 { enabled:true,
@@ -325,14 +348,19 @@ inferhubBaseUrl = `${agentChatDomain}/api/v2/`   →  https://snap-access.cn-nor
         keyRefreshInterval:3600, fallbackOnFailure:true },
   certPin:{ enabled:false, pins:[] } }
 ```
-可由 env `TRANSPORT_SECURITY_CONFIG` 覆盖（`pN()`）。算法标识 `dl = "sm4-gcm"`。
-加密路径白名单：`/api/v2/chat/completions`（`KLn`）；key-exchange 路径自身不加密（`zLn`）。
-算法 `LN="sm4-gcm"`，密文走 `application/octet-stream`。
+可由 env `TRANSPORT_SECURITY_CONFIG` 覆盖（`pN()`）。算法标识 `LN = "sm4-gcm"`。
+加密路径白名单：`/api/v2/chat/completions`（`KLn`，`startsWith` 匹配）；
+key-exchange 路径自身不加密（`zLn`）。算法 `LN="sm4-gcm"`，加密请求体走
+`application/octet-stream`。
+
+传输安全 hook 还会在 chat 请求头上加 `X-Encrypt-Capable: sm4-gcm`（`RN`，
+`[hn.ChatHeaders]` 回调），服务端据此决定是否返回加密响应。
 
 **密钥协商**：
 
 ```
 POST {base}/api/v1/security/key-exchange    （ECDH P-256，crypto.createECDH）
+请求头：优先 b_(url,"POST") 的 AKSK 签名头；若有 userToken 再加 x-auth-token
 请求 body: { clientPublicKey:<base64>, sessionId:<16B随机→hex>, timestamp:<Date.now()> }
            clientPublicKey = createECDH("prime256v1").generateKeys().toString("base64")
 → 响应: { serverPublicKey:<base64 DER 裸，非 PEM/JWK>, keyId, expiresIn }
@@ -341,75 +369,111 @@ shared = ECDH(clientPriv, serverPub)
 key    = sha256(shared) 前 16 字节          （FLn(n)，IV 长度常量 FN=12）
 ```
 
+服务端 `expiresIn` 存在时按 `expiresIn*1000` 作为 key TTL，否则用
+`keyRefreshInterval*1000`（默认 3600s）；提前 `TLn=300000`ms 触发重新协商。
+
 **请求报文格式**（iv/tag/ts 走 header，**不在 body 内联**）：
-* `AAD = ${method}|${pathname}|${ts}`（`MLn`，ts 参与）
-* body = base64(密文)
+* `AAD = ${method}|${pathname}|${ts}`（`MLn`；method 默认 `POST`，pathname 不含 query）
+* body = base64(密文)，密文为 SM4-GCM 输出（不含 tag）
 * headers 追加：`X-Encrypt-Algo: sm4-gcm`、`X-Encrypt-Key-Id: <keyId>`、
-  `X-Encrypt-Iv: base64(iv)`、`X-Encrypt-Tag: base64(tag)`、`X-Encrypt-Ts: <ts>`、
+  `X-Encrypt-Iv: base64(iv)`、`X-Encrypt-Tag: base64(tag)`、`X-Encrypt-Ts: <Date.now()>`、
   `Content-Type: application/octet-stream`
-* 加密后须对 AKSK 头**重新签名**（`b_(url,method,"application/octet-stream")`，跳过 host）；无 AKSK 则保留原 Authorization
+* 加密后须对 AKSK 头**重新签名**（`b_(url, method, "application/octet-stream")`，跳过 `host`）；
+  无 AKSK 则保留原 `Authorization`
 
 **响应报文格式**：
-* 响应侧 `aadPrefix = keyId`（`new s5(m.key, m.keyId)`），逐 chunk 解密
-* `AAD_chunk = ${aadPrefix}|${chunkIndex}` = `${keyId}|${chunkIndex}`
-* chunk 文本以 `:` 分 3 段：`iv:tag:ciphertext`，均 base64；IV 12B、key 16B、tag 独立
+* 响应侧 `aadPrefix = keyId`（`new s5(m.key, m.keyId)`），逐行解密
+* `AAD_chunk = ${aadPrefix}|${chunkIndex}` = `${keyId}|${chunkIndex}`，计数从 0 开始
+* 每个 chunk 文本以 `:` 分 3 段：`iv:tag:ciphertext`，均 base64；IV 12B、key 16B、tag 独立
+* 解密后原样补回换行，删除 `X-Encrypt-Algo` / `X-Encrypt-Key-Id`，设置
+  `Content-Type: text/event-stream`
 * 判定是否加密响应：`X-Encrypt-Algo === "sm4-gcm"`，否则明文透传
 
 **回退**：任何失败转明文，日志：
 `Encrypting fetch bypass (URL not in encrypt paths), sending plaintext`、
 `Encrypted request failed (network error), falling back to plaintext`、
 `Encrypted request failed (non-2xx), falling back to plaintext`；
-`ENCRYPT_KEY_EXPIRED` → 重新协商后重试一次。
-会话密钥刷新：`keyRefreshInterval=3600`s，提前 `TLn=300000`ms 触发；失败 `fallbackOnFailure:true` 沿用旧 key。
-日志：`Session key negotiated`（含 `keyId`、`ttlSec`）、`Session key negotiation failed`、`Falling back to existing key`、`Session key cleared`。
+`ENCRYPT_KEY_EXPIRED` → 清除 key、重新协商后重试一次。
+`fallbackOnFailure:true` 时，协商失败但旧 key 未过期则沿用旧 key；否则抛错并由上层回退明文。
+日志：`Session key negotiated`（含 `keyId`、`ttlSec`）、`Session key negotiation failed`、
+`Falling back to existing key`、`Session key cleared`。
 
 ### 3.3 请求映射（Chat Completions → 上游）`[打包JS]`
 
-上游即 CC 形状，主要做**适配与裁剪**：
+上游即 CC 形状，主要做**适配与裁剪**（`aU.getArgs`，offset 150678000 区）：
 
 | 下游字段 | 上游处理 |
 |-|-|
 | `messages` | 直通；`tool_calls` / `tool` role 直通 |
 | `tools[].function.parameters` | 直通（JSON Schema 对象） |
-| `max_tokens` | 推理模型（`cU(model)`）→ 重命名为 `max_completion_tokens`（`BP()`），日志 `[openai-reasoning-model] adaptMaxTokensParam applied` |
-| `reasoning_effort` | 白名单模型（`fU(model)`）且 `tools` 非空 → **强制 `"none"`**（`AP()`），日志 `[openai-reasoning-model] adaptReasoningEffort applied: … -> "none"` |
-| `response_format` | `json_schema` / `json_object` 透传 |
-| `strictJsonSchema` | 默认 `true` |
-| `user` / `stop` / `seed` / `verbosity` | 透传（`getArgs`） |
+| `max_tokens` | 仅 `cU(model)`：`o1`/`o3`/`o4`/`gpt-5`/`gpt-6` 系列 → 重命名为 `max_completion_tokens`（`BP()`），日志 `[openai-reasoning-model] adaptMaxTokensParam applied` |
+| `reasoning_effort` | 仅 `fU(model)`：`gpt-5` 全系、`gpt-6` 除 `gpt-6-astra`/`gpt-6.1-sol`；且 `tools` 非空 → **强制 `"none"`**（`AP()`） |
+| `response_format` | 仅当 AI SDK `responseFormat.type === "json"`：有 schema 且 `supportsStructuredOutputs` → `json_schema`；否则 `json_object`；`text` 不发该字段 |
+| `strictJsonSchema` | 默认 `true`，用作 `json_schema.strict`（不是顶层字段） |
+| `user` / `stop` / `seed` / `verbosity` | `user`、`stop`、`seed` 透传；`verbosity` 取 `providerOptions.textVerbosity` |
 | `stream` | `doStream` 传 `true`，`doGenerate` 传 `false` |
-| `stream_options.include_usage` | `[未验证]` |
+| `stream_options.include_usage` | 由 inferhub provider 配置 `includeUsage` 决定，**不是**下游 CC 字段透传 |
 
 `openai-compatible` 模式有弃用警告。`transformRequestBody` 两个调用点分别是 `{...u, stream:false}` 与 `{...u, stream:true}`。
 
 ### 3.4 响应映射（上游 SSE → CC chunk）`[打包JS]`
 
-SSE 逐帧 `data: {...}`，`data: [DONE]` 结束。`processChunk` / `createChatStreamMessageFromJson` 逻辑：
-* 成功判定 `error_code === "0000"`
-* `<think>…</think>` 从正文分流到 reasoning（`gP`）
-* `finish_reason` 映射 `rU`（`stop` / `length` / `tool_calls` / `content_filter`）
-* tool 调用增量按 `tool-input-delta` 批处理，阈值 50 字符 / 4096 字节，日志 `[tool-delta-batch] flushToolDelta: …`
+SSE 逐帧 `data: {...}`，`data: [DONE]` 结束；`xl(chunkSchema)` 解析，chunk 形状是
+标准 OpenAI CC（`choices[0].delta` / `finish_reason` / `usage`）或错误对象。
+
+**成功判定（更正）**：chat 上游**没有** `error_code === "0000"` 校验；`0000` 只用于
+benefit-service 响应（§5/§7）。`aU.doStream` 的判定是：
+
+* `H()` 为真：chunk 含 `error` / `error_code` / `error_msg` 任一键即按错误处理；
+* `H()` 为假：仅 `error` 键按错误处理。
+
+**内容分流**：`reasoning_content ?? reasoning` → reasoning；`content` → text。
+`aU`（inferhub provider）**不解析** `<think>…</think>`；`gP()` 的 `<think>` 分流只属于
+通用 `openai-compatible` provider wrapper，不要套到 chat 上游。
+
+**finish_reason**（`rU`）：`stop`→`stop`、`length`→`length`、
+`content_filter`→`content-filter`、`function_call`/`tool_calls`→`tool-calls`，其他→`other`。
+
+**工具增量**：按 `tool-input-delta` 批处理，阈值 50 个 delta / 4096 个 JS 字符
+（`text.length`，不是字节）；遇换行立即 flush。文本/推理 delta 在 agent-team
+非 leader 会话中也会走同样的 50/4096 批处理。
+
+**收尾**：`finish_reason === "length"` 时会额外插入一条 `text-delta` 提示
+（`nU()`，输出 token 耗尽）；若只有 reasoning、没有 text/tool call，会转成可重试的
+空响应错误（最多 3 次）。
 
 usage（`wl(n)`）：
 
 ```js
-{ inputTokens:{ total, noCache, cacheRead, cacheWrite },
-  outputTokens:{ total, text, reasoning },
-  raw }
+inputTokens.total   = prompt_tokens ?? 0
+inputTokens.noCache = total - (prompt_tokens_details.cached_tokens ?? 0)
+inputTokens.cacheRead = cached_tokens ?? 0
+inputTokens.cacheWrite = undefined
+outputTokens.total  = completion_tokens ?? 0
+outputTokens.reasoning = completion_tokens_details.reasoning_tokens ?? 0
+outputTokens.text   = total - reasoning
+raw = 原始 usage
 ```
 
 ### 3.5 排队（queue）`[打包JS]`
 
-上游可返回排队态，两条队列机制并存：
+上游可返回排队态，三套队列机制并存。**注意**：trace 队列轮询只走
+`H()` 为假的 token 分支；该分支发请求前会额外加 `app-id: CodeAgent3.0`、
+`is-need-queue: true`。触发条件是 429 且 `queue-status: queued`；
+`queue-status: rejected` 则走拒绝/错误分支。
 
 1. **响应内 queueInfo**（`QueueRetryError`，`statusCode:429`、`isRetryable:true`）
-   字段 `queue_length`、`queue_wait_time`、`retry_after`（秒，默认 5）
+   字段 `queue_length`、`queue_wait_time`、`retry_after`（秒，默认 5）；
+   队列总等待上限 `uU = 43200000`ms（12h），超时返回 429 不可重试。
 2. **trace 队列轮询**
    ```
-   GET  {base}/api/v1/concurrency/trace-queues/{traceId}
-   DELETE {base}/api/v1/concurrency/trace-queues/{traceId}   # 取消，best-effort
+   GET  {origin}/api/v1/concurrency/trace-queues/{traceId}
+   DELETE {origin}/api/v1/concurrency/trace-queues/{traceId}   # 取消，best-effort
    ```
-   响应 `{status, queue_length, queue_wait_time, retry_after}`；`status` ∈ `queued` / `promoted` / `not_found`。
-   轮询失败计数 ≥3 放弃。日志 `poll queue GET failed (attempt N)`、`queue delete sent for traceId=…`
+   `origin` 取 chat URL 的 `new URL(q).origin`。响应
+   `{status, queue_length, queue_wait_time, retry_after}`；`status` ∈ `queued` / `promoted` / `not_found`。
+   轮询失败计数 ≥3 放弃；`promoted` 后用原 body 重新 POST，若又返回 429-queued 则继续轮询。
+   日志 `poll queue GET failed (attempt N)`、`queue delete sent for traceId=…`
 3. **IDE 侧轮询**（extension.js，offset 10106446 区）
    ```
    GET {chatDomain}/api/v1/queue/status?task_id=<…>&model=<…>
@@ -423,22 +487,31 @@ usage（`wl(n)`）：
 
 ### 3.6 首帧/首 token 超时与租户冻结 `[打包JS]`
 
-* 首 token 超时 `300000`ms，无数据 `600000`ms
-* 首个 chunk 若含 `ModelArts.81101 BusyException` → 日志 `… BusyException in first chunk`，返回 `new Response(body,{status:429, headers:原响应头})`（即租户被冻结）
-* 正常日志 `[${sessionId}] response stream passthrough (no-tee), probeFailed=${f}, hasFirstChunk=${!!c}`，取消 `passthrough stream cancelled by downstream`
+* 首 token 超时 `w=300000`ms；首 chunk 后清掉该定时器，改由 chunk 空闲计时
+  `b=600000`ms 控制；每次解析到 chunk 都会重置。
+* 首 chunk 拦截（`createTenantFrozenInterceptFetch`，offset 150675437）只在 `H()` 分支、
+  且响应 `status===200` 时读第一块并检查前 512 字节：
+  * 含 `TM.00020005` → 日志 `intercept TM.00020005 tenant frozen error in first chunk`，
+    返回 `new Response(body,{status:400, headers:原响应头})`；
+  * 含 `ModelArts.81101` / `81111` / `81114` / `BusyException`：
+    - 若 `lw()` 判定为上下文超长（如 `prompt length ... maximum input length`）→ **保留原响应**；
+    - 否则日志 `… BusyException in first chunk`，返回 status `429`。
+* 正常日志 `[${sessionId}] response stream passthrough (no-tee), probeFailed=${f}, hasFirstChunk=${!!c}`，取消 `passthrough stream cancelled by downstream`。
 
-### 3.7 内容安全拦截 `[打包JS]`
+### 3.7 内容安全扫描（仅提示，不裁剪）`[打包JS]`
 
-`createContentSecurityInterceptFetch(n,u,t)`：仅 `status===200 && body` 时逐行扫描
-（按 `\n` 切分，跳过 `data: [DONE]`）：
+`createContentSecurityInterceptFetch(n,u,t)`：仅 `status===200 && body`，且
+`u = n.headers["x-session-user-message"] === "true"` 时才扫描；否则原样返回。
+按 `\n` 切分、跳过空行和 `data: [DONE]`：
 
 | 命中 | 处理 |
 |-|-|
-| 含 `TM.00001054` | 日志 `[${n}] Content security intercepted` + `Uw(a.error_msg, "warning")` |
+| `error_code === "TM.00001054"` 且有 `error_msg` | 日志 `[${n}] Content security intercepted` + `Uw(a.error_msg, "warning")` |
 | `desensitized === true` 且有 `desensitizeHint` | 日志 `[${n}] Content desensitized` + `Uw(a.desensitizeHint, "info")` |
 
 兜底正则：`/"error_msg"\s*:\s*"([^"]+)"/`、`/"desensitizeHint"\s*:\s*"([^"]+)"/`。
-处理后重新包 `new Response(d, {status, headers})`。
+这里只是**旁路扫描并弹提示**，不会删除/替换内容，也不终止流；最后重新包
+`new Response(d, {status, headers})`，body 内容保持一致。
 
 ---
 
@@ -660,11 +733,12 @@ education 由 `monthly_tokens_used` / `monthly_token_limit` 映射为同结构�
 * zh：`福利模型额度已用尽，请切换其他模型继续使用`
 * en：`The free benefit model quota is used up. Please switch to another model to continue.`
 
-### 6.2 流内错误 `_P(n,u,t)`（offset 99381617）`[打包JS]`
+### 6.2 流内错误 `_P(n,u,t)`（offset 150640877）`[打包JS]`
 
-CLI 分支解析 `{error_code, error_msg}`；非 CLI 为 `{...n.error, rateLimitInfo}`。
+`H()` 分支解析 `{error_code, error_msg}`；非 `H()` 为 `{...n.error, rateLimitInfo}`。
 判定：
 * `lw(mc(n))` 命中 → 上下文超长，转 `al(u,n)`
+* `InferHub.4291.200` → 402 不可重试
 * 含 `.429` → 结合 `x-session-retry` 计数判定可重试
 
 ### 6.3 限流 `fP` + 退避 `[打包JS]`
@@ -700,8 +774,9 @@ token 限额告警阈值：90% / 100%。
 ### 6.5 其他 `[打包JS]`
 
 * `InferhubBaseUrlMissing`：`statusCode 555`、`isRetryable:false`（配置缺失，不应重试）
-* 租户冻结：首 chunk `ModelArts.81101 BusyException` → 429（§3.6）
-* 内容安全：`TM.00001054`（§3.7）
+* 租户冻结：首 chunk `TM.00020005` → 400；`ModelArts.81101`/`81111`/`81114`/`BusyException`
+  非上下文超长 → 429；上下文超长保留原响应（§3.6）
+* 内容安全：`TM.00001054` 只弹提示，不裁剪/不终止流（§3.7）
 * 队列：`TM.00001045` → IDE 弹错
 
 ---
