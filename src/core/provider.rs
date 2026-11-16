@@ -87,6 +87,8 @@ pub enum ProviderError {
     Protocol(String),
     #[error("功能未实现: {0}")]
     Unimplemented(&'static str),
+    #[error("此供应商不支持: {0}")]
+    Unsupported(&'static str),
     #[error("{0}")]
     Other(String),
 }
@@ -110,6 +112,16 @@ pub trait Provider: Send + Sync {
     /// 凭证到期时间（毫秒时间戳）。不适用或未知时返回 `None`。
     fn credential_expire_at(&self) -> Option<i64> {
         None
+    }
+
+    /// 主动刷新登录令牌（`ofm-server refresh <id>`）。
+    ///
+    /// 返回可读的结果描述（如新到期时间），成功时应已落盘。
+    /// 供应商无续期机制时返回 [`ProviderError::Unsupported`]。
+    ///
+    /// 默认实现返回不支持；注意这与“已实现但暂未被自动调用”不同。
+    async fn refresh(&self) -> Result<String, ProviderError> {
+        Err(ProviderError::Unsupported(self.id()))
     }
 
     /// 发起对话，返回事件流。要求：错误以 [`crate::core::events::Event::Error`]

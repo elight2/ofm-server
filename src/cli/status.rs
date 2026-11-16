@@ -23,7 +23,7 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
 
     // 凭证到期时间。
     match provider.credential_expire_at() {
-        Some(ms) => println!("凭证到期时间: {}", fmt_ms(ms)),
+        Some(ms) => println!("凭证到期时间: {}", crate::core::fmt_ms(ms)),
         None => println!("凭证到期时间: 未知"),
     }
 
@@ -60,15 +60,3 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
     Ok(())
 }
 
-/// 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS`（UTC）。
-fn fmt_ms(ms: i64) -> String {
-    let secs = ms / 1000;
-    match time::OffsetDateTime::from_unix_timestamp(secs) {
-        Ok(dt) => {
-            let (y, mo, d) = dt.to_calendar_date();
-            let (h, mi, s) = (dt.hour(), dt.minute(), dt.second());
-            format!("{y:04}-{:02}-{d:02} {h:02}:{mi:02}:{s:02}", mo as u8)
-        }
-        Err(_) => ms.to_string(),
-    }
-}

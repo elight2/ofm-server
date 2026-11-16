@@ -4,6 +4,7 @@
 
 pub mod claim;
 pub mod login;
+pub mod refresh;
 pub mod serve;
 pub mod status;
 
@@ -36,7 +37,7 @@ pub enum Command {
     },
     /// 签到所有供应商
     Claim,
-    /// 获取供应商当前信息（目前只输出余额）
+    /// 获取供应商当前信息（接入状态、余额、签到记录、凭证到期、模型列表）
     Status {
         /// 供应商 id（如 trae）
         provider: String,
@@ -45,4 +46,9 @@ pub enum Command {
     ///
     /// 用法：`ofm-server config > config.toml`
     Config,
+    /// 刷新供应商登录令牌
+    Refresh {
+        /// 供应商 id（如 trae）
+        provider: String,
+    },
 }

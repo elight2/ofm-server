@@ -79,7 +79,14 @@ impl TraeProvider {
         }
 
         tracing::info!("[{ID}] token 已过期，正在续期");
-        let new = refresh::refresh(&self.client, &cred)
+        let new = self.do_refresh(&cred).await?;
+        tracing::info!("[{ID}] 续期成功");
+        Ok(new.token)
+    }
+
+    /// 续期并落盘，返回新凭证。401 翻译为「refresh_token 已失效」。
+    async fn do_refresh(&self, cred: &Credential) -> Result<Credential, ProviderError> {
+        let new = refresh::refresh(&self.client, cred)
             .await
             .map_err(|e| match e {
                 HttpError::Status { status: 401, .. } => {
@@ -89,8 +96,7 @@ impl TraeProvider {
             })?;
         new.store(&self.root)
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
-        tracing::info!("[{ID}] 续期成功");
-        Ok(new.token)
+        Ok(new)
     }
 
     fn chat_headers(&self, token: &str, cred: &Credential) -> Vec<(&'static str, String)> {
@@ -385,6 +391,16 @@ impl Provider for TraeProvider {
         );
 
         Ok(Box::pin(out))
+    }
+
+    /// 主动刷新令牌（`ofm-server refresh trae`）。
+    async fn refresh(&self) -> Result<String, ProviderError> {
+        let cred = self.credential()?;
+        let new = self.do_refresh(&cred).await?;
+        Ok(match new.token_expire_at {
+            Some(ms) => format!("续期成功，新凭证到期时间 {}", crate::core::fmt_ms(ms)),
+            None => "续期成功".to_string(),
+        })
     }
 
     /// 读当前余额（`pay/ide_user_ent_usage` 的 `total_balance`）。

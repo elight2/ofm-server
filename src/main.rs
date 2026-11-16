@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Login { provider } => cli::login::run(root, &provider).await,
         Command::Claim => cli::claim::run(root).await,
         Command::Status { provider } => cli::status::run(root, &provider).await,
+        Command::Refresh { provider } => cli::refresh::run(root, &provider).await,
         Command::Config => {
             // 原样输出内嵌文本，保留注释。不写盘，由 shell 重定向决定去向。
             print!("{}", config::DEFAULT_CONFIG_STR);

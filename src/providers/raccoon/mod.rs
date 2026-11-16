@@ -277,6 +277,17 @@ impl Provider for RaccoonProvider {
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
         Err(ProviderError::Unimplemented("raccoon 签到"))
     }
+
+    /// raccoon 不支持主动刷新令牌。
+    ///
+    /// 官方客户端拿到 IAM token 时**直接拒绝续期**
+    /// （`accountRequests.js`: `isIamToken(access) → throw unauthorized`），
+    /// 即使遗留的 refresh_token 仍在磁盘。实测该端点虽回 `code:0`，
+    /// 但未临近过期时只会原样返还同一 token，且偏离官方行为，
+    /// 故不对外暴露该能力（内部 `access_token` 的自动续期仍保留）。
+    async fn refresh(&self) -> Result<String, ProviderError> {
+        Err(ProviderError::Unsupported(ID))
+    }
 }
 
 /// 供 `main` 判断是否已有登录凭证。
