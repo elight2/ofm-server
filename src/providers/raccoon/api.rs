@@ -140,16 +140,40 @@ where
     B: serde::Serialize + ?Sized,
     R: DeserializeOwned,
 {
+    post_envelope_with_headers(client, url, bearer, body, &[]).await
+}
+
+/// 同 [`post_envelope`]，额外带一组请求头。
+///
+/// 移动端领取积分端点要求 `X-Client-Platform` / `X-Client-Version`
+/// 标识客户端类型，缺了会被服务端当成非移动端。
+pub async fn post_envelope_with_headers<B, R>(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: Option<&str>,
+    body: &B,
+    headers: &[(&str, String)],
+) -> Result<R, HttpError>
+where
+    B: serde::Serialize + ?Sized,
+    R: DeserializeOwned,
+{
     let payload = serde_json::to_vec(body).map_err(|e| HttpError::Decode(e.to_string()))?;
     let mut http = client.post(url).body(payload);
     if let Some(t) = bearer {
         http = http.header("authorization", format!("Bearer {t}"));
+    }
+    for (k, v) in headers {
+        http = http.header(*k, v);
     }
     let resp = http.send().await?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     parse_envelope::<R>(status.as_u16(), &text)
 }
+
+/// 移动端 API 前缀。
+pub const MOBILE_PREFIX: &str = "/api/web/mobile/v1";
 
 /// 发 GET 并解信封。
 ///

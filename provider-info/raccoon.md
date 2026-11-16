@@ -1,9 +1,11 @@
 # 商汤小浣熊(Raccoon Work)客户端协议
 
 ## 0. 总结
-* 客户端版本: `1.2.0`(`@raccoon/office-desktop`，包名`商汤小浣熊-1.2.0-amd64.deb`)
+* 客户端版本: 桌面 `1.2.0`(`@raccoon/office-desktop`，包名`商汤小浣熊-1.2.0-amd64.deb`)；
+  移动 `1.1.0`(`raccoon-1.1.0.apk`)
 * 分析方式: 解包 deb(`tmp/raccoon-extract`) + 解析 `resources/app.asar` 内 `build/`(未混淆的编译 JS) + 渲染层 webpack chunk
-  (`out/_next/static/chunks/`)。**未抓包**，未反编译 `box-agent-acp`(PyInstaller)
+  (`out/_next/static/chunks/`)；APK 为 Capacitor 套壳(`tmp/raccoon-apk/assets/public/_next/`)。
+  **未抓包**，未反编译 `box-agent-acp`(PyInstaller)、未反编译 `classes.dex`
 * UA: 无固定 UA。身份靠请求头(见下)。`GET /api/web/llm/v2/model_catalog` 等端点**不校验 UA**
 
 ### 可用的现成源码
@@ -35,8 +37,9 @@
 * 官方对话由 `box-agent-acp`(Python)发起，主进程只负责下发 `api_base`/`api_key`/`auth.json`；
   服务器直接按 OpenAI 格式打 `/api/web/llm/v2/chat/completions` 即可
 * `dist/electron/main.cjs` 的本地 relay 是受限版本(只允许单一 model、`tools` 必须为空)，**不能照抄**
-* 官方**没有签到端点**：每日积分 0 点服务端自动发放(`daily_grant`)，
-  当天登录会把有效期从「当日 24:00」延长到 7 天(见 §7)
+* 官方**没有传统签到**，但有登录领取端点：`POST /api/web/mobile/v1/login/points/grant`。
+  它同时发每日 300 分并把有效期延到 7 天，兼发移动端首登 3000 分(幂等,每号一次)。
+  实测**只有真实客户端登录触发**该发放，刷 token / 拉余额 / 发对话均无效(见 §7)
 
 ### 域名
 |域名和端点|功能|
@@ -282,8 +285,11 @@
 |请求体过大|`HTTP 413`，客户端文案 `request body exceeds 10MB`|
 
 ## 7. 签到协议
-**无签到端点**。每日积分由服务端在 **每天 0 点自动发放**(账单 `biz_type: 'daily_grant'`)，
-客户端无任何可调用的签到接口，故**不可**实现成签到按钮(按钮必然失败)。
+**没有传统意义的「签到」端点**，但有一个**登录领取**端点：
+`POST /api/web/mobile/v1/login/points/grant`（移动端）。
+
+它既是「每日 300 分」的唯一主动获取入口，也顺带发放移动端首登奖励 3000 分。
+服务端幂等，同一天重复调用返回 `granted: false`，已实现为 `claim`。
 
 ### 每日积分的有效期与续期(官方文案原文)
 客户端积分明细页文案 `setting.resource.points.dailyGrantRule`：
@@ -292,68 +298,145 @@
 
 英/日文同义(`Daily points are granted at 00:00 each day and expire at 24:00 that day by default. Logging in that day extends their validity to 7 days.`)。
 
-要点：
-* 发放：服务端 0 点主动发，**无接口**
-* 默认有效期：**当日 24:00 清零**
-* 续期：当天的某个动作会把该批每日积分的有效期延长至 **7 天**
-  * ⚠️ **触发动作未确认**，见下「实测」节
+**该文案已在 11-16 得到实证**（见下「决定性实测」）：登录确实同时发放当日积分并延长到 7 天。
 
-### 每日积分发放/过期的实测(2025-11-15，本机真实账号)
-数据源：`GET /api/web/points/v2/bills?paging.limit=20&type=all[&cursor=]`
+### 账单字段陷阱：`created_at` 不可信
+`bill_id` 有两种形态，含义完全不同：
 
-响应结构：`{code:0, data:{items:[...], has_more, next_cursor}}`，翻页用 `cursor`。
+| `bill_id` 形态 | 含义 | `created_at` 是否可信 |
+|-|-|-|
+| `daily_makeup:<uid>:<YYYYMMDD>:free:300:grant` | **补记**（事后批量生成的历史账） | ❌ 恒为业务日 `00:00:00` |
+| `bill_uuid-xxxx-...` | **真实单据** | ✅ 真实发生时刻 |
+
+⚠️ 11-08 ~ 11-14 那 7 条 `daily_grant` 全是 `daily_makeup` 补记，`created_at` 是业务日假值。
+**不能用 `created_at` 推断发放规律**，必须先看 `bill_id` 前缀。
+目前真实单据只有两条：11-15 22:04:18（web）和 11-16 09:43:22（mobile）。
+
+### 每日积分发放/过期的实测(2026-11-15/16，本机真实账号)
+数据源：`GET /api/web/points/v2/bills?paging.limit=50&type=all[&paging.cursor=]`
+
+响应结构：`{code:0, data:{items:[...], has_more, next_cursor}}`。
+⚠️ 翻页参数是 **`paging.cursor`**，不是 `paging.offset`（误用 offset 会静默返回同一页）。
 单条记录字段：
 |字段|说明|
 |-|-|
-|`bill_id` / `group_id`|记录 id / 分组 id|
+|`bill_id` / `group_id`|记录 id / 分组 id；`bill_id` 前缀见上表|
 |`bill_count`|同组条数|
 |`client_type`|`web` 或 `desktop`(消耗来源)|
-|`event_name`|中文事件名，如「每日积分发放」「每日积分过期清零」「任务消耗 · dsh-ofm-ng」|
-|`biz_type`|`daily_grant` / `daily_expire` / `desktop`(消费)|
+|`event_name`|中文事件名，如「每日积分发放」「桌面端 LLM 对话消耗」|
+|`biz_type`|`daily_grant` / `daily_expire` / `reward_grant` / `desktop`(消费)|
 |`biz_id`|业务 id；过期记录形如 `20261114:free:300`|
 |`points`|变动分值，**开销为负**|
-|`created_at`|记账时间(ISO8601 带 +08:00)|
+|`created_at`|记账时间(补记账单为业务日假值)|
 |`grant_at`|发放时间(仅 daily_* 有)|
 |`expire_at`|失效时间(仅 daily_* 有)|
 
-近 7 天 `daily_grant` 的 `grant_at` → `expire_at` 对照：
-|日期|grant_at|expire_at|实际有效期|
+#### 决定性实测：移动端登录触发发放 + 7 天延期
+2026-11-16 09:43:22，用户在 Android APK 客户端登录，**同刻**产生两条真实单据：
+
+|biz_type|points|grant_at|expire_at|
 |-|-|-|-|
-|11-15|11-15 00:00|**11-21 23:59**|**7 天**|
-|11-14|11-14 00:00|11-14 23:59|当天|
-|11-13|11-13 00:00|11-13 23:59|当天|
-|11-12|11-12 00:00|11-12 23:59|当天|
-|11-11|11-11 00:00|11-11 23:59|当天|
-|11-10|11-10 00:00|11-10 23:59|当天|
-|11-09|11-09 00:00|11-09 23:59|当天|
+|`daily_grant`|300|11-16 00:00|**11-22 23:59**（+7 天）|
+|`reward_grant`|3000|—|—（「移动端登录奖励」，每号一次）|
 
-⇒ 延期机制确实存在(11-15 延到 7 天)，但**仅 11-15 发生**，之前每天当天清零。
-⇒ 延期**不是自动**生效，需要某种触发。
+余额 `7698 → 10998`：`daily 285→585`（+300）、`reward 7413→10413`（+3000）。
 
-#### 延期触发条件的排查(未定论)
-11-15 当天事件时间线：
-|时间|事件|
+⇒ **「当天登录后有效期延长至 7 天」成立**，且每日 300 分同时补发。
+⇒ 多批积分**叠加不覆盖**：11-15 批剩 285（expire 11-21）+ 11-16 批 300（expire 11-22）并存。
+
+#### 已否证的触发方式
+|动作|是否触发每日发放/延期|说明|
+|-|-|-|
+|跨天无任何请求（10.5 小时）|❌|11-16 08:55 查，无新 `daily_grant`|
+|`GET /points/v1/balance`|❌|只读|
+|`POST /auth/v1/refresh`（回 `code:0`）|❌|只续 token，不算登录|
+|`POST /chat/completions`（真实扣费 15 次）|❌|只扣费不算登录|
+|网页 OAuth 授权登录|✅|11-15 22:04，`client_type: web`|
+|**移动端 APK 登录**|✅|11-16 09:43，已验证|
+
+⇒ 结论：**只有真实客户端登录才算「登录」**。定时刷 token / 拉余额 / 发对话都不能代替。
+⇒ 故不实现「定时刷新代替签到」；`claim` 直接调领取端点，效果等同于一次移动端登录。
+
+### 领取端点（APK v1.1.0 源码，已实测可用）
+来源：`assets/public/_next/static/chunks/app/layout-*.js` 模块 93305。
+
+```js
+static async grantLoginPoints(e, t) {
+  return (await u.nC.fetchWithAuth(
+    `${u.hj()}/api/web/mobile/v1/login/points/grant`,
+    { method: "POST",
+      headers: { "X-Client-Platform": `app-${e}`,
+                 "X-Client-Version": `v${t.replace(/^v/i, "")}` } })).data
+}
+```
+
+* 端点：**`POST /api/web/mobile/v1/login/points/grant`**，**无请求体**
+* `e` 来自 `getPlatform()`，只会是 `android` / `ios`
+  （模块 84935：`getPlatform() in {ios,android} ? 平台 : null`，非移动端不调用）
+* 响应 `{code:0, data:{granted:bool, popup?:{points, display_name, source}}}`
+* `popup.source` 枚举：`daily` / `monthly` / `old_user` / `new_user` / `desktop_login` / `mobile_login`
+
+#### 客户端触发逻辑（同一文件 `MobileAppProvider`）
+```js
+if (!await R9()) return          // R9 = 隐私授权是否已同意（模块 4169）
+let e = await Y6()                // 取版本
+if (M.current !== R) return       // 用户切走则放弃
+let a = await m.grantLoginPoints(platform, e.version)
+await UF(a, { show, refresh })    // UF: granted===true 才弹窗+刷新
+```
+每次 App 回到前台都会调一次，靠服务端 `granted` 幂等去重。
+
+#### 与桌面端端点的区别
+| | 移动端 | 桌面端 |
+|-|-|-|
+|路径|`/api/web/mobile/v1/login/points/grant`|`/api/web/desktop/v1/login/points/grant`|
+|`X-Client-Platform`|`app-android` / `app-ios`|`desktop-linux`|
+|发放每日 300|✅|❌|
+|发放首登 3000|✅（移动端登录奖励）|✅（桌面端登录奖励）|
+
+APK 内**不存在**桌面端路径；反之桌面版未见移动端路径。两者是独立渠道。
+
+#### 凭证可用性（实测）
+桌面端 token 可直接调移动端端点：token 的 `aud` 仅 `xiaohuanxiong.com`，
+无客户端类型绑定，服务端只校验 header。
+
+**实测（2026-11-16 10:20，本机）**：
+```bash
+ofm-server claim     # → [raccoon] 签到跳过: 今日已领取（服务端幂等，每次登录只发一次）
+```
+返回 `granted: false` 而非 401/403，证明凭证与 header 均被接受，仅因当日已领被幂等拦下。
+
+⚠️ **未实测**：跨天首次调用是否真返回 `granted: true` 并发 300（需次日验证，会消耗当日额度）。
+
+### 实现要点(已完成)
+`src/providers/raccoon/claim.rs`：
+* `POST /api/web/mobile/v1/login/points/grant`，header 带
+  `X-Client-Platform: app-android`、`X-Client-Version: v1.1.0`
+* ⚠️ 版本号用 APK 的 `v1.1.0`，**不复用**桌面版常量 `api::CLIENT_VERSION`（`v1.2.0`）：
+  冒充移动端却报 Electron 版本自相矛盾
+* `granted: false` → `skipped: true`（**不是错误**），避免 `claim.log` 每天记假警报
+* `granted: true` → 用 `popup.source` 翻译成人话（如「每日积分 300」）
+* 顺带读一次余额填入 `ClaimReport.balance`
+
+`api.rs` 新增 `post_envelope_with_headers`（原 `post_envelope` 只支持 bearer，无法带客户端标识头）。
+
+### 每日积分过期与账单字段
+余额分池(`GET /api/web/points/v1/balance`)：`available_points`(总)、`daily_points`、`monthly_points`、
+`reward_points`、`topup_points`、`topup_frozen`。消耗顺序：每日额度 → 每月额度 → 奖励积分 → 加油包。
+
+**余额接口不带任何到期字段**(实测全字段已核对)，到期信息只能从账单的 `expire_at` 取。
+实测样例(11-16)：`available_points: 10998 = daily 585 + reward 10413`。
+注意 `reward_points` 无到期字段，与每日积分为不同池子。
+
+账单展示文案(`GET /api/web/points/v2/bills`)：
+|字段/类型|含义|
 |-|-|
-|22:00:17|官方客户端启动(日志)；`auth.json` **不存在**，即**未登录**；日志无 login/authorize|
-|22:04:18|`daily_grant` 记账，**此时 `expire_at` 已是 11-21**(client_type=`web`)|
-|22:24:26|我们用 `login raccoon` 完成授权登录|
+|`biz_type: 'daily_grant'`|每日积分发放；展示 `grant_at · 有效期至 <expire_at> 24:00`|
+|`biz_type: 'daily_expire'`|每日积分过期；`当日未登录` 表示当天没登录导致作废|
+|`biz_type: 'reward_grant'`|奖励积分（登录奖励 / 新人礼包）|
+|`grant_at` / `expire_at`|发放时间 / 失效时间；二者同一天时显示「当日 24:00」|
 
-推断与旁证：
-* 延期在 22:04:18 已生效 → **不是**我们 22:24 的登录触发
-* 官方客户端启动但未登录 → **不是**官方客户端登录触发
-* 该条 `client_type: web` → 大概率是网页端某次动作
-* **但无法从流水/日志确认具体是哪个动作**
-
-⚠️ **待实测**：以下三种假设均未被证实或否定：
-1. 调 `/refresh`
-2. 任何带 token 的请求(如拉余额/目录)
-3. 完成一次授权(`login_with_authorization_code`)
-
-**警示**：在触发条件确认前，**不要**实现“定时刷新代替签到”类逻辑——
-既无收益依据(每日 300 分与是否签到无关)，也可能白打请求。
-次日再查一次流水对比 `expire_at` 是成本最低的验证方式。
-
-### 换 token 端点实测(本机，2025-11)
+### 换 token 端点实测(本机，2026-11)
 `POST /api/web/auth/v1/login_with_authorization_code` 以假 code 实测，返回：
 ```
 HTTP 400 {"code":200035,"message":"authorization_code_not_found_error","details":"authorization code not found"}
@@ -361,29 +444,3 @@ HTTP 400 {"code":200035,"message":"authorization_code_not_found_error","details"
 * 端点真实存在且受理该请求体格式 `{"authorization_code":"..."}`
 * 错误码 `200035` 与源码一致；**假 code 会回 HTTP 400**（非 200 信封）
 * 故客户端不能只看 HTTP 状态，需解析 body 的业务码
-
-账单相关字段与文案(`GET /api/web/points/v2/bills`)：
-|字段/类型|含义|
-|-|-|
-|`biz_type: 'daily_grant'`|每日积分发放；展示 `grant_at · 有效期至 <grant_at+1天> 24:00`|
-|`biz_type: 'daily_expire'`|每日积分过期；`当日未登录` 表示当天没登录导致作废|
-|`grant_at` / `expire_at`|发放时间 / 失效时间；二者同一天时显示「当日 24:00」|
-|`event_name` / `points` / `client_type`|事件名 / 变动积分(带符号) / 消耗来源|
-
-余额分池(`GET /api/web/points/v1/balance`)：`available_points`(总)、`daily_points`、`monthly_points`、
-`reward_points`、`topup_points`、`topup_frozen`。消耗顺序：每日额度 → 每月额度 → 奖励积分 → 加油包。
-
-**余额接口不带任何到期字段**(实测全字段已核对)，到期信息只能从账单的 `expire_at` 取。
-实测样例(11-15)：`available_points: 7713 = daily 300 + reward 7413`，
-`topup_points: 0`、`enterprise_reserved: false`、`owner_type: users`。
-注意 `reward_points` 无到期字段，与每日 300 分是不同池子。
-
-### 实现要点(已完成)
-`src/providers/raccoon/balance.rs`：`GET /api/web/points/v1/balance`，
-主数字取 `available_points`（实测 = 各分池之和）。
-字段均加 `#[serde(default)]`——余额是展示项，上游删字段时不应整条解析失败。
-
-唯一与「登录」相关的写接口是 `POST /api/web/desktop/v1/login/points/grant`
-(需 `X-Client-Platform: desktop-linux`、`X-Client-Version: v1.2.0`，
-返回 `{code:0, data:{granted:bool, popup?:...}}`)，**幂等一次性**(已领过返回 `granted:false`)，
-**不是每日签到**。

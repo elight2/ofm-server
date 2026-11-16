@@ -9,6 +9,7 @@ pub mod api;
 pub mod auth;
 pub mod balance;
 pub mod chat;
+pub mod claim;
 pub mod credential;
 pub mod models;
 pub mod refresh;
@@ -274,8 +275,13 @@ impl Provider for RaccoonProvider {
         Ok(Box::pin(out))
     }
 
+    /// 领取移动端登录积分（等价官方客户端的「登录送积分」）。
+    ///
+    /// 实测每日 300 分**只能靠真实登录触发**：拉余额、续期 token、发对话都不行。
+    /// 服务端幂等，同一天重复调用返回 `granted: false`，映射为 `skipped`。
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
-        Err(ProviderError::Unimplemented("raccoon 签到"))
+        let cred = self.credential()?;
+        claim::claim(&self.client, &cred).await
     }
 
     /// raccoon 不支持主动刷新令牌。
