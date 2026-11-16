@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 
+use crate::config::RaccoonReasoningEffort;
 use crate::core::provider::{ChatRequest, Message, Part, Role};
 
 /// 对话路径（相对 `api::LLM_PREFIX`）。
@@ -25,6 +26,12 @@ pub struct ChatBody {
     /// （见 `provider-info/raccoon.md` §3.6）。`Auto` 时不发送该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
+    /// 思考强度。只有 `low` 才发送；`high` 不发送该字段。
+    ///
+    /// 实测见 `provider-info/raccoon.md` §3.7：发 `"low"` 思考被完全抑制，
+    /// 发 `"high"` 反而比不发时思考更少，故「深度思考」用不发送实现。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,7 +92,7 @@ pub struct ImageUrl {
 }
 
 impl ChatBody {
-    pub fn build(req: &ChatRequest) -> Self {
+    pub fn build(req: &ChatRequest, effort: RaccoonReasoningEffort) -> Self {
         Self {
             model: req.model.clone(),
             stream: true,
@@ -103,7 +110,16 @@ impl ChatBody {
                 })
                 .collect(),
             tool_choice: req.tool_choice.to_json(),
+            reasoning_effort: effort_field(effort),
         }
+    }
+}
+
+/// 档位 → 上游 `reasoning_effort` 取值。`None` 表示不发送该字段。
+fn effort_field(effort: RaccoonReasoningEffort) -> Option<&'static str> {
+    match effort {
+        RaccoonReasoningEffort::Low => Some("low"),
+        RaccoonReasoningEffort::High => None,
     }
 }
 
@@ -190,7 +206,7 @@ mod tests {
             messages: vec![user_msg("你好")],
             tools: vec![],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["model"], "sn-glm-5-3");
         assert_eq!(v["stream"], true);
@@ -219,7 +235,7 @@ mod tests {
             }],
             tools: vec![],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         let arr = v["messages"][0]["content"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -243,7 +259,7 @@ mod tests {
                 })),
             }],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["tools"][0]["type"], "function");
         assert_eq!(v["tools"][0]["function"]["name"], "get_weather");
@@ -269,7 +285,7 @@ mod tests {
             }],
             tools: vec![],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         let tc = &v["messages"][0]["tool_calls"][0];
         assert_eq!(tc["id"], "call_1");
@@ -292,7 +308,7 @@ mod tests {
             }],
             tools: vec![],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["messages"][0]["role"], "tool");
         assert_eq!(v["messages"][0]["tool_call_id"], "call_1");
@@ -313,7 +329,7 @@ mod tests {
             }],
             tools: vec![],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         let arr = v["messages"][0]["content"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -333,7 +349,7 @@ mod tests {
                 parameters: None,
             }],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         assert!(v["tools"][0]["function"].get("parameters").is_none());
     }
@@ -346,7 +362,7 @@ mod tests {
             messages: vec![user_msg("hi")],
             tools: vec![],
             tool_choice: Default::default(),
-        });
+        }, RaccoonReasoningEffort::Low);
         let v = serde_json::to_value(&body).unwrap();
         assert!(v.get("tool_choice").is_none());
     }
@@ -369,9 +385,41 @@ mod tests {
                 messages: vec![user_msg("hi")],
                 tools: vec![],
                 tool_choice: choice,
-            });
+            }, RaccoonReasoningEffort::Low);
             let v = serde_json::to_value(&body).unwrap();
             assert_eq!(v["tool_choice"], want);
         }
+    }
+
+    /// `low` 档向上游发送 `reasoning_effort: "low"`。
+    #[test]
+    fn low档发送reasoning_effort() {
+        let body = ChatBody::build(
+            &ChatRequest {
+                model: "m".into(),
+                messages: vec![user_msg("hi")],
+                tools: vec![],
+                tool_choice: Default::default(),
+            },
+            RaccoonReasoningEffort::Low,
+        );
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["reasoning_effort"], "low");
+    }
+
+    /// `high` 档**不发送**该字段（实测发送反而思考更少）。
+    #[test]
+    fn high档不发送reasoning_effort() {
+        let body = ChatBody::build(
+            &ChatRequest {
+                model: "m".into(),
+                messages: vec![user_msg("hi")],
+                tools: vec![],
+                tool_choice: Default::default(),
+            },
+            RaccoonReasoningEffort::High,
+        );
+        let v = serde_json::to_value(&body).unwrap();
+        assert!(v.get("reasoning_effort").is_none());
     }
 }

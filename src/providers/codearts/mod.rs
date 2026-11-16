@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
+use crate::config::CodeartsReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
@@ -36,15 +37,19 @@ pub struct CodeartsProvider {
     chat_client: reqwest::Client,
     /// AKSK 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// 思考强度。⚠︎ 暂未实测上游行为，先保留配置值。
+    #[allow(dead_code)]
+    effort: CodeartsReasoningEffort,
 }
 
 impl CodeartsProvider {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, effort: CodeartsReasoningEffort) -> Self {
         Self {
             root,
             client: api::token_client().expect("构建 HTTP 客户端失败"),
             chat_client: api::chat_client().expect("构建对话 HTTP 客户端失败"),
             refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            effort,
         }
     }
 

@@ -6,7 +6,6 @@
 //!
 //! 默认值不在代码里重复定义，避免与示例文件漂移。
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +24,7 @@ pub const CREDENTIAL_FILE: &str = "credential.toml";
 /// 代码里不再重复写一份常量。改默认值只改这个文件。
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../config.example.toml");
 
-/// 未在 `[claim_intervals]` 中列出的供应商所用的兜底签到间隔（秒）。
+/// 未在 `[<provider>]` 表中写出 `claim_intervals` 时的兜底签到间隔（秒）。
 ///
 /// 取值为 6 小时，与 `config.example.toml` 的兜底说明保持一致。
 /// 该常量**不重复**定义已知供应商的间隔——那些写在示例文件里。
@@ -46,8 +45,16 @@ fn default_port() -> u16 {
     example().port
 }
 
-fn default_claim_intervals() -> HashMap<String, u64> {
-    example().claim_intervals.clone()
+fn default_trae() -> TraeConfig {
+    example().trae
+}
+
+fn default_raccoon() -> RaccoonConfig {
+    example().raccoon
+}
+
+fn default_codearts() -> CodeartsConfig {
+    example().codearts
 }
 
 /// 解析示例文件。供 `Config::default()` 与字段级默认共用。
@@ -64,11 +71,102 @@ pub struct Config {
     /// 监听端口。
     #[serde(default = "default_port")]
     pub port: u16,
-    /// 按供应商覆盖的签到间隔（秒）。
-    ///
-    /// 未列出的供应信用 `FALLBACK_CLAIM_INTERVAL_SECS`。各供应商**独立计时**。
-    #[serde(default = "default_claim_intervals")]
-    pub claim_intervals: HashMap<String, u64>,
+    /// trae 供应商设置。
+    #[serde(default = "default_trae")]
+    pub trae: TraeConfig,
+    /// raccoon 供应商设置。
+    #[serde(default = "default_raccoon")]
+    pub raccoon: RaccoonConfig,
+    /// codearts 供应商设置。
+    #[serde(default = "default_codearts")]
+    pub codearts: CodeartsConfig,
+}
+
+/// trae 供应商设置。
+///
+/// 每个供应商单独一个类型而非共用的 `ProviderConfig`：各家的思考强度
+/// **可用档位不同**，共用类型要么得允许所有档位（失去校验），
+/// 要么得在运行期补校验（错误发现得晚）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraeConfig {
+    /// 自动签到间隔（秒）。
+    #[serde(default = "default_claim_interval_secs")]
+    pub claim_intervals: u64,
+    /// 思考强度。trae 上游不支持该功能，只接受 `none`。
+    #[serde(default)]
+    pub reasoning_effort: TraeReasoningEffort,
+}
+
+/// raccoon 供应商设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RaccoonConfig {
+    /// 自动签到间隔（秒）。
+    #[serde(default = "default_claim_interval_secs")]
+    pub claim_intervals: u64,
+    /// 思考强度。
+    #[serde(default)]
+    pub reasoning_effort: RaccoonReasoningEffort,
+}
+
+/// codearts 供应商设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeartsConfig {
+    /// 自动签到间隔（秒）。
+    #[serde(default = "default_claim_interval_secs")]
+    pub claim_intervals: u64,
+    /// 思考强度。
+    #[serde(default)]
+    pub reasoning_effort: CodeartsReasoningEffort,
+}
+
+fn default_claim_interval_secs() -> u64 {
+    example().trae.claim_intervals
+}
+
+/// trae 的思考强度。
+///
+/// trae 上游**不认**任何思考强度字段（实测 `reasoning_effort` 被静默忽略，
+/// 见 `provider-info/trae.md` §3.2）。因此只有一个档位，仅为配置对称。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraeReasoningEffort {
+    /// 不发送任何思考强度字段。
+    #[default]
+    None,
+}
+
+/// raccoon 的思考强度。
+///
+/// 对应官方客户端「快速 / 深度思考」开关的两档：
+/// - `low`：向上游发 `reasoning_effort: "low"`，实测思考被完全抑制。
+/// - `high`：**不发送**该字段，跟随上游默认思考行为。实测发 `high`
+///   反而比不发时思考更少，故「深度思考」用不发送实现。
+///
+/// 实测数据见 `provider-info/raccoon.md` §3.7。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RaccoonReasoningEffort {
+    /// 快速：思考被抑制。
+    #[default]
+    Low,
+    /// 深度思考：不发送该字段。
+    High,
+}
+
+/// codearts 的思考强度。
+///
+/// ⚠︎ 暂未实测：档位与行为先假定与 raccoon 一致，待实测后修正。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeartsReasoningEffort {
+    /// 快速：预期思考被抑制。
+    #[default]
+    Low,
+    /// 深度思考：预期跟随上游默认。
+    High,
 }
 
 impl Default for Config {
@@ -97,16 +195,20 @@ impl Config {
         SocketAddr::new(self.host, self.port)
     }
 
-    /// 某供应商的签到间隔（秒）。未配置则用兜底值。
+    /// 某供应商的签到间隔（秒）。
+    ///
+    /// 三家的设置类型不同（档位各异），但都有 `claim_intervals`，故在此处
+    /// 分支取值。未知供应商用兜底值。
     ///
     /// 值小于 `MIN_CLAIM_INTERVAL_SECS` 视为配置错误——不静默纠正，
     /// 避免用户写了 `10` 却被默默改成 60 而不自知。
     pub fn claim_interval_for(&self, provider: &str) -> Result<u64, ConfigError> {
-        let secs = self
-            .claim_intervals
-            .get(provider)
-            .copied()
-            .unwrap_or(FALLBACK_CLAIM_INTERVAL_SECS);
+        let secs = match provider {
+            crate::providers::trae::ID => self.trae.claim_intervals,
+            crate::providers::raccoon::ID => self.raccoon.claim_intervals,
+            crate::providers::codearts::ID => self.codearts.claim_intervals,
+            _ => FALLBACK_CLAIM_INTERVAL_SECS,
+        };
         if secs < MIN_CLAIM_INTERVAL_SECS {
             return Err(ConfigError::IntervalTooSmall {
                 provider: provider.to_string(),
@@ -174,7 +276,9 @@ mod tests {
         let from_default = Config::default();
         assert_eq!(from_default.host, from_str.host);
         assert_eq!(from_default.port, from_str.port);
-        assert_eq!(from_default.claim_intervals, from_str.claim_intervals);
+        assert_eq!(from_default.trae, from_str.trae);
+        assert_eq!(from_default.raccoon, from_str.raccoon);
+        assert_eq!(from_default.codearts, from_str.codearts);
     }
 
     /// 示例文件里 trae=6h、raccoon=12h。
@@ -196,7 +300,7 @@ mod tests {
         assert_eq!(FALLBACK_CLAIM_INTERVAL_SECS, 21600);
     }
 
-    /// 示例文件的注释里声明的兜底值与代码常量必须一致，防止只改一处。
+    /// 兜底值与示例文件里最短的显式间隔一致，避免只改一处。
     #[test]
     fn 注释里的兜底值与常量一致() {
         assert!(
@@ -205,43 +309,40 @@ mod tests {
         );
     }
 
-    /// 用户配置可覆盖、可部分覆盖。
+    /// 用户配置可覆盖单个供应商，未写的供应商用**该供应商自己的**示例值。
     #[test]
     fn 部分覆盖() {
-        let c = parse("[claim_intervals]\ntrae = 3600\n").unwrap();
+        let c = parse("[trae]\nclaim_intervals = 3600\n").unwrap();
         assert_eq!(c.claim_interval_for("trae").unwrap(), 3600);
-        // raccoon 未覆盖 → 兜底值，而非示例文件里的 12h
-        assert_eq!(
-            c.claim_interval_for("raccoon").unwrap(),
-            FALLBACK_CLAIM_INTERVAL_SECS
-        );
+        // raccoon 未写 → 取其自己的默认值（示例文件的 12h），而不是兜底值
+        assert_eq!(c.claim_interval_for("raccoon").unwrap(), 12 * 3600);
     }
 
     /// 间隔过小必须报错，不静默纠正。
     #[test]
     fn 间隔过小报错() {
-        let c = parse("[claim_intervals]\ntrae = 10\n").unwrap();
+        let c = parse("[trae]\nclaim_intervals = 10\n").unwrap();
         let err = c.claim_interval_for("trae").unwrap_err();
         assert!(err.to_string().contains("trae") && err.to_string().contains("10"));
     }
 
     #[test]
     fn 边界值六十秒可用() {
-        let c = parse("[claim_intervals]\ntrae = 60\n").unwrap();
+        let c = parse("[trae]\nclaim_intervals = 60\n").unwrap();
         assert_eq!(c.claim_interval_for("trae").unwrap(), 60);
     }
 
     #[test]
     fn 与其它字段共存() {
-        let c = parse("host = \"0.0.0.0\"\nport = 8080\n[claim_intervals]\nraccoon = 86400\n").unwrap();
+        let c = parse("host = \"0.0.0.0\"\nport = 8080\n[raccoon]\nclaim_intervals = 86400\n").unwrap();
         assert_eq!(c.port, 8080);
         assert_eq!(c.claim_interval_for("raccoon").unwrap(), 86400);
     }
 
-    /// 旧字段已移除，应报错而不是被忽略。
+    /// 旧的扁平 `[claim_intervals]` 表已移除，应报错而不是被忽略。
     #[test]
-    fn 旧字段被拒() {
-        assert!(parse("claim_interval_secs = 3600\n").is_err());
+    fn 旧扁平表被拒() {
+        assert!(parse("[claim_intervals]\ntrae = 3600\n").is_err());
     }
 
     /// 空配置用示例文件默认值。
@@ -250,5 +351,37 @@ mod tests {
         let c = parse("").unwrap();
         assert_eq!(c.port, 3060);
         assert_eq!(c.claim_interval_for("trae").unwrap(), 6 * 3600);
+    }
+
+    /// 示例文件里三家的思考强度档位各不相同。
+    #[test]
+    fn 示例文件的思考强度() {
+        let c = Config::default();
+        assert_eq!(c.trae.reasoning_effort, TraeReasoningEffort::None);
+        assert_eq!(c.raccoon.reasoning_effort, RaccoonReasoningEffort::Low);
+        assert_eq!(c.codearts.reasoning_effort, CodeartsReasoningEffort::Low);
+    }
+
+    /// 各供应商的档位集合**互相独立**：给 trae 写 `low` 必须报错。
+    #[test]
+    fn 不合法的档位被拒() {
+        assert!(parse("[trae]\nreasoning_effort = \"low\"\n").is_err());
+        assert!(parse("[raccoon]\nreasoning_effort = \"none\"\n").is_err());
+        assert!(parse("[codearts]\nreasoning_effort = \"max\"\n").is_err());
+    }
+
+    /// 合法档位可解析。
+    #[test]
+    fn 合法档位可解析() {
+        let c = parse("[raccoon]\nreasoning_effort = \"high\"\n").unwrap();
+        assert_eq!(c.raccoon.reasoning_effort, RaccoonReasoningEffort::High);
+        let c = parse("[codearts]\nreasoning_effort = \"high\"\n").unwrap();
+        assert_eq!(c.codearts.reasoning_effort, CodeartsReasoningEffort::High);
+    }
+
+    /// 写错供应商名应报错（不是被当未知供应商静默接受）。
+    #[test]
+    fn 写错供应商名被拒() {
+        assert!(parse("[racocon]\nclaim_intervals = 3600\n").is_err());
     }
 }

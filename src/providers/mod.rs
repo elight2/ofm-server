@@ -16,6 +16,7 @@ pub mod codearts;
 pub mod raccoon;
 pub mod trae;
 
+use crate::config::Config;
 use crate::core::provider::Provider;
 use crate::core::registry::Registry;
 
@@ -23,10 +24,28 @@ use codearts::CodeartsProvider;
 use raccoon::RaccoonProvider;
 use trae::TraeProvider;
 
-pub fn build_registry(root: &Path) -> Registry {
+/// 按配置构造全部供应商。
+///
+/// 每家只拿到**自己的**配置片段：档位集合不同，不能传共同类型。
+pub fn build_registry(root: &Path, config: &Config) -> Registry {
     let mut registry = Registry::new();
-    registry.register(Arc::new(TraeProvider::new(root.to_path_buf())) as Arc<dyn Provider>);
-    registry.register(Arc::new(RaccoonProvider::new(root.to_path_buf())) as Arc<dyn Provider>);
-    registry.register(Arc::new(CodeartsProvider::new(root.to_path_buf())) as Arc<dyn Provider>);
+    registry.register(
+        Arc::new(TraeProvider::new(
+            root.to_path_buf(),
+            config.trae.reasoning_effort,
+        )) as Arc<dyn Provider>,
+    );
+    registry.register(
+        Arc::new(RaccoonProvider::new(
+            root.to_path_buf(),
+            config.raccoon.reasoning_effort,
+        )) as Arc<dyn Provider>,
+    );
+    registry.register(
+        Arc::new(CodeartsProvider::new(
+            root.to_path_buf(),
+            config.codearts.reasoning_effort,
+        )) as Arc<dyn Provider>,
+    );
     registry
 }
