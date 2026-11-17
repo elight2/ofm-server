@@ -159,13 +159,18 @@ fn role_str(role: Role) -> &'static str {
     }
 }
 
-/// benefit 模型必须带 `maas_type: benefit` 且参与签名，否则网关报
-/// `InferHub.002002009.404 model is not registered`。
-/// 兜底集合来自 ofm 插件实测；带日期后缀的变体也按前缀识别。
-fn is_benefit_model(model: &str) -> bool {
-    model.starts_with("glm-5.3-flash") || model.starts_with("deepseek-v4.1-flash")
-}
-
+/// **不要给 chat 请求加 `maas_type: benefit`。**
+///
+/// 实测（2026-11-16）：本账号带 `maas_type:benefit` 的 chat 请求对**任何模型**都返回
+/// `404 InferHub.APIG.0101.404`（含本来正常的 `GLM-5.2`），不带则 200。
+/// 该头是网关的路由开关，指向本账号不存在的 benefit 后端。
+///
+/// 官方客户端的做法是：仅当模型出现在 `gateway/config` 下发的 `models` 表（`hw()`）时
+/// 才加该头，**并且改用 `gateway/config` 下发的独立 `endpoint` 作为 chat 基址**。
+/// 本账号 `gateway/config` 的 `result` 为 `null`（无福利模型），故永远不该加。
+///
+/// 早期实现按模型名前缀猜测（`glm-5.3-flash`/`deepseek-v4.1-flash`）属误判，已删除。
+/// 见 `provider-info/codearts.md` §5.2。
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -211,16 +216,14 @@ pub async fn stream(
         tracing::debug!("[codearts] model={} reasoning_effort={effort:?}", req.model);
         let body_hash = sha256_hex(body.as_bytes());
 
-        // 与已验证的 ofm 插件一致：content-type、body hash、security token 和
-        // maas_type 参与签名；trace/model 头在签名后追加（不参与验签）。
-        let mut signed_headers: Vec<(&'static str, String)> = vec![
+        // 与已验证的 ofm 插件一致：content-type、body hash、security token 参与签名；
+        // trace/model 头在签名后追加（不参与验签）。
+        // 不发送 `maas_type`（见 `sha256_hex` 上方注释）。
+        let signed_headers: Vec<(&'static str, String)> = vec![
             ("content-type", "application/json".to_string()),
             ("x-sdk-content-sha256", body_hash),
             ("x-security-token", cred.security_token.clone()),
         ];
-        if is_benefit_model(&req.model) {
-            signed_headers.push(("maas_type", "benefit".to_string()));
-        }
         let signed = sign::sign(
             &sign::Request {
                 method: "POST",
@@ -419,9 +422,17 @@ mod tests {
     }
 
     #[test]
-    fn benefit_models_are_identified() {
-        assert!(is_benefit_model("glm-5.3-flash"));
-        assert!(is_benefit_model("deepseek-v4.1-flash-1017"));
-        assert!(!is_benefit_model("GLM-5.2"));
+    fn 不发送maas_type() {
+        // 网关对带 maas_type:benefit 的请求恒返回 APIG.0101.404（实测），故绝不能发。
+        for model in ["glm-5.3-flash", "deepseek-v4.1-flash", "GLM-5.2"] {
+            let req = ChatRequest {
+                model: model.into(),
+                messages: vec![user("hi")],
+                tools: vec![],
+                tool_choice: ToolChoice::Auto,
+            };
+            let body = serde_json::to_string(&ChatBody::build(&req, None)).unwrap();
+            assert!(!body.contains("maas_type"), "{model} 不应带 maas_type");
+        }
     }
 }

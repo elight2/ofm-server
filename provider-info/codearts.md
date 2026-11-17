@@ -641,7 +641,7 @@ raw = 原始 usage
 
 * `POST {SNAP_GATEWAY}/api/v2/chat/completions`，`stream:true`；非流式由 server 聚合。
 * AKSK 签名头：`content-type`、`x-sdk-content-sha256`（body SHA256）、
-  `x-security-token`、可选 `maas_type:benefit`；trace/model 头在签名后追加。
+  `x-security-token`；**不发 `maas_type`**（见 §5.5）；trace/model 头在签名后追加。
 * 请求体：`model`/`messages`/`stream`/`max_tokens:65536`/`tool_stream`/`tools`/
   `tool_choice`/`prompt_cache_key`；assistant 历史恒带 `reasoning_content`。
 * 响应：标准 CC SSE，解析 `content`、`reasoning_content`/`reasoning`、`tool_calls`、
@@ -653,9 +653,9 @@ raw = 原始 usage
 * SM4-GCM 加密链路（§3.2）未实现；当前依赖上游明文回退，实测可用。
 * SSE 流内 `TM.00001041` 等排队错误不会自动重连（HTTP 400 会重试）。
 * 首帧租户冻结/内容安全扫描/客户端断开取消未复刻。
-* `glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型：本账号带
-  `maas_type:benefit` 实测返回 `InferHub.APIG.0101.404`（疑似账号无 benefit 权益），
-  普通模型 `GLM-5.2`、`glm-5.3` 正常。
+* ~~`glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型带 `maas_type:benefit` 返回
+  `APIG.0101.404`~~ —— **已定位为发送方错误**：`maas_type` 本身导致 404，与模型无关，
+  现完全不发送。见 §5.5。
 
 **已实测**：`GLM-5.2` 流式/非流式、工具调用（`get_time`）、工具结果回传均正常；
 `test` 用户的 pi 通过本地 `ofm` provider 完成纯文本对话和工具获取系统信息测试。
@@ -983,8 +983,37 @@ headers（`PFn()`）：`Content-Type: application/json` + `x-snap-traceid: <uuid
 的模型表里查，命中则仍走 `inferhub-provider` 并带 `traceMaasType`，否则 `providerID="benefit-model"`。
 **福利模型和能力模型走不同计费通道**，不区分会导致双计费（代码注释原文 `potential dual-billing risk`）。
 
-`server 实现`：`benefit.rs` 仅保留 `fetch_config`（当前无调用点）。福利模型接入 chat
-仍受 `InferHub.APIG.0101.404` 阻塞（需 `maas_type: benefit` 头与额外签名）。
+### 5.5 `maas_type: benefit` 的真实语义（2026-11-16 实测更正）
+
+早期实现按模型名前缀（`glm-5.3-flash`/`deepseek-v4.1-flash`）给 chat 请求追加
+`maas_type: benefit`，导致这些模型恒返回 `404 InferHub.APIG.0101.404`。
+**实测证明该头是网关路由开关，不是"声明这是福利模型"**：
+
+| 请求 | `deepseek-v4.1-flash` | `deepseek-v4.1-flash-1017` | `glm-5.3-flash` | `GLM-5.2`（普通模型） |
+|-|-|-|-|-|
+| 带 `maas_type: benefit` | 404 `APIG.0101` | 404 | 404 | **404** |
+| 不带 | 200 | 200 | 200 | 200 |
+
+关键证据：**普通模型 `GLM-5.2` 带上该头同样 404**，说明失败与该头相关，与模型身份无关。
+该头把请求路由到本账号不存在的 benefit 后端。
+
+**官方客户端的正确做法**（两件事同时做，缺一不可）：
+
+1. `hw(modelId)` 判定：查 `GET /api/v1/gateway/config` 返回的 `models[].model_id` 表
+   （`T6` Map），命中才算福利模型。**不是按名字前缀猜。**
+2. 命中后把 chat 基址换成 `gateway/config` 下发的 `endpoint`（`yD(model)`），
+   即 `endpoint || base_url`；**不是**继续用 `snap-access` 网关。
+
+本账号 `gateway/config`（channel=benefit）返回 `error_code:"0000"` 但 **`result` 为 `null`**，
+即无任何福利模型。故正确行为是：**永远不加 `maas_type`，也不需要换 endpoint**。
+`builtin` 目录响应中亦无 `maas_type`/`is_free_benefit` 字段，与之一致。
+
+> 结论：codearts 的 12 个模型全部走 `snap-access` 网关，均**不应**带 `maas_type`。
+> `education`/`examination` 渠道当前签名失败（query 参与签名导致 `APIG.0301`），但与本问题无关。
+
+`server 实现`：`benefit.rs` 仅保留 `fetch_config`（当前无调用点）。
+`maas_type: benefit` 已确认是**错误方向**（实测本账号恒 404，见 §5.5），
+chat 侧完全不发送该头；12 个模型全部正常。
 
 ## 6. 上游异常响应
 
