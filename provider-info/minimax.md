@@ -394,6 +394,27 @@ Anthropic 语义要求 thinking 块连签名原样回传，否则 400 `[未验�
   多个结果并列在同一个 user message 的 `content` 数组（抓包见一次两个）
 * `tool_result.content` 为**字符串**，`is_error` 恒有（`false`/`true`）
 
+#### 实测补充 `[实测 2026-11-17]`
+
+* **`tool_choice` 四种形态全部可用**（此前 `[未验证]`）：实测
+  `{"type":"any"}` / `{"type":"tool","name":"t"}` / `{"type":"auto"}` / `{"type":"none"}`
+  均返回 200。故 CC 四值可直接映射：`auto→auto`、`none→none`、
+  `required→any`、`function(name)→{type:"tool",name}`。
+  **无工具时不要发 `tool_choice`**（`any` 会因无工具被拒）。
+* **`tool_result.content` 给字符串完全可用**：实测带 `is_error:false` 的字符串结果返回 200。
+* **`max_tokens` 可省略**：实测不传该字段仍 200 且正常出流。本实现固定给满
+  `128000`（目录 `limit.output`），因为下游 `ChatRequest` 无该字段。
+* **`x-api-key` 不是必需的**：实测只发 `authorization: Bearer` 也能成功。
+  本实现仍按抓包习惯**双发同值**，兼容性最好。
+* **错误体形状**（实测，HTTP 400）：
+  ```json
+  {"type":"error","error":{"type":"invalid_request_error",
+   "message":"invalid params, unknown model 'No-Such-Model' (2013)"},
+   "request_id":"074b7dc06304bb6dbe8eea615d862ad3"}
+  ```
+  `type` 取值观测到 `invalid_request_error`；其余按 Anthropic 标准
+  （`authentication_error`/`rate_limit_error`/`overloaded_error`/`not_found_error`）映射。
+
 ### 3.5 缓存断点 `cache_control`
 
 `[抓包]` 值恒为 `{"type":"ephemeral"}`，落点**固定 3 处**（Anthropic 上限 4 个）：
@@ -430,21 +451,56 @@ alb_request_id: <sha1 40hex>
 ```
 
 **SSE 事件体未被抓包工具保存**（`test/minimax_capture.py` 只存 JSON 响应体，流被丢弃）
-→ 事件名与 usage 字段名 `[未验证]`，应按 Anthropic Messages 标准实现：
+→ 曾按 Anthropic Messages 标准推断；**2026-11-17 已实测补全**（见下）：
+
+#### 实测帧序列 `[实测 2026-11-17]`
 
 ```text
-event: message_start        data: {"type":"message_start","message":{...,"usage":{"input_tokens":N,"output_tokens":0}}}
+event: message_start        data: {"type":"message_start","message":{...,"usage":{"input_tokens":0,"output_tokens":0}}}
+event: ping                 data: {"type":"ping"}                       ← 文档原缺，必须忽略
 event: content_block_start  data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 event: content_block_delta  data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"…"}}
-                            （thinking_delta / input_json_delta / signature_delta）
+event: content_block_delta  data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"<64hex>"}}
 event: content_block_stop   data: {"type":"content_block_stop","index":0}
-event: message_delta        data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":N}}
+event: message_delta        data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{…}}
 event: message_stop         data: {"type":"message_stop"}
 ```
 
+与推断的差异（全部实测）：
+
+1. **有 `ping` 帧**，文档原未记载，解析必须忽略。
+2. **`message_start` 的 `usage` 全是 0**，真实用量只在 `message_delta`。
+3. `content_block_start` 的 `content_block.type` 实测三种：`text` / `thinking` / `tool_use`。
+   * `thinking` 块用 `thinking_delta`（增量在 `thinking` 字段）；
+   * `tool_use` 块起始帧带 `id`/`name`，`input` **恒为空对象 `{}`**；
+   * `tool_use` 的增量是 `input_json_delta`，其 `partial_json` 逐片拼接，
+     **实测首片为空串 `""`**，随后才是 `"{"` / `"\"city\":\"北京\""` / `"}"`。
+4. `signature_delta` 在 thinking 块结束前出现，`content_block_stop` 紧随其后；下游无对应概念，丢弃。
+5. **`index` 是全局块序号**（thinking=0、text=1、tool_use=2…），
+   而下游 `tool_calls[].index` 必须在工具内部从 0 连续编号 → **必须重映射**。
+
+#### usage 字段（实测，**含关键陷阱**）
+
+`message_delta` 的真实形状：
+
+```json
+{"input_tokens":79,"output_tokens":223,"cache_read_input_tokens":128,
+ "service_tier":"standard","output_tokens_details":{"thinking_tokens":123}}
+```
+
+**`input_tokens` 不含缓存命中部分**——这是本项目实现时最易错的一点：
+
+* 同一 payload 走 `/messages/count_tokens` 返回 **206**（M3.1-Flash）/ **180**（M3）；
+* 流内 `message_delta` 却只给 `input_tokens=78~79`，另计 `cache_read_input_tokens=128`；
+* `78 + 128 = 206` ✅ 与 count_tokens 吻合。
+
+故下游 `prompt_tokens` 必须算作 **`input_tokens + cache_read_input_tokens`**，
+`cached_tokens` 填 `cache_read_input_tokens`，`reasoning_tokens` 取
+`output_tokens_details.thinking_tokens`。
+（若只取 `input_tokens`，下游每次都会少报掉全部缓存 token，且 prompt 缓存统计失真。）
+
 `pi` 的 anthropic provider（`third_party/pi-mono/packages/ai/src/providers/anthropic.ts`）按此形状解析，
-其中包括 `usage.cache_read_input_tokens` / `cache_creation_input_tokens`，
-故上游极可能返回完整 Anthropic usage `[未验证]`。
+其中包括 `usage.cache_read_input_tokens` / `cache_creation_input_tokens`。
 
 ### 3.7 count_tokens
 
@@ -486,10 +542,11 @@ tool_use                        → "tool_calls"
 
 | 上游 Messages usage | 下游 Chat Completions |
 |-|-|
-| `input_tokens` | `prompt_tokens` |
+| `input_tokens` **+** `cache_read_input_tokens` | `prompt_tokens`（**必须相加**，见 §3.6） |
 | `output_tokens` | `completion_tokens` |
-| `input_tokens + output_tokens` | `total_tokens` |
+| `prompt_tokens + output_tokens` | `total_tokens` |
 | `cache_read_input_tokens` | `prompt_tokens_details.cached_tokens` |
+| `output_tokens_details.thinking_tokens` | `completion_tokens_details.reasoning_tokens` |
 | `cache_creation_input_tokens` | 无对应位，丢弃 `[项目现有做法同 trae]` |
 
 * `thinking` 块 → 下游 `reasoning_content` 扩展字段（`pi` 识别，同 trae/raccoon 做法）
@@ -783,11 +840,19 @@ device_platform=mcode&biz_id=3&app_id=3001&version_code=22201&unix=<ms>
 
 ### 8.2 对话 `/messages`
 
-* HTTP 401 → 刷新令牌后重试一次 `[源码 auth-core.ts]`
-* 错误响应体形状 `[未验证]`（本次 26 次全 200，无非 2xx 样本）。
-  Anthropic 标准为 HTTP 4xx/5xx + `{"type":"error","error":{"type":"invalid_request_error","message":"…"}}`，
-  建议按此解析并把 `error.type`/`message` 转成下游 OpenAI 错误体
-* 流内错误（`event: error`）是否存在 `[未验证]`
+* HTTP 401 → 刷新令牌后重试一次 `[源码 auth-core.ts]`。
+  `[实测]` 本实现进入 30s 刷新窗口时**预先续期**（`access_token()`），
+  故正常路径不会撞 401；401 时映射 `ProviderError::Unauthorized` → 下游 401。
+* 错误响应体形状 `[实测 2026-11-17]`（HTTP 400，非法模型名）：
+  ```json
+  {"type":"error","error":{"type":"invalid_request_error",
+   "message":"invalid params, unknown model 'No-Such-Model' (2013)"},
+   "request_id":"074b7dc06304bb6dbe8eea615d862ad3"}
+  ```
+  与 Anthropic 标准一致。本实现按 `error.type` 分类为
+  `Authentication`/`InvalidRequest`/`RateLimit`/`Api`，并转成下游 OpenAI 错误体。
+* 流内**无** `event: error` 样本（本次全部 200）；解析器仍保留该分支，
+  按 `error.type` 分类后 `Event::Error` 转发。
 
 ### 8.3 模型目录
 
@@ -799,7 +864,8 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 而不是报错（目录可用但暂无模型，`status` 会显示「0 个模型」）。
 
 未测：令牌失效时的确切状态码与错误体（本次未触发）。预期为 401，
-本实现进入刷新窗口时预先续期，暂未加「401 重试一次」逻辑（待第 3 步一起做）。
+本实现进入刷新窗口时预先续期；对话侧的 `chat` 亦复用同一 `access_token()`，
+故 401 只会出现在「凭证被服务端提前吊销」这一异常路径上（此时映射为下游 401）。
 
 ### 8.4 账号中心（登录/登出链）
 
@@ -828,6 +894,22 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
   字段与 §4 完全一致（`models` 两个键、`model_order` 顺序、`whitelist` 含 M2.7、
   `thinking_config.mode` 为 `switchable`/`forced_on`、`effort_options` 仅 M3.1-Flash 有）
 * [x] 目录接口只带 `authorization: Bearer` 即可（不需 `x-api-key`）
+* [x] **SSE 帧序列全貌**（见 §3.6）：有 `ping` 帧；`message_start` 的 usage 全 0；
+  真实 usage 只在 `message_delta`；`signature_delta` 收尾 thinking 块
+* [x] **`input_tokens` 不含缓存**：`input_tokens + cache_read_input_tokens`
+  与 `/count_tokens` 完全吻合（78+128=206；75+128=203）
+* [x] `output_tokens_details.thinking_tokens` 存在，可取到思考 token 数
+* [x] `tool_use` 流式分片：起始帧带 `id`/`name` 且 `input` 为 `{}`；
+  `input_json_delta` 首片为空串，随后逐片拼接
+* [x] `tool_choice` 四种形态（`auto`/`any`/`tool`/`none`）全部 200
+* [x] `max_tokens` 可省略（实测不传仍 200 正常出流）
+* [x] `x-api-key` 非必需（只发 `authorization: Bearer` 亦 200）
+* [x] M3.1-Flash 发 `thinking:{"type":"disabled"}` → **HTTP 400 被拒**
+  （印证 `mode: forced_on`，只能走 `output_config.effort`）
+* [x] `tool_result.content` 给字符串可用
+* [x] 错误响应体形状（HTTP 400，见 §8.2）
+* [x] 端到端：`/v1/chat/completions` 流式/非流式、工具调用、多轮工具回传、
+  `reasoning_content`、usage 全部经 `ofm-server` 打通
 
 ### 待验
 
@@ -838,20 +920,17 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 
 * [ ] 刷新令牌实测（§2，仅源码定论；本次 access_token 有效期内未触发）
 * [ ] 目录接口在令牌失效时的确切状态码与错误体（§8.3）
-* [ ] SSE 事件名、`usage` 字段名（`input_tokens`/`output_tokens`/`cache_read_input_tokens`/`cache_creation_input_tokens`）
-  —— 抓包工具不存流，需改 `test/minimax_capture.py` 后才能重测
-* [ ] `temperature`/`top_p`/`stop_sequences`/`metadata`/`tool_choice` 上游是否接受（官方从不发送 ≠ 不支持）
+* [ ] `temperature`/`top_p`/`stop_sequences`/`metadata` 上游是否接受
+  （官方从不发送 ≠ 不支持；`tool_choice` 已验证支持）
+* [ ] 流内 `event: error` 的实际形状（本次全部 200，无非 2xx 样本）
 * [ ] `cache_control` 是否必需、乱放/少放是否报错
 * [ ] `tools[].eager_input_streaming` 是否必需
 * [ ] `anthropic-dangerous-direct-browser-access` 是否必需（服务端调用）
 * [ ] 各请求头的必需性（抓包无法删头验证）
-* [ ] `x-api-key` 与 `authorization` 是否只需其一
-* [ ] M3.1-Flash 发 `thinking:{"type":"disabled"}` 是否被接受（`variants` 里有 `none-thinking`，但 `mode: forced_on`）
 * [ ] `MiniMax-M2.7`/`MiniMax-M2.7-highspeed` 能否被 `/messages` 调用（`whitelist` 有、`models` 无）
 * [ ] 图片/视频输入实测（`modalities` 声明支持，抓包 26 次未出现 `image` 块）
 * [ ] `context_window_options` 里 1000000 的切换方式（请求字段还是目录变体）
 * [ ] 海外 `region=en` 的域名与参数
-* [ ] 错误响应体形状与流内 `event: error`（26 次全 200，无非 2xx 样本）
 * [ ] 余额端点（§6）：仅有源码，无抓包；服务域名/`opGroupId` 来源链未实测
 * **签到端点完全不知**（§7）：客户端无此功能，需另供抓包
 
@@ -881,15 +960,15 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 |-|-|-|-|
 | 1 | 登录（设备码 + 轮询）写 `credential.toml` | §1.1/§1.2 | ✅ 已实现（`minimax/auth.rs`）|
 | 2 | 模型列表 `GET /v1/models?region=cn&buildEnv=prod` | §4 | ✅ 已实现（`minimax/models.rs`）|
-| 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ⬜ 未实现 |
-| 4 | 思考强度映射（按模型分两个落点）| §5 | ⬜ 未实现（配置档位已就位）|
+| 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ✅ 已实现（`minimax/chat.rs` + `minimax/stream.rs`），端到端实测通过 |
+| 4 | 思考强度映射（按模型分两个落点）| §5 | ✅ 已实现（`chat::thinking_fields`），随第 3 步一并接入请求体 |
 | 5 | 令牌续期 `refresh_token` | §2 | ⚠︎ 已写（`auth::refresh` + 自动续期），**未实测** |
 | 6 | 签到 | §7 | ❌ 端点未知，不可实现 |
 
 余额（非 `MAINTAIN.md` 必选项）：源码有端点（§6）但无抓包，且依赖会员/工作区两条前置请求，
 实现成本高于对话主链，建议后续再做。
 
-实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`mod`）。
+实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`chat`/`stream`/`mod`）。
 
 要点：
 
@@ -903,3 +982,8 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 * 下游 `stream:false` 必须自己聚合 SSE（§3.8）；上游恒 `stream:true`
 * 自动刷新阈值：取令牌时剩余有效期 < 30s 就先刷新 `[源码]`；401 时刷新重试一次
 * `reasoning_effort` 档位**从目录读**（`effort_options`），不硬编码；M3 只有 `on`/`off`
+* **思考落点按模型的 `thinking_config.mode` 分流**：`switchable` → 发 `thinking.type`
+  （`adaptive`/`disabled`）；`forced_on` → 只发 `output_config.effort`，**绝不发 `thinking`**
+  （实测 M3.1-Flash 发 `thinking.type=disabled` 会被 400 拒）。目录查不到时按 `switchable` 处理。
+  每轮对话会拉一次目录来判定，失败降级不影响对话本身。
+* **`prompt_tokens` 必须算 `input_tokens + cache_read_input_tokens`**（§3.6 关键陷阱）

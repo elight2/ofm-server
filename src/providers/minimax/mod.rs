@@ -13,8 +13,10 @@
 
 pub mod api;
 pub mod auth;
+pub mod chat;
 pub mod credential;
 pub mod models;
+pub mod stream;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,10 +24,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
+use crate::config::MinimaxReasoningEffort;
 use crate::core::events::EventStream;
-use crate::core::provider::{
-    ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError,
-};
+use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
 use credential::Credential;
 
@@ -40,15 +41,18 @@ pub struct MinimaxProvider {
     models_client: reqwest::Client,
     /// 续期串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: Arc<Mutex<()>>,
+    /// 思考强度（来自 `[minimax] reasoning_effort`）。
+    effort: MinimaxReasoningEffort,
 }
 
 impl MinimaxProvider {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, effort: MinimaxReasoningEffort) -> Self {
         Self {
             root,
             client: api::client().expect("构建 HTTP 客户端失败"),
             models_client: api::models_client().expect("构建 HTTP 客户端失败"),
             refresh_lock: Arc::new(Mutex::new(())),
+            effort,
         }
     }
 
@@ -103,6 +107,32 @@ impl MinimaxProvider {
             .await
             .map_err(ProviderError::from)
     }
+
+    /// 查该模型在目录里的 `thinking_config.mode`（§5.1）。
+    ///
+    /// 目录拉不到或模型不在目录时返回 `""`，由 `chat` 按 `switchable` 处理——
+    /// 明确发 `thinking.type` 比猜 `effort` 安全（档位值错了会被 400 拒）。
+    async fn thinking_mode(&self, token: &str, model: &str) -> String {
+        let url = format!(
+            "{}{}?{}",
+            api::AGENT_HOST,
+            api::MODELS_PATH,
+            api::MODELS_QUERY
+        );
+        match api::get_json::<models::Catalog>(&self.models_client, &url, token).await {
+            Ok(cat) => cat
+                .providers
+                .first()
+                .and_then(|p| p.config.models.get(model))
+                .and_then(|m| m.thinking_config.as_ref())
+                .and_then(|t| t.mode.clone())
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("[{ID}] 拉取目录以判定思考形态失败（按 switchable 处理）: {e}");
+                String::new()
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -133,12 +163,43 @@ impl Provider for MinimaxProvider {
             .map(|c| c.expires_at)
     }
 
-    /// 对话：尚未实现（`MAINTAIN.md` 第 3 步）。
+    /// 对话：Chat Completions → 上游 anthropic-messages（§3）。
     ///
-    /// 上游是 anthropic-messages，需要完整的 Chat Completions ↔ Messages
-    /// 协议转换 + SSE 回转，下一轮实现。
-    async fn chat(&self, _req: ChatRequest) -> Result<EventStream, ProviderError> {
-        Err(ProviderError::Unsupported("minimax 对话转发（待实现）"))
+    /// 上游恒回 SSE（§3.2），非流式由下游聚合。
+    async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
+        let token = self.access_token().await?;
+        // 思考落点由目录里的 `thinking_config.mode` 决定（§5.1）。
+        let mode = self.thinking_mode(&token, &req.model).await;
+        let body = chat::ChatBody::build(&req, self.effort, &mode);
+        let url = format!("{}{}", api::AGENT_HOST, chat::PATH);
+
+        // 自己序列化并 .body()：避免 .json() 追加第二个 content-type 头。
+        let payload = serde_json::to_vec(&body)
+            .map_err(|e| ProviderError::Other(format!("序列化请求体失败: {e}")))?;
+        // 双认证头：`x-api-key` 与 `authorization` 同值（§3.1 抓包 26/26）。
+        let resp = self
+            .client
+            .post(&url)
+            .header("x-api-key", &token)
+            .header("authorization", format!("Bearer {token}"))
+            .header("anthropic-version", chat::ANTHROPIC_VERSION)
+            .body(payload)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::from(api::HttpError::Status {
+                status: status.as_u16(),
+                body: api::truncate(&text, 300),
+            }));
+        }
+
+        let mut parser = stream::Parser::new();
+        Ok(crate::core::stream::drive(resp.bytes_stream(), move |ev| {
+            parser.parse(ev)
+        }))
     }
 
     /// 签到：端点未知（§7）。

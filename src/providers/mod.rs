@@ -50,7 +50,10 @@ pub fn build_registry(root: &Path, config: &Config) -> Registry {
         )) as Arc<dyn Provider>,
     );
     registry.register(
-        Arc::new(MinimaxProvider::new(root.to_path_buf())) as Arc<dyn Provider>,
+        Arc::new(MinimaxProvider::new(
+            root.to_path_buf(),
+            config.minimax.reasoning_effort,
+        )) as Arc<dyn Provider>,
     );
     registry
 }
