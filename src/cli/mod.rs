@@ -40,7 +40,7 @@ pub enum Command {
         /// 供应商 id（如 codearts）
         provider: Option<String>,
     },
-    /// 获取供应商当前信息（接入状态、余额、签到记录、凭证到期、模型列表）
+    /// 获取供应商当前信息（状态、凭证到期、余额、签到记录、模型列表）
     Status {
         /// 供应商 id（如 trae）
         provider: String,

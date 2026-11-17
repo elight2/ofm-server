@@ -89,7 +89,7 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
     Ok(())
 }
 
-/// 最近一次成功签到的时间与增量。
+/// 最近一次成功签到的时间与增量（`status` 用）。
 ///
 /// 增量 = 该条成功记录的余额 − 它之前最近一条记录的余额（无前一条时为 `None`）。
 pub fn last_success(root: &Path, provider: &str) -> Option<(String, Option<f64>)> {
