@@ -173,7 +173,6 @@ fn consumption_rate(info: &ConfigInfo) -> Option<f64> {
     cr.get("data")?.get("rate")?.as_f64()
 }
 
-
 /// `display_config` 可能是对象也可能是字符串化 JSON（§4.2），两种都取。
 fn display_name(info: &ConfigInfo) -> Option<String> {
     let value = match info.display_config.as_ref()? {

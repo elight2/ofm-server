@@ -27,7 +27,7 @@ use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
 use api::{
-    HttpError, APP_VERSION, APP_VERSION_CODE, HOST_API5, IDE_VERSION_CODE, UA_TTNET, UA_VSCODE,
+    APP_VERSION, APP_VERSION_CODE, HOST_API5, HttpError, IDE_VERSION_CODE, UA_TTNET, UA_VSCODE,
 };
 use credential::Credential;
 

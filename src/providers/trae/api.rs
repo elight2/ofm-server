@@ -3,8 +3,8 @@
 //! 分两套 UA（`provider-info/trae.md` §0）：对话用 `TraeClient/TTNet`，
 //! 控制面（登录/续期）用 Electron 桌面壳 UA，签到用 VSCode UA。
 
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 pub const HOST_API5: &str = "https://api5-normal.mchost.guru";
 pub const HOST_WEB: &str = "https://api.trae.cn";

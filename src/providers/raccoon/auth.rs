@@ -90,11 +90,12 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
 ///
 /// 授权码无效时上游回 **HTTP 400 + `code:200035`**（实测），
 /// 这里翻成可读提示，避免用户只看到一行 HTTP 错误。
-pub async fn exchange_code(
-    client: &reqwest::Client,
-    code: &str,
-) -> Result<LoginData, HttpError> {
-    let url = format!("{}{}/login_with_authorization_code", api::HOST, api::AUTH_PREFIX);
+pub async fn exchange_code(client: &reqwest::Client, code: &str) -> Result<LoginData, HttpError> {
+    let url = format!(
+        "{}{}/login_with_authorization_code",
+        api::HOST,
+        api::AUTH_PREFIX
+    );
     let body = serde_json::json!({ "authorization_code": code });
     api::post_envelope::<_, LoginData>(client, &url, None, &body)
         .await
@@ -144,9 +145,7 @@ async fn wait_callback(
     loop {
         let (mut sock, peer) = tokio::time::timeout_at(deadline, listener.accept())
             .await
-            .map_err(|_| {
-                anyhow::anyhow!("等待回调超时（{}s）", CALLBACK_TIMEOUT.as_secs())
-            })??;
+            .map_err(|_| anyhow::anyhow!("等待回调超时（{}s）", CALLBACK_TIMEOUT.as_secs()))??;
 
         // 只接受本机来源（官方同样校验 remoteAddress === '127.0.0.1'）。
         if !peer.ip().is_loopback() {
@@ -233,7 +232,11 @@ fn parse_callback(query: &str, state: &str) -> Result<String, String> {
     if got_state != state {
         return Err("state 不匹配".into());
     }
-    if got_state.len() != 64 || !got_state.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+    if got_state.len() != 64
+        || !got_state
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Err("state 格式非法".into());
     }
     if code.trim().is_empty() || code.len() > 4096 {
@@ -290,7 +293,10 @@ mod tests {
     fn state_is_64_lower_hex() {
         let s = random_state();
         assert_eq!(s.len(), 64);
-        assert!(s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert!(
+            s.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
         assert_ne!(s, random_state());
     }
 

@@ -219,7 +219,11 @@ pub async fn fetch_config(
     match env.error_code.as_deref() {
         Some("0000") => Ok(env.result),
         Some("4000") | Some("4004") => {
-            tracing::debug!("[codearts] {} 渠道未开通: {:?}", channel.label(), env.error_msg);
+            tracing::debug!(
+                "[codearts] {} 渠道未开通: {:?}",
+                channel.label(),
+                env.error_msg
+            );
             Ok(None)
         }
         Some(code) => Err(env.error(code)),
@@ -296,7 +300,11 @@ mod tests {
                 .map(|(_, v)| v.as_str())
         };
         assert_eq!(get("X-Security-token"), Some("TOKTEST"));
-        assert!(get("authorization").unwrap().starts_with("SDK-HMAC-SHA256 Access=AKTEST"));
+        assert!(
+            get("authorization")
+                .unwrap()
+                .starts_with("SDK-HMAC-SHA256 Access=AKTEST")
+        );
         assert!(get("x-snap-traceid").is_some(), "缺 x-snap-traceid");
     }
 }

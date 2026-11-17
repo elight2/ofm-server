@@ -38,7 +38,7 @@ impl FrameParser {
                     code: None,
                     message: format!("上游返回非 JSON 帧: {e}"),
                     kind: ErrorKind::Api,
-                })]
+                })];
             }
         };
 
@@ -217,7 +217,8 @@ mod tests {
     /// 空串 delta 不产事件（上游会发 `"content":""`）。
     #[test]
     fn 空串不产事件() {
-        let ev = parse(r#"{"choices":[{"index":0,"delta":{"content":"","reasoning_content":""}}]}"#);
+        let ev =
+            parse(r#"{"choices":[{"index":0,"delta":{"content":"","reasoning_content":""}}]}"#);
         assert!(ev.is_empty());
     }
 
@@ -339,7 +340,9 @@ mod tests {
     /// 未知字段不影响解析。
     #[test]
     fn 忽略未知字段() {
-        let ev = parse(r#"{"request_id":"x","choices":[{"index":0,"delta":{"content":"a"}}],"extra":1}"#);
+        let ev = parse(
+            r#"{"request_id":"x","choices":[{"index":0,"delta":{"content":"a"}}],"extra":1}"#,
+        );
         assert!(matches!(&ev[0], Event::Text(s) if s == "a"));
     }
 }

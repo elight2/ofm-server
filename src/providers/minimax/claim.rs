@@ -32,8 +32,8 @@
 
 use serde::Deserialize;
 
-use super::api::{AGENT_HOST, HttpError, UA};
 use super::ID;
+use super::api::{AGENT_HOST, HttpError, UA};
 use super::credential::Credential;
 use crate::core::provider::{ClaimReport, ProviderError};
 

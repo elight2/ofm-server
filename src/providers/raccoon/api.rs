@@ -4,8 +4,8 @@
 //! `{code: <int>, message: <str>, data: ...}`，**HTTP 200 也可能是错误**，
 //! 因此一律先解析业务码再看 HTTP 状态。
 
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 /// 主站（同时是 auth / llm / points / desktop 各前缀的 host）。
 pub const HOST: &str = "https://xiaohuanxiong.com";
@@ -94,10 +94,7 @@ pub enum HttpError {
     #[error("响应解析失败: {0}")]
     Decode(String),
     #[error("业务错误({code:?}): {message}")]
-    Business {
-        code: Option<i64>,
-        message: String,
-    },
+    Business { code: Option<i64>, message: String },
 }
 
 impl HttpError {
@@ -115,7 +112,9 @@ impl From<HttpError> for crate::core::provider::ProviderError {
         use crate::core::provider::ProviderError as P;
         match e {
             HttpError::Transport(err) => P::Transport(err),
-            HttpError::Status { status: 401 | 403, .. } => P::Unauthorized(e.to_string()),
+            HttpError::Status {
+                status: 401 | 403, ..
+            } => P::Unauthorized(e.to_string()),
             HttpError::Business { code: Some(c), .. } if CODES_UNAUTHORIZED.contains(&c) => {
                 P::Unauthorized(e.to_string())
             }
@@ -177,7 +176,6 @@ where
     let text = resp.text().await.unwrap_or_default();
     parse_envelope::<R>(status.as_u16(), &text)
 }
-
 
 /// 发 GET 并解信封。
 ///
@@ -244,15 +242,17 @@ mod tests {
 
     #[test]
     fn envelope_ok_when_code_zero() {
-        let e: Envelope<serde_json::Value> = serde_json::from_str(r#"{"code":0,"data":{}}"#).unwrap();
+        let e: Envelope<serde_json::Value> =
+            serde_json::from_str(r#"{"code":0,"data":{}}"#).unwrap();
         assert!(e.is_ok());
     }
 
     #[test]
     fn envelope_error_keeps_details() {
-        let e: Envelope<serde_json::Value> =
-            serde_json::from_str(r#"{"code":200035,"message":"x","details":"param token invalid"}"#)
-                .unwrap();
+        let e: Envelope<serde_json::Value> = serde_json::from_str(
+            r#"{"code":200035,"message":"x","details":"param token invalid"}"#,
+        )
+        .unwrap();
         assert!(!e.is_ok());
         assert!(e.describe().contains("200035"));
         assert!(e.describe().contains("param token invalid"));
@@ -272,7 +272,9 @@ mod http_tests {
 
     /// 起一个只回固定响应的本地服务，返回 URL。
     async fn mock(status_line: &'static str, body: &'static str) -> String {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             loop {

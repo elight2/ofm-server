@@ -63,11 +63,12 @@ impl Credential {
 /// 解析 JWT 的 `exp`（Unix 秒），失败返回 `None`（视为不可判断）。
 pub fn jwt_exp(token: &str) -> Option<i64> {
     let payload = token.split('.').nth(1)?;
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
-        .ok()
-        .or_else(|| {
-            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, payload).ok()
-        })?;
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+            .ok()
+            .or_else(|| {
+                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, payload).ok()
+            })?;
     let v: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     v.get("exp")?.as_i64()
 }
@@ -103,8 +104,8 @@ mod tests {
     /// 手工构造 payload 为 `{"exp":N}` 的 token（无签名，只测解析）。
     fn token_with_exp(exp: i64) -> String {
         use base64::Engine;
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(format!(r#"{{"exp":{exp}}}"#));
+        let payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
         format!("h.{payload}.s")
     }
 

@@ -284,7 +284,10 @@ mod tests {
 
         // finish_reason 为 stop，但本轮有工具调用 → 改写为 tool_calls
         let done = p.parse("done", r#"{"finish_reason":"stop"}"#);
-        assert!(matches!(done.as_slice(), [Event::Finish(FinishReason::ToolCalls)]));
+        assert!(matches!(
+            done.as_slice(),
+            [Event::Finish(FinishReason::ToolCalls)]
+        ));
     }
 
     #[test]
@@ -292,7 +295,10 @@ mod tests {
         let mut p = FrameParser::new();
         p.parse("output", r#"{"response":"hi"}"#);
         let done = p.parse("done", r#"{"finish_reason":"stop"}"#);
-        assert!(matches!(done.as_slice(), [Event::Finish(FinishReason::Stop)]));
+        assert!(matches!(
+            done.as_slice(),
+            [Event::Finish(FinishReason::Stop)]
+        ));
     }
 
     #[test]
@@ -306,7 +312,10 @@ mod tests {
         );
         match evs.as_slice() {
             [Event::Usage(u)] => {
-                assert_eq!((u.prompt_tokens, u.completion_tokens, u.total_tokens), (10, 20, 30));
+                assert_eq!(
+                    (u.prompt_tokens, u.completion_tokens, u.total_tokens),
+                    (10, 20, 30)
+                );
                 assert_eq!(u.cached_tokens, Some(3));
                 assert_eq!(u.reasoning_tokens, Some(7));
             }
@@ -342,16 +351,28 @@ mod tests {
     #[test]
     fn tolerates_non_json_and_unknown_frames() {
         let mut p = FrameParser::new();
-        assert!(p.parse("progress_notice", "Processing_1794708540").is_empty());
-        assert!(p.parse("metadata", r#"{"model":"","session_id":"x"}"#).is_empty());
-        assert!(p.parse("timing_cost", r#"{"name":"llm_raw_chat_v2"}"#).is_empty());
+        assert!(
+            p.parse("progress_notice", "Processing_1794708540")
+                .is_empty()
+        );
+        assert!(
+            p.parse("metadata", r#"{"model":"","session_id":"x"}"#)
+                .is_empty()
+        );
+        assert!(
+            p.parse("timing_cost", r#"{"name":"llm_raw_chat_v2"}"#)
+                .is_empty()
+        );
         assert!(p.parse("output", "not json").is_empty());
     }
 
     #[test]
     fn error_message_takes_first_line() {
         let mut p = FrameParser::new();
-        let evs = p.parse("error", r#"{"code":4001,"message":"bad request\nstack..."}"#);
+        let evs = p.parse(
+            "error",
+            r#"{"code":4001,"message":"bad request\nstack..."}"#,
+        );
         match evs.as_slice() {
             [Event::Error(e)] => assert_eq!(e.message, "bad request"),
             other => panic!("意外的解析结果: {other:?}"),

@@ -169,9 +169,10 @@ impl ChatBody {
                 .map(|t| UpTool {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    input_schema: t.parameters.clone().unwrap_or_else(|| {
-                        serde_json::json!({"type": "object", "properties": {}})
-                    }),
+                    input_schema: t
+                        .parameters
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
                     eager_input_streaming: true,
                 })
                 .collect(),
@@ -739,7 +740,10 @@ mod tests {
         for effort in MinimaxReasoningEffort::ALL {
             let v = body(&r, effort, "switchable");
             assert_eq!(v["thinking"]["type"], "adaptive", "{effort:?} 应当开思考");
-            assert!(v.get("output_config").is_none(), "{effort:?} 不应发 output_config");
+            assert!(
+                v.get("output_config").is_none(),
+                "{effort:?} 不应发 output_config"
+            );
         }
     }
 
@@ -783,7 +787,10 @@ mod tests {
             (MinimaxReasoningEffort::Max, "max"),
         ] {
             let v = serde_json::to_value(ChatBody::build(&r, effort, &opts)).unwrap();
-            assert_eq!(v["output_config"]["effort"], want, "{effort:?} 应当发 {want}");
+            assert_eq!(
+                v["output_config"]["effort"], want,
+                "{effort:?} 应当发 {want}"
+            );
         }
     }
 
@@ -802,7 +809,10 @@ mod tests {
         ];
         for (effort, want) in cases {
             let v = serde_json::to_value(ChatBody::build(&r, effort, &sparse)).unwrap();
-            assert_eq!(v["output_config"]["effort"], want, "{effort:?} 应当就近到 {want}");
+            assert_eq!(
+                v["output_config"]["effort"], want,
+                "{effort:?} 应当就近到 {want}"
+            );
         }
     }
 

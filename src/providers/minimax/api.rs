@@ -55,9 +55,9 @@ impl From<HttpError> for crate::core::provider::ProviderError {
         use crate::core::provider::ProviderError as P;
         match e {
             HttpError::Transport(err) => P::Transport(err),
-            ref other @ HttpError::Status { status: 401 | 403, .. } => {
-                P::Unauthorized(other.to_string())
-            }
+            ref other @ HttpError::Status {
+                status: 401 | 403, ..
+            } => P::Unauthorized(other.to_string()),
             ref other @ HttpError::Decode(_) => P::Protocol(other.to_string()),
             ref other => P::Other(other.to_string()),
         }

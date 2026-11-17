@@ -31,29 +31,21 @@ use trae::TraeProvider;
 /// 每家只拿到**自己的**配置片段：档位集合不同，不能传共同类型。
 pub fn build_registry(root: &Path, config: &Config) -> Registry {
     let mut registry = Registry::new();
-    registry.register(
-        Arc::new(TraeProvider::new(
-            root.to_path_buf(),
-            config.trae.reasoning_effort,
-        )) as Arc<dyn Provider>,
-    );
-    registry.register(
-        Arc::new(RaccoonProvider::new(
-            root.to_path_buf(),
-            config.raccoon.reasoning_effort,
-        )) as Arc<dyn Provider>,
-    );
-    registry.register(
-        Arc::new(CodeartsProvider::new(
-            root.to_path_buf(),
-            config.codearts.reasoning_effort,
-        )) as Arc<dyn Provider>,
-    );
-    registry.register(
-        Arc::new(MinimaxProvider::new(
-            root.to_path_buf(),
-            config.minimax.reasoning_effort,
-        )) as Arc<dyn Provider>,
-    );
+    registry.register(Arc::new(TraeProvider::new(
+        root.to_path_buf(),
+        config.trae.reasoning_effort,
+    )) as Arc<dyn Provider>);
+    registry.register(Arc::new(RaccoonProvider::new(
+        root.to_path_buf(),
+        config.raccoon.reasoning_effort,
+    )) as Arc<dyn Provider>);
+    registry.register(Arc::new(CodeartsProvider::new(
+        root.to_path_buf(),
+        config.codearts.reasoning_effort,
+    )) as Arc<dyn Provider>);
+    registry.register(Arc::new(MinimaxProvider::new(
+        root.to_path_buf(),
+        config.minimax.reasoning_effort,
+    )) as Arc<dyn Provider>);
     registry
 }

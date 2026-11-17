@@ -500,9 +500,17 @@ mod tests {
     #[test]
     fn minimax_就近映射不可识别() {
         use MinimaxReasoningEffort as E;
-        for opts in [vec![], vec!["default".to_string()], vec!["ultra".to_string()]] {
+        for opts in [
+            vec![],
+            vec!["default".to_string()],
+            vec!["ultra".to_string()],
+        ] {
             for e in E::ALL {
-                assert_eq!(e.nearest_effort(&opts), e.effort_value(), "{e:?} 应回退标准名");
+                assert_eq!(
+                    e.nearest_effort(&opts),
+                    e.effort_value(),
+                    "{e:?} 应回退标准名"
+                );
             }
         }
     }
@@ -569,7 +577,8 @@ mod tests {
 
     #[test]
     fn 与其它字段共存() {
-        let c = parse("host = \"0.0.0.0\"\nport = 8080\n[raccoon]\nclaim_intervals = 86400\n").unwrap();
+        let c =
+            parse("host = \"0.0.0.0\"\nport = 8080\n[raccoon]\nclaim_intervals = 86400\n").unwrap();
         assert_eq!(c.port, 8080);
         assert_eq!(c.claim_interval_for("raccoon").unwrap(), 86400);
     }

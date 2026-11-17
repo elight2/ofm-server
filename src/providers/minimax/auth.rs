@@ -70,7 +70,13 @@ impl TokenGrant {
         if self.access_token.trim().is_empty() {
             return Err("响应缺少 access_token".into());
         }
-        if self.refresh_token.as_deref().unwrap_or("").trim().is_empty() {
+        if self
+            .refresh_token
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             return Err("响应缺少 refresh_token".into());
         }
         match self.token_type.as_deref() {
@@ -186,8 +192,7 @@ pub async fn poll_token(
     verifier: &str,
 ) -> anyhow::Result<TokenGrant> {
     let url = format!("{}{}", api::ACCOUNT_HOST, api::TOKEN_PATH);
-    let deadline =
-        tokio::time::Instant::now() + Duration::from_secs(device.expires_in.max(1));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(device.expires_in.max(1));
     let mut interval = device.interval.max(1);
     let mut polls = 0u32;
 
@@ -304,7 +309,10 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
         "[minimax] 登录成功，凭证已保存到 {}",
         crate::config::Config::credential_path(&root, credential::PROVIDER).display()
     );
-    println!("[minimax] 访问令牌有效期至 {}", crate::core::fmt_ms(cred.expires_at));
+    println!(
+        "[minimax] 访问令牌有效期至 {}",
+        crate::core::fmt_ms(cred.expires_at)
+    );
     Ok(())
 }
 
@@ -363,10 +371,7 @@ mod tests {
             classify(200, r#"{"status":"slow_down"}"#),
             PollOutcome::SlowDown
         );
-        assert_eq!(
-            classify(200, r#"{"status":"denied"}"#),
-            PollOutcome::Denied
-        );
+        assert_eq!(classify(200, r#"{"status":"denied"}"#), PollOutcome::Denied);
         assert_eq!(
             classify(200, r#"{"status":"expired"}"#),
             PollOutcome::Expired

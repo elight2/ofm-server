@@ -50,8 +50,7 @@ impl KeyPair {
     }
 
     fn signing_key(&self) -> Result<SigningKey, DpopError> {
-        SigningKey::from_pkcs8_pem(&self.private_key_pem)
-            .map_err(|e| DpopError::Key(e.to_string()))
+        SigningKey::from_pkcs8_pem(&self.private_key_pem).map_err(|e| DpopError::Key(e.to_string()))
     }
 
     /// 构造 DPoP 证明 JWT。`htu` 必须与实际请求的 URL 完全一致（含查询串）。
@@ -85,8 +84,12 @@ impl KeyPair {
 /// 公钥 → JWK（RFC 7517，坐标为无填充 base64url）。
 fn public_key_jwk(public: &p256::PublicKey) -> Result<Jwk, DpopError> {
     let point = public.to_encoded_point(false);
-    let x = point.x().ok_or_else(|| DpopError::Key("公钥缺少 x 坐标".into()))?;
-    let y = point.y().ok_or_else(|| DpopError::Key("公钥缺少 y 坐标".into()))?;
+    let x = point
+        .x()
+        .ok_or_else(|| DpopError::Key("公钥缺少 x 坐标".into()))?;
+    let y = point
+        .y()
+        .ok_or_else(|| DpopError::Key("公钥缺少 y 坐标".into()))?;
     Ok(Jwk {
         kty: "EC".into(),
         crv: "P-256".into(),
@@ -124,7 +127,9 @@ mod tests {
     #[test]
     fn proof_verifies_and_has_three_segments() {
         let kp = KeyPair::generate().unwrap();
-        let token = kp.proof("POST", "https://sts.example.com/v1/oauth2/tokens").unwrap();
+        let token = kp
+            .proof("POST", "https://sts.example.com/v1/oauth2/tokens")
+            .unwrap();
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3);
 
@@ -144,17 +149,22 @@ mod tests {
         let sig = Signature::from_slice(&B64.decode(parts[2]).unwrap()).unwrap();
         let x: Vec<u8> = B64.decode(kp.public_jwk.x.as_bytes()).unwrap();
         let y: Vec<u8> = B64.decode(kp.public_jwk.y.as_bytes()).unwrap();
-        let pk = p256::PublicKey::from_sec1_bytes(&[[0x04].as_slice(), &x, &y].concat())
-            .unwrap();
+        let pk = p256::PublicKey::from_sec1_bytes(&[[0x04].as_slice(), &x, &y].concat()).unwrap();
         let verify_key = VerifyingKey::from(pk);
         use p256::ecdsa::signature::Verifier;
         let input = format!("{}.{}", parts[0], parts[1]);
-        verify_key.verify(input.as_bytes(), &sig).expect("签名应有效");
+        verify_key
+            .verify(input.as_bytes(), &sig)
+            .expect("签名应有效");
     }
 
     #[test]
     fn jti_is_64_lower_hex() {
         assert_eq!(jti().len(), 64);
-        assert!(jti().bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert!(
+            jti()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
     }
 }

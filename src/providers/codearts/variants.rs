@@ -55,14 +55,7 @@ pub const REFRESH_INTERVAL: Duration = Duration::from_secs(3600);
 /// 上游未声明顺序，这里按 IDE 滑杆的排列（最小 → 最大）给出唯一已知顺序。
 /// 未知档位按"比 high 更深"处理，宁可比用户要求的更深而非更浅。
 const DEPTH_ORDER: [&str; 8] = [
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
 /// 档位深度序号；未知档位返回 `DEPTH_ORDER.len()`（最深）。
@@ -110,12 +103,8 @@ impl Variants {
             return None;
         }
         let chosen = match effort {
-            CodeartsReasoningEffort::Low => {
-                list.iter().min_by_key(|s| depth(s))
-            }
-            CodeartsReasoningEffort::High => {
-                list.iter().max_by_key(|s| depth(s))
-            }
+            CodeartsReasoningEffort::Low => list.iter().min_by_key(|s| depth(s)),
+            CodeartsReasoningEffort::High => list.iter().max_by_key(|s| depth(s)),
         }?;
         Some(chosen.clone())
     }
@@ -222,9 +211,8 @@ async fn fetch(
                 "thinking-variants: HTTP {status}: {snippet}"
             )));
         }
-        let parsed: VariantsResponse = serde_json::from_str(&text).map_err(|e| {
-            ProviderError::Protocol(format!("thinking-variants 响应解析失败: {e}"))
-        })?;
+        let parsed: VariantsResponse = serde_json::from_str(&text)
+            .map_err(|e| ProviderError::Protocol(format!("thinking-variants 响应解析失败: {e}")))?;
         for (model, v) in parsed.variants {
             inner.insert(model, v.strengths);
         }

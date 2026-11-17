@@ -37,8 +37,8 @@ pub fn sign(
     client_id: &str,
     payload: &str,
 ) -> Result<DeviceProof, ProofError> {
-    let key = SigningKey::from_pkcs8_pem(private_key_pem)
-        .map_err(|e| ProofError::Key(e.to_string()))?;
+    let key =
+        SigningKey::from_pkcs8_pem(private_key_pem).map_err(|e| ProofError::Key(e.to_string()))?;
 
     let timestamp = now_secs();
     let nonce = hex16();
@@ -56,10 +56,8 @@ pub fn sign(
     let sig: p256::ecdsa::Signature = key.sign(message.as_bytes());
     let sig = sig.to_der();
     // 官方客户端用 Node 的 base64（带填充）。
-    let signature = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        sig.as_bytes(),
-    );
+    let signature =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig.as_bytes());
 
     Ok(DeviceProof {
         signature,
@@ -98,7 +96,14 @@ mod tests {
         let sk = SigningKey::random(&mut rand_core::OsRng);
         let pem = sk.to_pkcs8_pem(Default::default()).unwrap().to_string();
         let body = "rt-1234567890";
-        let proof = sign(&pem, "POST", "/trae/api/v3/oauth/ExchangeToken", "abc", body).unwrap();
+        let proof = sign(
+            &pem,
+            "POST",
+            "/trae/api/v3/oauth/ExchangeToken",
+            "abc",
+            body,
+        )
+        .unwrap();
         assert_eq!(proof.nonce.len(), 32);
         assert!(proof.timestamp > 1_600_000_000);
 
@@ -111,16 +116,18 @@ mod tests {
             &proof.nonce,
         ]
         .join("\n");
-        let der = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &proof.signature,
-        )
-        .unwrap();
+        let der =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &proof.signature)
+                .unwrap();
         let sig = p256::ecdsa::Signature::from_der(&der).unwrap();
         sk.verifying_key().verify(msg.as_bytes(), &sig).unwrap();
 
         // 换一行内容签名便不匹配（证明 body 被覆盖）。
         let other = [msg.replace("abc", "abd")];
-        assert!(sk.verifying_key().verify(other[0].as_bytes(), &sig).is_err());
+        assert!(
+            sk.verifying_key()
+                .verify(other[0].as_bytes(), &sig)
+                .is_err()
+        );
     }
 }

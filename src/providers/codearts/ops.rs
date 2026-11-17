@@ -138,7 +138,6 @@ pub struct Campaign {
     pub display_config: Option<String>,
 }
 
-
 /// `delivery` 响应里的 `data`。
 #[derive(Debug, Deserialize)]
 pub struct Delivery {
@@ -255,9 +254,8 @@ pub async fn fetch_delivery(
         None,
     )
     .await?;
-    let d: Delivery = serde_json::from_value(data).map_err(|e| {
-        ProviderError::Protocol(format!("ops: delivery 结构不符: {e}"))
-    })?;
+    let d: Delivery = serde_json::from_value(data)
+        .map_err(|e| ProviderError::Protocol(format!("ops: delivery 结构不符: {e}")))?;
     Ok(d.items)
 }
 
@@ -471,15 +469,14 @@ mod tests {
 
     #[test]
     fn envelope_success_takes_data() {
-        let env: Envelope = serde_json::from_str(r#"{"code":0,"message":"ok","data":{"x":1}}"#)
-            .unwrap();
+        let env: Envelope =
+            serde_json::from_str(r#"{"code":0,"message":"ok","data":{"x":1}}"#).unwrap();
         assert_eq!(env.into_data().unwrap()["x"], 1);
     }
 
     #[test]
     fn envelope_nonzero_is_error() {
-        let env: Envelope =
-            serde_json::from_str(r#"{"code":4000,"message":"bad"}"#).unwrap();
+        let env: Envelope = serde_json::from_str(r#"{"code":4000,"message":"bad"}"#).unwrap();
         let err = env.into_data().unwrap_err().to_string();
         assert!(err.contains("4000"), "{err}");
         assert!(err.contains("bad"), "{err}");
@@ -502,8 +499,7 @@ mod tests {
 
     #[test]
     fn campaign_defaults_when_fields_missing() {
-        let c: Campaign =
-            serde_json::from_str(r#"{"campaignId":1,"displayConfig":null}"#).unwrap();
+        let c: Campaign = serde_json::from_str(r#"{"campaignId":1,"displayConfig":null}"#).unwrap();
         assert!(!c.claimable);
         assert_eq!(c.status, None);
     }

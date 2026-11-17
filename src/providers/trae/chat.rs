@@ -109,13 +109,9 @@ impl ChatBody {
                         name: t.name.clone(),
                         description: t.description.clone(),
                         // 缺省时必须给合法 JSON Schema 字符串，不能省略该字段。
-                        parameters: t
-                            .parameters
-                            .as_ref()
-                            .map(|p| p.to_string())
-                            .unwrap_or_else(|| {
-                                r#"{"type":"object","properties":{},"required":[]}"#.to_string()
-                            }),
+                        parameters: t.parameters.as_ref().map(|p| p.to_string()).unwrap_or_else(
+                            || r#"{"type":"object","properties":{},"required":[]}"#.to_string(),
+                        ),
                     },
                 })
                 .collect(),

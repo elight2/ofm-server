@@ -91,7 +91,9 @@ pub async fn wait_callback_on(
 
         if route != expect_path {
             let _ = sock
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .await;
             let _ = sock.shutdown().await;
             continue;

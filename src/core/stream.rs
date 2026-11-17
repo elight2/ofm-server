@@ -154,10 +154,7 @@ mod tests {
         });
         let evs = collect(s).await;
         // 恰好一个 Finish，不能追加第二个。
-        let n = evs
-            .iter()
-            .filter(|e| matches!(e, Event::Finish(_)))
-            .count();
+        let n = evs.iter().filter(|e| matches!(e, Event::Finish(_))).count();
         assert_eq!(n, 1);
     }
 
@@ -166,7 +163,10 @@ mod tests {
         // 一帧被切成两段喂入。
         let s = drive(feed(vec!["data: he", "llo\n\n"]), as_text);
         let evs = collect(s).await;
-        assert!(matches!(&evs[0], Event::Text(t) if t == "hello"), "实际: {evs:?}");
+        assert!(
+            matches!(&evs[0], Event::Text(t) if t == "hello"),
+            "实际: {evs:?}"
+        );
     }
 
     #[tokio::test]
@@ -174,6 +174,9 @@ mod tests {
         // 末尾帧没有空行结束符，靠 decoder.finish() 冲出。
         let s = drive(feed(vec!["data: tail"]), as_text);
         let evs = collect(s).await;
-        assert!(matches!(&evs[0], Event::Text(t) if t == "tail"), "实际: {evs:?}");
+        assert!(
+            matches!(&evs[0], Event::Text(t) if t == "tail"),
+            "实际: {evs:?}"
+        );
     }
 }

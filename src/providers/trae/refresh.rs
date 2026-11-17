@@ -41,10 +41,7 @@ pub struct TokenResult {
 }
 
 /// 用 refresh_token 换新 token，成功后返回更新后的凭证（未写入磁盘）。
-pub async fn refresh(
-    client: &reqwest::Client,
-    cred: &Credential,
-) -> Result<Credential, HttpError> {
+pub async fn refresh(client: &reqwest::Client, cred: &Credential) -> Result<Credential, HttpError> {
     let device = cred.device();
     let device_info = api::DeviceInfo::build(&device)?;
 
@@ -68,12 +65,13 @@ pub async fn refresh(
     };
 
     let url = format!("{}{}", api::HOST_WEB, EXCHANGE_PATH);
-    let res: TokenResult =
-        api::post_control(client, &url, api::UA_ELECTRON, None, &body).await?;
+    let res: TokenResult = api::post_control(client, &url, api::UA_ELECTRON, None, &body).await?;
 
     Ok(Credential {
         token: res.token,
-        refresh_token: res.refresh_token.unwrap_or_else(|| cred.refresh_token.clone()),
+        refresh_token: res
+            .refresh_token
+            .unwrap_or_else(|| cred.refresh_token.clone()),
         token_expire_at: res.token_expire_at.or(cred.token_expire_at),
         refresh_expire_at: res.refresh_expire_at.or(cred.refresh_expire_at),
         ..cred.clone()
@@ -95,6 +93,9 @@ mod tests {
         let new = refresh(&client, &cred).await.expect("续期成功");
         assert!(!new.token.is_empty());
         println!("新 token 前缀: {}…", &new.token[..20]);
-        println!("有效期: {:?} -> {:?}", cred.token_expire_at, new.token_expire_at);
+        println!(
+            "有效期: {:?} -> {:?}",
+            cred.token_expire_at, new.token_expire_at
+        );
     }
 }

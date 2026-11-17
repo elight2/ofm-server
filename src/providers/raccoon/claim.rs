@@ -36,7 +36,7 @@
 
 use serde::Deserialize;
 
-use super::api::{get_envelope, post_envelope_with_headers, HOST, UA};
+use super::api::{HOST, UA, get_envelope, post_envelope_with_headers};
 use super::credential::Credential;
 use crate::core::provider::{ClaimReport, ProviderError};
 
@@ -97,18 +97,16 @@ impl Popup {
 ///
 /// 成功但今天已领过时返回 `skipped: true`，**不是错误** ——
 /// 服务端幂等语义如此，当作失败会让 `claim.log` 每天记一次假警报。
-pub async fn claim(client: &reqwest::Client, cred: &Credential) -> Result<ClaimReport, ProviderError> {
+pub async fn claim(
+    client: &reqwest::Client,
+    cred: &Credential,
+) -> Result<ClaimReport, ProviderError> {
     let url = format!("{HOST}{GRANT_PATH}");
 
     let empty = serde_json::json!({});
-    let grant: Grant = post_envelope_with_headers(
-        client,
-        &url,
-        Some(&cred.access_token),
-        &empty,
-        &headers(),
-    )
-    .await?;
+    let grant: Grant =
+        post_envelope_with_headers(client, &url, Some(&cred.access_token), &empty, &headers())
+            .await?;
 
     // 顺便读一次余额，让 `claim.log` 能记下领取前后变化。
     let balance = fetch_balance(client, cred).await.ok();
@@ -125,7 +123,9 @@ pub async fn claim(client: &reqwest::Client, cred: &Credential) -> Result<ClaimR
     // 服务端下发的 `display_name` 比本地 `source` 映射准确（可能含活动名），优先用。
     let (label, points) = match &grant.popup {
         Some(p) => (
-            p.display_name.as_deref().unwrap_or_else(|| p.source_label()),
+            p.display_name
+                .as_deref()
+                .unwrap_or_else(|| p.source_label()),
             p.points,
         ),
         None => ("积分", None),

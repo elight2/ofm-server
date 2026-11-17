@@ -54,7 +54,10 @@ pub async fn login(root: PathBuf) -> anyhow::Result<()> {
 
     // 回调把授权码放在 `authCodeInfo`（URL 编码的 JSON），另有 `host` 指明 API 主机。
     let info = callback_auth_code(&query)?;
-    println!("[trae] 已获得授权码（{} 内有效），正在换取令牌…", fmt_ms(info.expire_at));
+    println!(
+        "[trae] 已获得授权码（{} 内有效），正在换取令牌…",
+        fmt_ms(info.expire_at)
+    );
 
     let client = api::client()?;
     let host = login::query_param(&query, "host")
@@ -64,7 +67,10 @@ pub async fn login(root: PathBuf) -> anyhow::Result<()> {
     let cred = Credential::from_auth(&device, token, existing.as_ref());
     cred.store(&root)?;
 
-    println!("[trae] 登录成功，凭证已保存到 {}", root.join("providers/trae/credential.toml").display());
+    println!(
+        "[trae] 登录成功，凭证已保存到 {}",
+        root.join("providers/trae/credential.toml").display()
+    );
     println!("[trae] 令牌有效期至 {}", fmt_ms(cred.token_expire_at));
     Ok(())
 }

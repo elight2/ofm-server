@@ -20,10 +20,7 @@ pub struct RefreshData {
 }
 
 /// 续期并返回新凭证（不写盘，由调用方落盘）。
-pub async fn refresh(
-    client: &reqwest::Client,
-    cred: &Credential,
-) -> Result<Credential, HttpError> {
+pub async fn refresh(client: &reqwest::Client, cred: &Credential) -> Result<Credential, HttpError> {
     if cred.refresh_token.trim().is_empty() {
         return Err(HttpError::Business {
             code: None,

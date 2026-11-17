@@ -640,13 +640,31 @@ mod tests {
     fn 完整一轮() {
         let mut p = Parser::new();
         let frames = [
-            ("message_start", r#"{"type":"message_start","message":{"id":"x","usage":{"input_tokens":0,"output_tokens":0}}}"#),
+            (
+                "message_start",
+                r#"{"type":"message_start","message":{"id":"x","usage":{"input_tokens":0,"output_tokens":0}}}"#,
+            ),
             ("ping", r#"{"type":"ping"}"#),
-            ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}"#),
-            ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"！"}}"#),
-            ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
-            ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":78,"output_tokens":8,"cache_read_input_tokens":128}}"#),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"！"}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":0}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":78,"output_tokens":8,"cache_read_input_tokens":128}}"#,
+            ),
             ("message_stop", r#"{"type":"message_stop"}"#),
         ];
         let mut all = Vec::new();
@@ -665,7 +683,10 @@ mod tests {
         let usage = all.iter().filter(|e| matches!(e, Event::Usage(_))).count();
         let finish = all.iter().filter(|e| matches!(e, Event::Finish(_))).count();
         assert_eq!((usage, finish), (1, 1));
-        assert!(matches!(all.last(), Some(Event::Finish(FinishReason::Stop))));
+        assert!(matches!(
+            all.last(),
+            Some(Event::Finish(FinishReason::Stop))
+        ));
     }
 
     /// `message_stop` 之后不再重复收尾。

@@ -106,20 +106,13 @@ pub fn apply(req: &mut p::ChatRequest, prompt: &str) {
     }
 
     // 找最后一条系统消息（可能有多条：`system` 与 `developer` 会被合并成同角色）。
-    if let Some(last) = req
-        .messages
-        .iter()
-        .rposition(|m| m.role == p::Role::System)
-    {
+    if let Some(last) = req.messages.iter().rposition(|m| m.role == p::Role::System) {
         let parts = &mut req.messages[last].parts;
         // 已有非空文本 → 追加到该段之后；否则直接放进去。
-        match parts
-            .iter_mut()
-            .rev()
-            .find_map(|part| match part {
-                p::Part::Text(t) => Some(t),
-                p::Part::Image { .. } => None,
-            }) {
+        match parts.iter_mut().rev().find_map(|part| match part {
+            p::Part::Text(t) => Some(t),
+            p::Part::Image { .. } => None,
+        }) {
             Some(text) => {
                 // 统一成「恰好一个空行」分隔：先削掉原尾部空白再补两换行，
                 // 避免客户端提示词自带换行时出现三四个连续空行。
@@ -184,7 +177,10 @@ mod tests {
     /// 已有系统提示词：追加在其末尾，用空行分隔，不新建消息。
     #[test]
     fn 追加到已有系统提示词后() {
-        let mut r = req(vec![msg(p::Role::System, "客户端规则"), msg(p::Role::User, "hi")]);
+        let mut r = req(vec![
+            msg(p::Role::System, "客户端规则"),
+            msg(p::Role::User, "hi"),
+        ]);
         apply(&mut r, "自定义修正");
         assert_eq!(r.messages.len(), 2, "不应新增消息");
         assert_eq!(text_of(&r.messages[0]), "客户端规则\n\n自定义修正");
@@ -314,10 +310,7 @@ mod tests {
         std::fs::write(dir.join("prompts").join("trae.md"), "自定义内容").unwrap();
         assert_eq!(load(&dir, "trae").as_deref(), Some("自定义内容"));
         // 另一个供应商没有自定义文件 → 仍是默认
-        assert_eq!(
-            load(&dir, "raccoon").as_deref(),
-            Some(DEFAULT_PROMPTS_STR)
-        );
+        assert_eq!(load(&dir, "raccoon").as_deref(), Some(DEFAULT_PROMPTS_STR));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -332,10 +325,7 @@ mod tests {
         assert_eq!(load(&dir, "trae").as_deref(), Some("trae 的"));
         assert_eq!(load(&dir, "minimax").as_deref(), Some("minimax 的"));
         // 未写自定义的供应商回退默认，不会串到别人的内容
-        assert_eq!(
-            load(&dir, "raccoon").as_deref(),
-            Some(DEFAULT_PROMPTS_STR)
-        );
+        assert_eq!(load(&dir, "raccoon").as_deref(), Some(DEFAULT_PROMPTS_STR));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
