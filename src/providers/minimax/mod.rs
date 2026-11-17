@@ -2,8 +2,7 @@
 //!
 //! 已实现：登录（`auth`，OAuth 设备码 + PKCE）、模型目录（`models`）、
 //! 对话（`chat`，Chat Completions ↔ anthropic-messages）、思考强度映射、
-//! 令牌续期（被动自动 + `ofm-server refresh`）、每日签到（`claim`）。
-//! 不实现：`balance`（§6 仅有源码无抓包）。
+//! 令牌续期（被动自动 + `ofm-server refresh`）、每日签到（`claim`）、余额（`balance`）。
 //!
 //! 协议实况见 `provider-info/minimax.md`。关键约束：
 //! * 认证域 `account.minimax.cn` 与 API 域 `agent.minimax.cn` 分离，域名写死预设，
@@ -15,6 +14,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod balance;
 pub mod chat;
 pub mod claim;
 pub mod credential;
@@ -288,9 +288,12 @@ impl Provider for MinimaxProvider {
         claim::claim(&self.client, &cred).await
     }
 
-    /// 余额：§6 仅有源码、无抓包，且依赖会员/工作区两条前置请求，暂不实现。
+    /// 余额：取 `op_credit_summary.total_remaining_amount`（§6）。
     async fn balance(&self) -> Result<Option<f64>, ProviderError> {
-        Ok(None)
+        let token = self.access_token().await?;
+        let mut cred = self.credential()?;
+        cred.access_token = token;
+        balance::fetch(&self.client, &cred).await
     }
 }
 

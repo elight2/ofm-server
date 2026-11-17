@@ -33,6 +33,7 @@
 use serde::Deserialize;
 
 use super::api::{AGENT_HOST, HttpError, UA};
+use super::ID;
 use super::credential::Credential;
 use crate::core::provider::{ClaimReport, ProviderError};
 
@@ -160,15 +161,40 @@ pub async fn claim(
     let claimable = today.map(|d| d.status == DAY_CLAIMABLE).unwrap_or(false);
 
     if already {
-        return Ok(skip(format!("今日已签到（{}）", progress(&panel))));
+        return Ok(with_balance(
+            skip(format!("今日已签到（{}）", progress(&panel))),
+            client,
+            cred,
+        )
+        .await);
     }
     if !claimable {
         // 面板里今日既非已签也非可领：处于停用/未开放窗口，不猜原因。
-        return Ok(skip(format!("今日不可签到（{}）", describe(&panel))));
+        return Ok(with_balance(
+            skip(format!("今日不可签到（{}）", describe(&panel))),
+            client,
+            cred,
+        )
+        .await);
     }
 
     let data = post_claim(client, cred).await?;
-    Ok(verdict(&data))
+    Ok(with_balance(verdict(&data), client, cred).await)
+}
+
+/// 补上当前余额，让 `claim.log` 有 `balance` 字段。
+///
+/// 余额拿不到不算签到失败（§6），只记日志并保持 `None`。
+async fn with_balance(
+    mut report: ClaimReport,
+    client: &reqwest::Client,
+    cred: &Credential,
+) -> ClaimReport {
+    match super::balance::fetch(client, cred).await {
+        Ok(v) => report.balance = v,
+        Err(e) => tracing::debug!("[{ID}] 签到后取余额失败（忽略）: {e}"),
+    }
+    report
 }
 
 /// 把领取响应转成报告（纯函数，便于单测）。

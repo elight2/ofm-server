@@ -13,7 +13,7 @@
 | `[实测]` | `ofm-server` 实现落地时的真实请求实测（2026-11-17）|
 
 抓包覆盖：完整登录链（含设备码轮询 17 次）、`/v1/models` ×1、`/v1/messages` ×26、`/messages/count_tokens` ×4。
-**未覆盖**：余额（§6 仅源码）、签到（§7 由 TUI 源码取得，抓包里没有）。
+**未覆盖**：余额与签到（§6/§7 由 TUI 源码取得并已实测，抓包里没有）。
 
 **实现进度**分两列：`[实测]` 标注的是本服务器实现落地时真实跑过的结果，
 §9 列了已确认项与待验项，§11 列了各步状态。
@@ -851,66 +851,74 @@ thinking_tokens 均在 140~370 区间、无档位差异，符合「M3 只有开/
 
 ## 6. 余额获取
 
-抓包中**无**余额请求（客户端 UI 未打开过额度面板），但**源码里有端点**，`[源码 tui/src/account/matrix-account-client.ts]`：
+### 6.1 端点（已实现）
 
 ```text
-GET https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains
-accept: application/json
-authorization: Bearer <access_token>
-X-Group-Id: <opGroupId>        # 可选，模板订阅的计划组
+POST https://agent.minimax.cn/matrix/api/v1/commerce/get_membership_info
+body: {}
+Authorization: Bearer <access_token>
 ```
 
-响应关键字段（`base_resp.status_code != 0` 即失败）：
+来源 `[源码 packages/tui/src/account/matrix-account-client.ts:606-626 projectMembership()]`：
+余额取 `op_credit_summary.total_remaining_amount`，回退 `opcredit_balance`。
+`get_membership_info` 与 `get_user_extra_info` 两个端点响应里都带同名
+`op_credit_summary`，取其一即可。
 
-| 字段 | 含义 |
-|-|-|
-| `model_remains[0]` | 主模型额度窗口（只用第一个）|
-| `current_interval_status` | `3` = 无限量 |
-| `current_interval_remaining_percent` | 5 小时窗口剩余百分比（0–100）|
-| `current_interval_total_count` / `current_interval_usage_count` | 百分比缺失时用 `usage/total` 算 |
-| `end_time` | 5 小时窗口重置时间（ms）|
-| `current_weekly_*` / `weekly_end_time` | 周窗口，同名规则 |
-| `model_remains[]` 中名字含 `video` 且 `total_count>0` | 视频额度（单列）|
+### 6.2 实测（2026-11-17，testdata 账号）
 
-前置依赖：`opGroupId` 来自会员查询（非额度接口本身）：
-
-```text
-GET  https://agent.minimaxi.com/v1/api/user/info            # 取 realUserID
-POST https://agent.minimaxi.com/matrix/api/v1/user/get_user_extra_info     body {}
-POST https://agent.minimaxi.com/matrix/api/v1/commerce/get_membership_info body {} / {workspace_id}
+```json
+{"plan_type":1,"plan_name":"","has_token_plan":false,
+ "op_group_id":"2109949810109846391","opcredit_balance":0,
+ "total_remains_credit":0,
+ "op_credit_summary":{"total_remaining_amount":"8437.456",
+                      "purchased_remaining_amount":"0",
+                      "free_remaining_amount":"8437.456"},
+ "base_resp":{"status_code":0,"status_msg":"success"},"subscription_type":"none"}
 ```
 
-会员响应里的 `has_token_plan` / `op_group_id` / `token_plan_tier` / `token_plan_expires_at` /
-`op_credit_summary.total_remaining_amount`（或 `opcredit_balance`）= 余额与套餐。
+* **`total_remaining_amount` 是字符串**（`"8437.456"`），需自行解析。
+* 与客户端 UI 显示的 8437 一致（截小数）。
+* `opcredit_balance` / `total_remains_credit` 在本账号上都是 `0`，与真实余额不符
+  —— **只能用 `op_credit_summary`**。
 
-两套域名不一致（额度在 `www.minimaxi.com`，会员在 `agent.minimaxi.com`）
-`[源码矩阵常量]`；抓包未验证，且 `agent.minimaxi.com` 是源码里标为 legacy 的旧域 →
-实际是否已迁到 `agent.minimax.cn` `[未验证]`。
+### 6.3 必需项（逐个删测）
 
-`/v1/api/user/*` 与 `/matrix/api/v1/*` 需额外签名头 `[源码]`：
+| 项 | 必需 | 证据 |
+|-|-|-|
+| `Authorization: Bearer` | 是 | 无令牌 401 |
+| `POST` body `{}` | 是 | — |
+| `yy` / `x-timestamp` / `x-signature` | **否** | 去掉仍 200 且余额正确 |
+| 全部 query 参数（含 `timezone_offset`） | **否** | 不带任何 query 仍 200 |
+| `user_id` | **否** | 传 `0` / 空 / 真实值结果一致 |
+| `get_user_extra_info` 前置请求 | **否** | 直连 `get_membership_info` 即可 |
+| `opGroupId` 前置 | **否** | 响应里自带，无需先查会员 |
 
-```text
-yy:          GET : md5(encodeURIComponent(path+query) + "_{}" + md5(str(unix_ms)) + "ooui")
-             POST: md5(encodeURIComponent(path+query) + "_" + <body> + md5(str(unix_ms)) + "ooui")
-x-timestamp: <unix 秒>
-x-signature: GET : md5(<unix 秒> + "I*7Cf%WZ#S&%1RlZJ&C2")
-             POST: md5(<unix 秒> + "I*7Cf%WZ#S&%1RlZJ&C2" + <body>)
-user-agent:  MiniMaxCode
+> 本节早期版本写「需额外签名头 `yy`/`x-timestamp`/`x-signature`」并列出
+> `user/info` → `get_user_extra_info` → `get_membership_info` 三级依赖，
+> 那是照抄源码推断、**未实测**。实测后简化为一次直连请求，签名头与前置全部不需要。
+
+### 6.4 Token Plan 额度（不实现）
+
+`GET https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains`
+是 **Token Plan 订阅**的 5 小时/周窗口额度，与积分余额是两回事。
+本账号实测返回：
+
+```json
+{"model_remains":null,"base_resp":{"status_code":2062,"status_msg":"no active token plan subscription"}}
 ```
 
-源码注释明说这两个内联字串只是**客户端归属标记，不是凭据**，授权靠同一个 `Authorization`。
+没有订阅时它给不出数，故不实现。字段语义（`current_interval_*` /
+`current_weekly_*` / `end_time` 等）见源码
+`packages/tui/src/account/matrix-account-client.ts` 的 `TOKEN_PLAN_REMAINS_PATH`，
+`[未验证]`（本账号无订阅，无法采集真实响应）。
 
-所有 `/v1/api/user/*` 与 `/matrix/api/v1/*` 还带一组 query 参数 `[源码 buildUrl]`（与§1.3 浏览器侧那组**不同**）：
+### 6.5 本实现的处理（`ofm-server`）
 
-```text
-device_platform=mcode&biz_id=3&app_id=3001&version_code=22201&unix=<ms>
-&timezone_offset=28800&lang=zh&sys_language=zh&device_id=0&os_name=linux
-&browser_name=mcode&user_id=<realUserID|0>&client=mcode
-```
-
-额度接口（`coding_plan/remains`）**不带**这组 query、也不带签名头，只带 `Authorization` + 可选 `X-Group-Id`。
-
-**本次任务按用户要求未分析余额**，上表仅为源码直读，字段语义 `[未验证]`。
+`src/providers/minimax/balance.rs`：一次 `POST get_membership_info`，
+取 `op_credit_summary.total_remaining_amount`，回退 `opcredit_balance`；
+两者都取不到返回 `None`（账号未开通计费，不是错误）。
+`Provider::balance` 接入后，`ofm-server status minimax` 显示
+`余额: 8437.456`，`claim.log` 的 `balance` 字段也有值。
 
 ## 7. 签到协议（每日签到）
 
@@ -1121,7 +1129,9 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 * [ ] 图片/视频输入实测（`modalities` 声明支持，抓包 26 次未出现 `image` 块）
 * [ ] `context_window_options` 里 1000000 的切换方式（请求字段还是目录变体）
 * [ ] 海外 `region=en` 的域名与参数
-* [ ] 余额端点（§6）：仅有源码，无抓包；服务域名/`opGroupId` 来源链未实测
+* [x] 余额端点（§6）：`POST /matrix/api/v1/commerce/get_membership_info`，
+  仅需 `Authorization` + body `{}`；余额取 `op_credit_summary.total_remaining_amount`
+  （字符串）；已实现并实测（8437.456，与 UI 显示一致）
 * [x] 签到端点与必需参数（§7）：`/minimax-cloud/api/v1/signin/{status,claim}`，
   仅需 `timezone_offset` + `Authorization`；已实现并实测（今日已签幂等路径）
 
@@ -1143,6 +1153,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | `packages/tui/src/checkin/http-gateway.ts` | **签到端点**（`/minimax-cloud/api/v1/signin/{status,claim}`）|
 | `packages/tui/src/runtime/public-gateway.ts` | 签到用的 `publicGatewayOrigin` 与 `yy`/`x-signature` 构造 |
 | `packages/shared/src/daily-signin.ts` | 签到面板/领取的字段语义与校验 |
+| `packages/tui/src/account/matrix-account-client.ts:606-626` | `projectMembership`：余额字段取值链（`op_credit_summary.total_remaining_amount` → `opcredit_balance`）|
 | `test/capture_output/minimax_requests.jsonl` | 抓包原文（61 条）|
 | `test/minimax_capture.py` | 抓包脚本（**注意**：只保存 JSON 响应体，SSE 流未保存）|
 
@@ -1159,10 +1170,10 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | 5 | 令牌续期 `refresh_token` | §2 | ✅ 已实现（`auth::refresh` + `Provider::refresh` + 30s 窗口被动续期 + 401 刷新重试），端到端实测通过（§2 实测结论）|
 | 6 | 签到 `GET /signin/status` + `POST /signin/claim` | §7 | ✅ 已实现（`minimax/claim.rs`），已实测（幂等路径；首次领取未触发）|
 
-余额（非 `MAINTAIN.md` 必选项）：源码有端点（§6）但无抓包，且依赖会员/工作区两条前置请求，
-实现成本高于对话主链，建议后续再做。
+余额：✅ 已实现（`minimax/balance.rs`，§6）
+Token Plan 窗口额度：不实现（本账号无订阅，上游回 `no active token plan subscription`）。
 
-实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`chat`/`stream`/`claim`/`mod`）。
+实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`chat`/`stream`/`claim`/`balance`/`mod`）。
 
 要点：
 
