@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::config::TraeReasoningEffort;
+use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
@@ -356,8 +357,7 @@ impl Provider for TraeProvider {
         if !status.enable {
             let balance = self.fetch_balance(&token, &cred).await.ok();
             return Ok(ClaimReport {
-                skipped: true,
-                message: "签到活动未开启".to_string(),
+                outcome: ClaimOutcome::skipped(SkipReason::NotEnabled, vec![]),
                 credits_delta: None,
                 balance,
             });
@@ -367,8 +367,7 @@ impl Provider for TraeProvider {
             // 误报成「本次领到」（实测余额不变、无副作用）。
             let balance = self.fetch_balance(&token, &cred).await.ok();
             return Ok(ClaimReport {
-                skipped: true,
-                message: "今日已签到".to_string(),
+                outcome: ClaimOutcome::skipped(SkipReason::AlreadyClaimed, vec![]),
                 credits_delta: None,
                 balance,
             });
@@ -394,12 +393,12 @@ impl Provider for TraeProvider {
             _ => None,
         };
         let credits = after.credits + after.extra_credits;
+        let mut details = vec![ClaimDetail::Credits(credits as f64)];
+        if let Some(d) = delta {
+            details.push(ClaimDetail::Delta(d));
+        }
         Ok(ClaimReport {
-            skipped: false,
-            message: match delta {
-                Some(d) => format!("签到成功，额度 {credits}，余额变化 {d:+.2}"),
-                None => format!("签到成功，额度 {credits}"),
-            },
+            outcome: ClaimOutcome::success(details),
             credits_delta: delta,
             balance: after_balance,
         })

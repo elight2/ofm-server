@@ -8,6 +8,8 @@
 //! 串行而非并发：签到要读余额前后对比，并发会让对账混在一起。
 //!
 //! 每次签到（领取/已领/未开通/失败）都写一条 `providers/<id>/claim.log` 记录。
+//!
+//! 记录内容用英文（`success` / `skipped: ...` / `failed: ...`），控制台输出用中文。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -43,24 +45,29 @@ pub async fn claim_all(registry: &Registry, root: &Path) {
 pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
     {
         let id = provider.id();
-        let (result, balance, delta) = match provider.claim().await {
+        let (result_en, balance, delta) = match provider.claim().await {
             Ok(report) => {
                 // `skipped` 覆盖两种「本次没领到」：今日已领、渠道未开通；
-                // 具体原因在 message 里，不要一概记成「成功」。
-                if report.skipped {
-                    tracing::info!("[{id}] 签到跳过: {}", report.message);
+                // 具体原因在明细里，不要一概记成「成功」。
+                if report.skipped() {
+                    tracing::info!("[{id}] 签到跳过: {}", report.message_zh());
                 } else {
-                    tracing::info!("[{id}] 签到完成: {}", report.message);
+                    tracing::info!("[{id}] 签到完成: {}", report.message_zh());
                 }
-                (report.message, report.balance, report.credits_delta)
+                (report.result_en(), report.balance, report.credits_delta)
             }
             Err(e) => {
                 tracing::warn!("[{id}] 签到失败: {e}");
-                (format!("失败: {e}"), None, None)
+                // 文件里只留英文原因（错误详情可能含中文，进控制台即可）。
+                (
+                    format!("failed: {}", crate::core::claim::failure_reason(&e)),
+                    None,
+                    None,
+                )
             }
         };
 
-        record(root, id, result, balance, delta);
+        record(root, id, result_en, balance, delta);
     }
 }
 

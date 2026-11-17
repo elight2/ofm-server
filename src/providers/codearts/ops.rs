@@ -55,6 +55,7 @@
 
 use serde::Deserialize;
 
+use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::provider::{ClaimReport, ProviderError};
 use crate::providers::codearts::credential::Credential;
 use crate::providers::codearts::pkce;
@@ -362,8 +363,7 @@ pub async fn claim(
     let targets: Vec<&Campaign> = items.iter().filter(|c| c.claimable).collect();
     if targets.is_empty() {
         return Ok(ClaimReport {
-            skipped: true,
-            message: skip_message(&items),
+            outcome: skip_outcome(&items),
             credits_delta: None,
             balance: None,
         });
@@ -371,7 +371,7 @@ pub async fn claim(
 
     let mut gained = 0.0_f64;
     let mut max_balance: Option<f64> = None;
-    let mut done: Vec<String> = Vec::new();
+    let mut details: Vec<ClaimDetail> = Vec::new();
     for c in &targets {
         let claimed = claim_campaign(client, cred, c.campaign_id).await?;
         let amount = claimed
@@ -386,19 +386,52 @@ pub async fn claim(
         if let Some(r) = remaining {
             max_balance = Some(max_balance.map_or(r, |b: f64| b.max(r)));
         }
-        done.push(format!("{} +{amount} {}", c.title, c.benefit_unit));
+        details.push(ClaimDetail::Label {
+            en: format!("{} +{}", campaign_name_en(c), fmt_num(amount)),
+            zh: format!("{} +{amount} {}", campaign_name_zh(c), c.benefit_unit),
+        });
     }
 
     Ok(ClaimReport {
-        skipped: false,
-        message: format!("领取成功: {}", done.join("; ")),
+        outcome: ClaimOutcome::success(details),
         credits_delta: Some(gained),
         balance: max_balance,
     })
 }
 
-/// 无可领取时的说明：优先报「今日已签」，其次报已到账待用积分。
-fn skip_message(items: &[Campaign]) -> String {
+/// 活动类型的英文名（上游 title 为中文，不入英文记录）。
+fn campaign_name_en(c: &Campaign) -> &'static str {
+    match c.r#type.as_str() {
+        "USER_LOGIN" => "daily check-in",
+        "EDUCATION" => "education benefit",
+        "EXAMINATION" => "exam benefit",
+        _ => "benefit",
+    }
+}
+
+/// 活动的中文名（上游 title 为空时给默认名）。
+fn campaign_name_zh(c: &Campaign) -> String {
+    if c.title.is_empty() {
+        match c.r#type.as_str() {
+            "USER_LOGIN" => "每日签到".to_string(),
+            _ => "福利".to_string(),
+        }
+    } else {
+        c.title.clone()
+    }
+}
+
+/// 积分为整数时不显示 `.0`。
+fn fmt_num(v: f64) -> String {
+    if v.fract().abs() < f64::EPSILON {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// 无可领取时的结果：优先报「今日已签」，其次报已到账待用积分。
+fn skip_outcome(items: &[Campaign]) -> ClaimOutcome {
     // `CLAIMED`/`CONFIRMED` 里 `USER_LOGIN`（每日签到）说明今天已经签过。
     let today: Vec<&Campaign> = items
         .iter()
@@ -408,27 +441,32 @@ fn skip_message(items: &[Campaign]) -> String {
         })
         .collect();
     if !today.is_empty() {
-        let name = if today[0].title.is_empty() {
-            "每日签到"
-        } else {
-            &today[0].title
-        };
-        return format!("今日已签到（{}）", name);
+        let c = today[0];
+        return ClaimOutcome::skipped(
+            SkipReason::AlreadyClaimed,
+            vec![ClaimDetail::Label {
+                en: campaign_name_en(c).to_string(),
+                zh: campaign_name_zh(c),
+            }],
+        );
     }
     let pending: f64 = items.iter().map(|c| c.pending_total_amount).sum();
     if pending > 0.0 {
-        return format!("今日无可领取福利（已到账待用 {pending} 积分）");
+        return ClaimOutcome::skipped(
+            SkipReason::NoBenefit,
+            vec![ClaimDetail::PendingPoints(pending)],
+        );
     }
-    let units: Vec<String> = items
+    let units: Vec<ClaimDetail> = items
         .iter()
         .filter(|c| c.pending_count > 0)
-        .map(|c| format!("{} 待领 {}", c.title, c.pending_count))
+        .map(|c| ClaimDetail::PendingItem {
+            en: campaign_name_en(c).to_string(),
+            zh: campaign_name_zh(c),
+            count: c.pending_count,
+        })
         .collect();
-    if units.is_empty() {
-        "今日无可领取福利".to_string()
-    } else {
-        format!("今日无可领取福利（{}）", units.join("; "))
-    }
+    ClaimOutcome::skipped(SkipReason::NoBenefit, units)
 }
 
 /// 截断长文本（错误信息用）。
@@ -514,8 +552,13 @@ mod tests {
                  "status":"CLAIMED","claimable":false,"pendingTotalAmount":4000.0}]"#,
         )
         .unwrap();
-        let m = skip_message(&items);
-        assert!(m.contains("今日已签到"), "{m}");
+        let o = skip_outcome(&items);
+        assert!(o.result_zh().contains("今日已签到"), "{}", o.result_zh());
+        assert!(
+            o.result_en().starts_with("skipped: already claimed"),
+            "{}",
+            o.result_en()
+        );
     }
 
     /// 没有签到活动时退化为「待领/待用」说明。
@@ -526,7 +569,9 @@ mod tests {
                  "claimable":false,"pendingCount":0}]"#,
         )
         .unwrap();
-        assert_eq!(skip_message(&items), "今日无可领取福利");
+        let o = skip_outcome(&items);
+        assert_eq!(o.result_en(), "skipped: no benefit available");
+        assert_eq!(o.result_zh(), "今日无可领取福利");
     }
 
     /// statistics 里取 `usageTotalPackageCredit`，换算成剩余量。

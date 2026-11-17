@@ -2,7 +2,11 @@
 //!
 //! 只保留最近 [`KEEP`] 条，追加超出后裁剪。记录字段只有时间、结果、当前余额。
 //!
-//! 失败的签到也会写一条（结果为失败描述），便于排查「今天为什么没签上」。
+//! **记录内容一律英文**：`result` 字段写 `success` / `skipped: already claimed` /
+//! `failed` 等英文串，便于 grep 与脚本处理；面向人的输出（控制台、`status`）由
+//! [`crate::core::claim`] 转回中文。
+//!
+//! 失败的签到也会写一条（结果为 `failed: <原因>`），便于排查「今天为什么没签上」。
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +24,7 @@ pub const KEEP: usize = 50;
 pub struct Entry {
     /// RFC 3339 本地时间。
     pub time: String,
-    /// 结果：`成功` / `跳过: <原因>` / `失败: <错误>`。
+    /// 结果（英文）：`success` / `skipped: <原因>` / `failed: <错误>`。
     pub result: String,
     /// 当时的余额（`None` 表示未取到）。
     #[serde(default)]
@@ -31,9 +35,11 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// 「成功签到」且余额变化可算的条目（`result` 不以「跳过/失败」开头）。
+    /// 「成功签到」条目（结果以 `success` 开头）。
+    ///
+    /// 兼容旧记录：改动前的文件写的是中文「成功」。
     pub fn is_success(&self) -> bool {
-        self.result == "成功"
+        self.result.starts_with("success") || self.result == "成功"
     }
 }
 
@@ -131,11 +137,16 @@ mod tests {
     #[test]
     fn 追加后可读回() {
         let root = tmp_root("append");
-        append(&root, "p", entry("t1", "成功", Some(100.0))).unwrap();
-        append(&root, "p", entry("t2", "跳过: 今日已签到", Some(100.0))).unwrap();
+        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
+        append(
+            &root,
+            "p",
+            entry("t2", "skipped: already claimed", Some(100.0)),
+        )
+        .unwrap();
         let e = load(&root, "p");
         assert_eq!(e.len(), 2);
-        assert_eq!(e[0].result, "成功");
+        assert_eq!(e[0].result, "success");
         assert_eq!(e[1].balance, Some(100.0));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -144,7 +155,12 @@ mod tests {
     fn 只保留最近_keep_条() {
         let root = tmp_root("keep");
         for i in 0..(KEEP + 10) {
-            append(&root, "p", entry(&format!("t{i}"), "成功", Some(i as f64))).unwrap();
+            append(
+                &root,
+                "p",
+                entry(&format!("t{i}"), "success", Some(i as f64)),
+            )
+            .unwrap();
         }
         let e = load(&root, "p");
         assert_eq!(e.len(), KEEP);
@@ -164,9 +180,14 @@ mod tests {
     #[test]
     fn 最近成功取时间与增量() {
         let root = tmp_root("last");
-        append(&root, "p", entry("t1", "成功", Some(100.0))).unwrap();
-        append(&root, "p", entry("t2", "跳过: 今日已签到", Some(100.0))).unwrap();
-        append(&root, "p", entry("t3", "成功", Some(150.0))).unwrap();
+        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
+        append(
+            &root,
+            "p",
+            entry("t2", "skipped: already claimed", Some(100.0)),
+        )
+        .unwrap();
+        append(&root, "p", entry("t3", "success", Some(150.0))).unwrap();
         let (time, delta) = last_success(&root, "p").unwrap();
         assert_eq!(time, "t3");
         // 增量相对 t2 的余额 100 → +50
@@ -177,7 +198,7 @@ mod tests {
     #[test]
     fn 首次成功无前值则增量为_none() {
         let root = tmp_root("first");
-        append(&root, "p", entry("t1", "成功", Some(100.0))).unwrap();
+        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
         let (time, delta) = last_success(&root, "p").unwrap();
         assert_eq!(time, "t1");
         assert_eq!(delta, None);
@@ -187,9 +208,9 @@ mod tests {
     #[test]
     fn 上游告知的增量优先于余额差分() {
         let root = tmp_root("delta-preferred");
-        append(&root, "p", entry("t1", "成功", Some(100.0))).unwrap();
+        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
         // t2 余额差分应为 +50，但上游明确告知 300（中间可能有过消耗）。
-        let mut e = entry("t2", "成功", Some(400.0));
+        let mut e = entry("t2", "success", Some(400.0));
         e.delta = Some(300.0);
         append(&root, "p", e).unwrap();
         let (time, delta) = last_success(&root, "p").unwrap();
@@ -201,7 +222,7 @@ mod tests {
     #[test]
     fn 失败记录不算成功() {
         let root = tmp_root("fail");
-        append(&root, "p", entry("t1", "失败: 网络错误", None)).unwrap();
+        append(&root, "p", entry("t1", "failed: network error", None)).unwrap();
         assert!(last_success(&root, "p").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }

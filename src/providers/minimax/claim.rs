@@ -35,6 +35,7 @@ use serde::Deserialize;
 use super::ID;
 use super::api::{AGENT_HOST, HttpError, UA};
 use super::credential::Credential;
+use crate::core::claim::{ClaimCode, ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::provider::{ClaimReport, ProviderError};
 
 /// 签到状态端点。
@@ -162,7 +163,7 @@ pub async fn claim(
 
     if already {
         return Ok(with_balance(
-            skip(format!("今日已签到（{}）", progress(&panel))),
+            ClaimOutcome::skipped(SkipReason::AlreadyClaimed, progress_details(&panel)),
             client,
             cred,
         )
@@ -170,8 +171,10 @@ pub async fn claim(
     }
     if !claimable {
         // 面板里今日既非已签也非可领：处于停用/未开放窗口，不猜原因。
+        let mut details = today_details(&panel);
+        details.extend(progress_details(&panel));
         return Ok(with_balance(
-            skip(format!("今日不可签到（{}）", describe(&panel))),
+            ClaimOutcome::skipped(SkipReason::NotClaimable, details),
             client,
             cred,
         )
@@ -186,46 +189,42 @@ pub async fn claim(
 ///
 /// 余额拿不到不算签到失败（§6），只记日志并保持 `None`。
 async fn with_balance(
-    mut report: ClaimReport,
+    outcome: ClaimOutcome,
     client: &reqwest::Client,
     cred: &Credential,
 ) -> ClaimReport {
-    match super::balance::fetch(client, cred).await {
-        Ok(v) => report.balance = v,
-        Err(e) => tracing::debug!("[{ID}] 签到后取余额失败（忽略）: {e}"),
+    let balance = match super::balance::fetch(client, cred).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("[{ID}] 签到后取余额失败（忽略）: {e}");
+            None
+        }
+    };
+    let credits_delta = match &outcome.code {
+        ClaimCode::Success => outcome.details.iter().find_map(|d| match d {
+            ClaimDetail::Points(v) => Some(*v),
+            _ => None,
+        }),
+        _ => None,
+    };
+    ClaimReport {
+        outcome,
+        credits_delta,
+        balance,
     }
-    report
 }
 
 /// 把领取响应转成报告（纯函数，便于单测）。
-fn verdict(data: &ClaimData) -> ClaimReport {
+fn verdict(data: &ClaimData) -> ClaimOutcome {
     // 并发下可能被别处抢先领掉，上游对同一格仍会回 AlreadyClaimed。
     if data.claim_result != RESULT_CLAIMED {
-        return skip(format!("今日已签到（{}）", progress(&data.panel)));
+        return ClaimOutcome::skipped(SkipReason::AlreadyClaimed, progress_details(&data.panel));
     }
     // `points` 已含 `bonus_points`（见 `Day::points` 注释），不再相加。
     let points = data.points;
-    ClaimReport {
-        skipped: false,
-        message: format!(
-            "签到成功：第 {} 天 +{} 积分（{}）",
-            data.day_no,
-            fmt_points(points),
-            progress(&data.panel)
-        ),
-        credits_delta: Some(points),
-        balance: None,
-    }
-}
-
-/// 未领到时的统一报告（不是错误，避免 `claim.log` 假警报）。
-fn skip(message: String) -> ClaimReport {
-    ClaimReport {
-        skipped: true,
-        message,
-        credits_delta: None,
-        balance: None,
-    }
+    let mut details = vec![ClaimDetail::Day(data.day_no), ClaimDetail::Points(points)];
+    details.extend(progress_details(&data.panel));
+    ClaimOutcome::success(details)
 }
 
 /// `GET /signin/status`。
@@ -295,27 +294,30 @@ where
     Ok(pick(data))
 }
 
-/// 一行进度摘要：「连续 N 天 · 本周期 M/7」。
-fn progress(panel: &Panel) -> String {
-    let streak = panel.streak();
-    let claimed = panel.claimed_count();
-    if streak > 0 {
-        format!("连续 {streak} 天 · 本周期 {claimed}/{CYCLE_DAYS}")
-    } else {
-        format!("本周期 {claimed}/{CYCLE_DAYS}")
+/// 今日格子的明细（第几天 + 当日积分）。
+fn today_details(panel: &Panel) -> Vec<ClaimDetail> {
+    match panel.today() {
+        Some(d) => vec![ClaimDetail::Day(d.day_no), ClaimDetail::Points(d.points)],
+        None => Vec::new(),
     }
 }
 
-/// 完整描述面板，用于「今日不可签到」这类需要上下文的消息。
-fn describe(panel: &Panel) -> String {
-    let today = match panel.today() {
-        Some(d) => format!("今日第 {} 天 {} 积分", d.day_no, fmt_points(d.points)),
-        None => "面板无今日格子".to_string(),
-    };
-    format!("{today} · {}", progress(panel))
+/// 面板进度明细（连续天数 + 本周期已领）。
+fn progress_details(panel: &Panel) -> Vec<ClaimDetail> {
+    let mut out = Vec::new();
+    let streak = panel.streak();
+    if streak > 0 {
+        out.push(ClaimDetail::Streak(streak));
+    }
+    out.push(ClaimDetail::Cycle {
+        claimed: panel.claimed_count(),
+        total: CYCLE_DAYS,
+    });
+    out
 }
 
 /// 积分为整数时不显示 `.0`。
+#[allow(dead_code)]
 fn fmt_points(v: f64) -> String {
     if (v.fract()).abs() < f64::EPSILON {
         format!("{}", v as i64)
@@ -431,11 +433,14 @@ mod tests {
             panel: panel(&[(1, 3, false), (2, 3, false), (3, 3, true)]),
         };
         let r = verdict(&data);
-        assert!(!r.skipped);
-        assert_eq!(r.credits_delta, Some(1000.0));
-        assert!(r.message.contains("第 3 天"), "{}", r.message);
-        assert!(r.message.contains("+1000"), "{}", r.message);
-        assert!(r.message.contains("连续 3 天"), "{}", r.message);
+        assert!(!r.code.is_skipped());
+        assert_eq!(
+            r.result_en(),
+            "success: day 3, 1000 points, streak 3 days, cycle 3/7"
+        );
+        assert!(r.result_zh().contains("第 3 天"), "{}", r.result_zh());
+        assert!(r.result_zh().contains("1000 积分"), "{}", r.result_zh());
+        assert!(r.result_zh().contains("连续 3 天"), "{}", r.result_zh());
     }
 
     #[test]
@@ -447,15 +452,13 @@ mod tests {
             panel: panel(&[(1, 3, true)]),
         };
         let r = verdict(&data);
-        assert!(r.skipped, "已领应跳过而不是成功");
-        assert_eq!(r.credits_delta, None);
-        assert!(r.message.contains("今日已签到"));
-    }
-
-    #[test]
-    fn 跳过报告不带增量() {
-        let r = skip("x".to_string());
-        assert!(r.skipped && r.credits_delta.is_none() && r.balance.is_none());
+        assert!(r.code.is_skipped(), "已领应跳过而不是成功");
+        assert!(
+            r.result_en().starts_with("skipped: already claimed"),
+            "{}",
+            r.result_en()
+        );
+        assert!(r.result_zh().contains("今日已签到"), "{}", r.result_zh());
     }
 
     #[test]

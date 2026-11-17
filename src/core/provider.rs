@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 
+use super::claim::ClaimOutcome;
 use super::events::EventStream;
 
 /// 供应商无关的对话请求（已剥离 `供应商id/` 前缀）。
@@ -123,14 +124,35 @@ pub struct ModelInfo {
     pub rate: Option<f64>,
 }
 
+/// 签到结果。
+///
+/// 结果码与明细是**结构化**的（[`ClaimOutcome`]）：写日志时用英文，展示时用中文，
+/// 两套文案只在一处维护。
 #[derive(Debug, Clone, Default)]
 pub struct ClaimReport {
-    pub skipped: bool,
-    pub message: String,
+    /// 结果码 + 明细。
+    pub outcome: ClaimOutcome,
     /// 本次签到带来的余额变化（若可观测）。
     pub credits_delta: Option<f64>,
     /// 签到后的当前余额（若可观测）。
     pub balance: Option<f64>,
+}
+
+impl ClaimReport {
+    /// 本次没领到（今日已领 / 未开启 / 无可领福利）。
+    pub fn skipped(&self) -> bool {
+        self.outcome.code.is_skipped()
+    }
+
+    /// 写入 `claim.log` 的英文结果串。
+    pub fn result_en(&self) -> String {
+        self.outcome.result_en()
+    }
+
+    /// 展示用的一句话（中文）。
+    pub fn message_zh(&self) -> String {
+        self.outcome.message_zh()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

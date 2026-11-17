@@ -38,6 +38,7 @@ use serde::Deserialize;
 
 use super::api::{HOST, UA, get_envelope, post_envelope_with_headers};
 use super::credential::Credential;
+use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::provider::{ClaimReport, ProviderError};
 
 /// 领取端点：`/api/web/mobile/v1/login/points/grant`。
@@ -79,6 +80,19 @@ pub struct Popup {
 }
 
 impl Popup {
+    /// 英文来源标识（写 `claim.log` 用，机器可读）。
+    fn source_key(&self) -> &'static str {
+        match self.source.as_deref() {
+            Some("daily") => "daily points",
+            Some("mobile_login") => "mobile login reward",
+            Some("desktop_login") => "desktop login reward",
+            Some("new_user") => "new user gift",
+            Some("old_user") => "returning user gift",
+            Some("monthly") => "member points",
+            _ => "points",
+        }
+    }
+
     /// 人类可读的来源描述。
     fn source_label(&self) -> &str {
         match self.source.as_deref() {
@@ -113,31 +127,34 @@ pub async fn claim(
 
     if !grant.granted {
         return Ok(ClaimReport {
-            skipped: true,
-            message: "今日已领取（服务端幂等，每次登录只发一次）".to_string(),
+            outcome: ClaimOutcome::skipped(SkipReason::AlreadyClaimed, vec![]),
             credits_delta: None,
             balance,
         });
     }
 
     // 服务端下发的 `display_name` 比本地 `source` 映射准确（可能含活动名），优先用。
-    let (label, points) = match &grant.popup {
+    let (label_en, label_zh, points) = match &grant.popup {
         Some(p) => (
+            p.source_key().to_string(),
             p.display_name
                 .as_deref()
-                .unwrap_or_else(|| p.source_label()),
+                .unwrap_or_else(|| p.source_label())
+                .to_string(),
             p.points,
         ),
-        None => ("积分", None),
+        None => ("points".to_string(), "积分".to_string(), None),
     };
-    let message = match points {
-        Some(n) => format!("领取成功：{label} {n}"),
-        None => format!("领取成功：{label}"),
-    };
+    let mut details = vec![ClaimDetail::Label {
+        en: label_en,
+        zh: label_zh,
+    }];
+    if let Some(n) = points {
+        details.push(ClaimDetail::Points(n));
+    }
 
     Ok(ClaimReport {
-        skipped: false,
-        message,
+        outcome: ClaimOutcome::success(details),
         credits_delta: points,
         balance,
     })
