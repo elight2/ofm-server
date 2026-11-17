@@ -1,8 +1,9 @@
 //! MiniMax 凭证（`providers/minimax/credential.toml`）。
 //!
-//! 字段见 `provider-info/minimax.md` §1.4。`access_token` 是 JWT，但协议明确
-//! **无需解析**（只用令牌字符串），故到期判断一律用响应里的 `expires_in`
-//! 换算的 `expires_at`（毫秒）。客户端租约策略是剩余有效期 ≥ 30s（§1.4）。
+//! 字段见 `provider-info/minimax.md` §1.4。`access_token` / `refresh_token` 都是
+//! **不透明串**（`mmoat_` / `mmort_` 前缀，各 60 字符，非 JWT，无法解出到期时间），
+//! 故到期判断一律用响应里的 `expires_in` 换算的 `expires_at`（毫秒）。
+//! 客户端租约策略是剩余有效期 ≥ 30s（§1.4）。
 
 use std::path::Path;
 
@@ -13,9 +14,6 @@ use crate::core::credential;
 pub const PROVIDER: &str = "minimax";
 
 /// 提前刷新窗口（毫秒），对应官方的「剩余有效期 ≥ 30s」。
-///
-/// 步骤 5（令牌续期）接入自动刷新时启用。
-#[allow(dead_code)]
 pub const REFRESH_WINDOW_MS: i64 = 30_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +27,7 @@ pub struct Credential {
 }
 
 impl Credential {
-    /// 读取凭证。步骤 5（令牌续期）接入自动刷新时启用。
-    #[allow(dead_code)]
+    /// 读取凭证。
     pub fn load(root: &Path) -> Result<Option<Self>, credential::CredentialError> {
         credential::load(root, PROVIDER)
     }
@@ -43,9 +40,6 @@ impl Credential {
     ///
     /// `expires_at` 缺失（旧凭证/上游没给 `expires_in`）时视为需要刷新，
     /// 交给 401 或刷新逻辑兜底，避免拿一个可能已过期的令牌硬发请求。
-    ///
-    /// 步骤 5（令牌续期）接入自动刷新时启用。
-    #[allow(dead_code)]
     pub fn needs_refresh(&self) -> bool {
         now_millis() + REFRESH_WINDOW_MS >= self.expires_at
     }
@@ -71,11 +65,6 @@ mod tests {
         }
     }
 
-    // `needs_refresh` 与 `load` 属步骤 5 才接入的 API，单测先覆盖。
-    #[allow(dead_code)]
-    fn _keep(cred: &Credential) -> bool {
-        cred.needs_refresh()
-    }
     #[test]
     fn 远期凭证不需刷新() {
         assert!(!cred(now_millis() + 3_600_000).needs_refresh());

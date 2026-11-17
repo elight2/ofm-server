@@ -308,10 +308,10 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 用 refresh_token 续期（§2）。返回新令牌，调用方负责落盘。
+/// 用 `refresh_token` 续期（§2）。返回新令牌，调用方负责落盘。
 ///
-/// 步骤 5 接入（`Provider::refresh` 与 401 自动续期）时启用。
-#[allow(dead_code)]
+/// **RT 单次使用 + 轮换**：成功一次后旧 RT 立即 `invalid_grant`，
+/// 所以调用方必须串行且必须落盘（见 [`super::MinimaxProvider::refresh_locked`]）。
 pub async fn refresh(
     client: &reqwest::Client,
     refresh_token: &str,

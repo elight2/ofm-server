@@ -50,20 +50,6 @@ pub enum HttpError {
     OAuth { error: String, description: String },
 }
 
-impl HttpError {
-    /// OAuth 错误码（仅 `OAuth` 变体有）。
-    ///
-    /// 轮询路径走 [`crate::providers::minimax::auth::classify`] 直接啃响应体，
-    /// 此处留给后续步骤（§2 续期、§4 目录）区分 `invalid_grant` 之类的错误。
-    #[allow(dead_code)]
-    pub fn oauth_code(&self) -> Option<&str> {
-        match self {
-            HttpError::OAuth { error, .. } => Some(error),
-            _ => None,
-        }
-    }
-}
-
 impl From<HttpError> for crate::core::provider::ProviderError {
     fn from(e: HttpError) -> Self {
         use crate::core::provider::ProviderError as P;

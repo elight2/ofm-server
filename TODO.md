@@ -6,4 +6,4 @@
 * 图片实现修复
 * 自定义提示词
 * minimax签到
-* minimax refresh
+* minimax倍率不显示

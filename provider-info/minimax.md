@@ -240,9 +240,24 @@ body: grant_type=refresh_token&refresh_token=<RT>&client_id=mcode-public
 
 * 响应格式与设备码成功响应相同（`access_token`/`expires_in`/`refresh_token`/…）；
   若响应不带新 `refresh_token`，沿用旧 RT `[源码 oauth-client.ts:295]`
-* **本次抓包未触发刷新**（access_token 有效期内），上表为源码定论，**实测未验证** `[未验证]`
-* **本实现**已写好 `minimax/auth.rs::refresh` + 自动续期（凭证进入 30s 窗口时触发），
-  但尚未实际触发过一次——需等令牌接近到期或手动抹去 `expires_at` 才能测
+
+**实测结论（2026-11-17，两个真实账号各验一次）** `[实测]`：
+
+* 端点行为与源码一致：`200`，body 为
+  `{"access_token":"mmoat_…","expires_in":43200,"refresh_token":"mmort_…","scope":"agent.default","token_type":"Bearer"}`
+  （223 字节，响应头 `cache-control: no-store` + `trace-id`）
+* **`refresh_token` 单次使用且轮换**：成功一次后同一 RT 立刻
+  `400 {"error":"invalid_grant","error_description":"this refresh token can no longer be used, start a new authorization"}`。
+  新 RT 与旧 RT 不同，必须立即落盘，否则只能重新登录（无第二条恢复路径）
+* **新 `access_token` 立即可用**：换来的 AT 打 `/mavis/api/v1/models` 回 `200`
+* **旧 AT 失效时不会报业务码**：`GET /mavis/api/v1/models` 带旧 AT 回
+  `401 {"error":"invalid access token"}`（无信封、无 `code` 字段）
+* **AT 失效与 `expires_at` 无关**：两个账号的旧 AT 已 401，而磁盘上的 `expires_at` 仍指向未来。
+  故「只看时间窗」不够，`chat` 必须对 401 做一次刷新重试
+* **本实现**（`minimax/mod.rs`）：`Provider::refresh`（`ofm-server refresh minimax`，不检查是否临近过期）
+  + `access_token` 的 30s 窗口被动续期 + `chat` 收到 401 刷新一次后重试。
+  续期全程持 `refresh_lock` 串行，避免并发各换一次把对方 RT 打废
+* `invalid_grant` 映射为 `ProviderError::Unauthorized`，提示重新运行 `ofm-server login minimax`
 * 401 处理：对话收到 401 → 刷新一次后重试 `[源码 auth-core.ts:330 handleUnauthorized]`
 * 撤销（登出用）：`POST /oauth2/revoke`，`token=<RT>&token_type_hint=refresh_token&client_id=mcode-public` `[源码]`
 * 客户端有跨进程令牌共享（Unix socket / named pipe），我方单进程实现**不需要**
@@ -957,9 +972,15 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 解析失败 → `HttpError::Decode`；`providers` 空/`models` 缺 → 返回**空列表**
 而不是报错（目录可用但暂无模型，`status` 会显示「0 个模型」）。
 
-未测：令牌失效时的确切状态码与错误体（本次未触发）。预期为 401，
-本实现进入刷新窗口时预先续期；对话侧的 `chat` 亦复用同一 `access_token()`，
-故 401 只会出现在「凭证被服务端提前吊销」这一异常路径上（此时映射为下游 401）。
+令牌失效时的真实响应（§2 `[实测]`）：
+
+```text
+401 {"error":"invalid access token"}
+```
+
+本实现进入刷新窗口时预先续期；但 §2 实测证明**时间窗不够**（RT 被别处轮换后
+旧 AT 立即 401，而 `expires_at` 仍指向未来），故 `chat` 对 401 做一次刷新重试。
+刷新也失败（即 RT 已失效）时才映射为下游 401。
 
 ### 8.4 账号中心（登录/登出链）
 
@@ -1060,7 +1081,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | 2 | 模型列表 `GET /v1/models?region=cn&buildEnv=prod` | §4 | ✅ 已实现（`minimax/models.rs`）|
 | 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ✅ 已实现（`minimax/chat.rs` + `minimax/stream.rs`），端到端实测通过 |
 | 4 | 思考强度映射（按模型分两个落点）| §5 | ✅ 已实现：目录 `thinking_config.mode` 分流落点 + 配置五档就近映射上游档位（§5.4）|
-| 5 | 令牌续期 `refresh_token` | §2 | ⚠︎ 已写（`auth::refresh` + 自动续期），**未实测** |
+| 5 | 令牌续期 `refresh_token` | §2 | ✅ 已实现（`auth::refresh` + `Provider::refresh` + 30s 窗口被动续期 + 401 刷新重试），端到端实测通过（§2 实测结论）|
 | 6 | 签到 | §7 | ❌ 端点未知，不可实现 |
 
 余额（非 `MAINTAIN.md` 必选项）：源码有端点（§6）但无抓包，且依赖会员/工作区两条前置请求，
@@ -1079,6 +1100,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
   实际使用时由用户在自己的终端跑 `ofm-server login minimax`
 * 下游 `stream:false` 必须自己聚合 SSE（§3.8）；上游恒 `stream:true`
 * 自动刷新阈值：取令牌时剩余有效期 < 30s 就先刷新 `[源码]`；401 时刷新重试一次
+* **RT 单次使用且轮换**：续期必须串行（持锁）并立即落盘；并发各刷一次会把对方的 RT 打废（§2 实测）
 * `reasoning_effort` 档位**从目录读**（`effort_options`），不硬编码；配置五档
   (`low`~`max`) 按就近规则映射，M3 只有开/关
 * **思考落点按模型的 `thinking_config.mode` 分流**：`switchable` → 发 `thinking.type`
