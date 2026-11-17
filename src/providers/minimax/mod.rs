@@ -2,8 +2,8 @@
 //!
 //! 已实现：登录（`auth`，OAuth 设备码 + PKCE）、模型目录（`models`）、
 //! 对话（`chat`，Chat Completions ↔ anthropic-messages）、思考强度映射、
-//! 令牌续期（被动自动 + `ofm-server refresh`）。
-//! 不实现：`claim`（端点未知）、`balance`（§6 仅有源码无抓包）。
+//! 令牌续期（被动自动 + `ofm-server refresh`）、每日签到（`claim`）。
+//! 不实现：`balance`（§6 仅有源码无抓包）。
 //!
 //! 协议实况见 `provider-info/minimax.md`。关键约束：
 //! * 认证域 `account.minimax.cn` 与 API 域 `agent.minimax.cn` 分离，域名写死预设，
@@ -11,11 +11,12 @@
 //! * 登录只能半自动：设备码只是第一步，账号确认页需要微信扫码 + 绑定手机号，
 //!   我方只打印 `user_code` 与确认链接并轮询（§0 出入 4）；
 //! * 上游是 anthropic-messages 而非 Chat Completions（§3）；
-//! * 签到端点未知（§7），客户端本身无签到功能，`claim` 暂不可实现。
+//! * 签到在 `/minimax-cloud/api/v1/signin/{status,claim}`（§7）。
 
 pub mod api;
 pub mod auth;
 pub mod chat;
+pub mod claim;
 pub mod credential;
 pub mod models;
 pub mod stream;
@@ -272,21 +273,19 @@ impl Provider for MinimaxProvider {
         }))
     }
 
-    /// 签到：端点未知（§7）。
+    /// 每日签到（§7）。
     ///
-    /// 官方客户端**没有签到功能**，全网包搜 `checkin`/`sign_in`/`daily_reward`
-    /// 也无业务命中，协议文档明确「禁止推测路径」。
+    /// 端点 `/minimax-cloud/api/v1/signin/{status,claim}`，来自 TUI 源码
+    /// `packages/tui/src/checkin/http-gateway.ts`。
     ///
-    /// 这里返回 `skipped=true` 而非 `Unsupported`：自动签到循环每轮都会调
-    /// `claim`，报错会把「账号有问题」写进 `claim.log`，而事实是我们
-    /// **无从知道**该账号有没有签到——不应误报为失败。
+    /// 先查面板再决定是否领取：今日已签则直接跳过，不打写请求；
+    /// 未领到时返回 `skipped=true` 而非错误，避免 `claim.log` 每天记假警报
+    /// （自动签到循环每轮都会调 `claim`）。具体判定见 `claim.rs`。
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
-        Ok(ClaimReport {
-            skipped: true,
-            message: "无签到功能（官方客户端无签到接口，端点未知）".to_string(),
-            credits_delta: None,
-            balance: None,
-        })
+        let token = self.access_token().await?;
+        let mut cred = self.credential()?;
+        cred.access_token = token;
+        claim::claim(&self.client, &cred).await
     }
 
     /// 余额：§6 仅有源码、无抓包，且依赖会员/工作区两条前置请求，暂不实现。

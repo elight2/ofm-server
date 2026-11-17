@@ -13,7 +13,7 @@
 | `[实测]` | `ofm-server` 实现落地时的真实请求实测（2026-11-17）|
 
 抓包覆盖：完整登录链（含设备码轮询 17 次）、`/v1/models` ×1、`/v1/messages` ×26、`/messages/count_tokens` ×4。
-**未覆盖**：余额（§6 仅源码）、签到（§7 无任何证据）。
+**未覆盖**：余额（§6 仅源码）、签到（§7 由 TUI 源码取得，抓包里没有）。
 
 **实现进度**分两列：`[实测]` 标注的是本服务器实现落地时真实跑过的结果，
 §9 列了已确认项与待验项，§11 列了各步状态。
@@ -912,24 +912,95 @@ device_platform=mcode&biz_id=3&app_id=3001&version_code=22201&unix=<ms>
 
 **本次任务按用户要求未分析余额**，上表仅为源码直读，字段语义 `[未验证]`。
 
-## 7. 签到协议
+## 7. 签到协议（每日签到）
 
-**未获取端点**。抓包 61 条无签到请求；全包 `packages/` + `third_party/` 搜
-`checkin`/`check_in`/`sign_in`/`daily_reward` 也无业务命中（仅无关的定时器/文案）。
-`MiniMax Code` 客户端本身**没有签到功能**，无法从本客户端得到签到协议。
+### 7.1 端点
 
-若需实现，要么另行提供网页版/其他客户端的签到抓包，要么放弃。**禁止推测路径。**
+从 TUI 源码取得，`[源码 packages/tui/src/checkin/http-gateway.ts]`：
 
-### 本实现的处理（`ofm-server`）
+```text
+GET  https://agent.minimax.cn/minimax-cloud/api/v1/signin/status
+POST https://agent.minimax.cn/minimax-cloud/api/v1/signin/claim      body: {}
+Authorization: Bearer <access_token>
+```
 
-`Provider::claim` 返回 **`skipped = true`**，`message` 为
-`无签到功能（官方客户端无签到接口，端点未知）`，**不返回错误**。
+主机来自 `publicGatewayOrigin()`（`packages/tui/src/runtime/public-gateway.ts`）
+的 `cn/prod` = `https://agent.minimax.cn`。UI 文案「每日签到」/「今日已签到」
+对应的就是这两个端点。TUI 命令为 `/checkin`
+（`packages/tui/CHANGELOG.zh-CN.md` 第 614 行）。
 
-理由：自动签到循环（`cli/serve.rs`）每轮对每个供应商都调 `claim`，若返回 `Err`
-就会往 `providers/minimax/claim.log` 写一条「失败」，而那会把「我们无从得知该账号
-有没有签到」误报成「签到失败」。
+> 注：本文早期版本写「客户端无签到功能、端点未知」，那是**搜错了关键词**
+> （只搜了 `checkin`/`sign_in` 等英文，而实现里的路径是 `signin` 且中文文案在
+> CHANGELOG 里）。已更正。
 
-`[minimax] claim_intervals` 配置项因此**暂时无效果**，保留只为配置形状一致。
+### 7.2 必需参数（实测逐个删测）
+
+| 项 | 必需 | 说明 |
+|-|-|-|
+| `timezone_offset`（query，秒） | **是** | 缺失或非法回 HTTP 200 + `{"base_resp":{"status_code":1406010011,"status_msg":"invalid timezone_id"}}` |
+| `Authorization: Bearer` | 是 | 401 时回 `{"error":"invalid access token"}`（无业务码信封） |
+| `yy` / `x-timestamp` / `x-signature` | 否 | 源码里的客户端归属头，去掉仍 200 |
+| `user_id=<realUserID>` | 否 | 传 `0`、真实值、乱填结果一致 |
+| `device_platform` / `biz_id` / `app_id` / `version_code` / `unix` / `lang` / `sys_language` / `device_id` / `os_name` / `browser_name` / `client` | 否 | 逐个删测均仍 200 |
+| `POST` body | 是 | 必须为 `{}` |
+
+`timezone_offset` 的取值不影响返回哪一天（`0` / `-28800` / `28800` 结果相同），
+只要求是个合法值；本实现固定 `28800`。
+
+### 7.3 响应
+
+`GET status` `[实测 2026-11-17]`：
+
+```json
+{"data":{"scene":2,"days":[
+  {"day_no":1,"points":400,"status":3,"is_today":true,"bonus_points":0},
+  {"day_no":2,"points":400,"status":1,"is_today":false,"bonus_points":0}
+ ],"...":""},"base_resp":{"status_code":0,"status_msg":"ok"}}
+```
+
+`POST claim` `[实测]`：
+
+```json
+{"data":{"claim_id":"2122579540063585031","claim_result":2,"day_no":1,
+         "points":400,"expire_at_ms":1797436800000,"panel":{...}},
+ "base_resp":{"status_code":0,"status_msg":"ok"}}
+```
+
+字段语义 `[源码 packages/shared/src/daily-signin.ts]`：
+
+| 字段 | 含义 |
+|-|-|
+| `panel.scene` | `0` 未知 / `1` 首次 / `2` 进行中 / `3` 已完成 / `4` 异常 |
+| `days[].day_no` | 1–7，固定 7 天一个周期 |
+| `days[].status` | `1` 未到 / `2` 可领 / `3` 已领 / `4` 停用 |
+| `days[].is_today` | 今日那一格（全表最多一个） |
+| `days[].points` | 当日积分，**已含 `bonus_points`**，不要相加 |
+| `claim_result` | `1` 本次领取成功 / `2` 今日已领（**幂等，不是错误**） |
+
+### 7.4 本实现的处理（`ofm-server`）
+
+`src/providers/minimax/claim.rs`：
+
+* **先 GET 状态再决定是否领**：今日 `status == 3` 直接返回 `skipped`，不打 POST；
+  今日 `status == 2` 才 POST `/claim`。
+* 今日既非已领也非可领（`1`/`4`）→ `skipped`，消息里给出面板上下文，不猜原因。
+* `claim_result == 2` → `skipped`（并发被抢先，上游幂等）。
+* 业务码 `base_resp.status_code != 0` → `ProviderError::Protocol`（带 `status_msg`）；
+  HTTP 401 → `Unauthorized`。令牌过期由 `access_token()` 先被动续期。
+* 消息示例：`今日已签到（连续 1 天 · 本周期 1/7）`、
+  `签到成功：第 3 天 +1000 积分（连续 3 天 · 本周期 3/7）`。
+* 连续天数算法与客户端 `getCurrentSigninStreak` 一致：今日已领从今日起算，
+  今日可领从**昨天**起算，遇到非 `3` 即停。
+
+`balance` 仍返回 `None`（见 §6），故 `ClaimReport.balance` 恒为空，
+`claim.log` 里只有 `delta` 有值。
+
+### 7.5 未验证
+
+* 实际「首次领取成功」(`claim_result == 1`) 未触发过 —— 测试账号今日已签，
+  只验证了幂等路径 (`claim_result == 2`)。分支逻辑有单测覆盖
+  （`claim.rs` 的 `领取成功报告含天数与积分`）。
+* `scene` 其它取值（首次 / 已完成 / 异常）下的面板形状未采集。
 
 ## 8. 上游异常响应
 
@@ -1051,7 +1122,8 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 * [ ] `context_window_options` 里 1000000 的切换方式（请求字段还是目录变体）
 * [ ] 海外 `region=en` 的域名与参数
 * [ ] 余额端点（§6）：仅有源码，无抓包；服务域名/`opGroupId` 来源链未实测
-* **签到端点完全不知**（§7）：客户端无此功能，需另供抓包
+* [x] 签到端点与必需参数（§7）：`/minimax-cloud/api/v1/signin/{status,claim}`，
+  仅需 `timezone_offset` + `Authorization`；已实现并实测（今日已签幂等路径）
 
 ## 10. 参考文件
 
@@ -1068,6 +1140,9 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | `packages/local-runtime-v2/src/service/model-system/connectivity/provider-request.ts` | `providerCompletionUrl`/`providerModelsUrls`/`buildProviderHeaders` |
 | `third_party/pi-mono/packages/ai/src/providers/anthropic.ts` | SSE 解析、图片块转换、`forceAdaptiveThinking` 与 beta 头规则 |
 | `packages/tui/src/account/matrix-account-client.ts` | 账号身份/会员/额度（余额）端点、`yy` 签名头、旧的 `renewal` 续期 |
+| `packages/tui/src/checkin/http-gateway.ts` | **签到端点**（`/minimax-cloud/api/v1/signin/{status,claim}`）|
+| `packages/tui/src/runtime/public-gateway.ts` | 签到用的 `publicGatewayOrigin` 与 `yy`/`x-signature` 构造 |
+| `packages/shared/src/daily-signin.ts` | 签到面板/领取的字段语义与校验 |
 | `test/capture_output/minimax_requests.jsonl` | 抓包原文（61 条）|
 | `test/minimax_capture.py` | 抓包脚本（**注意**：只保存 JSON 响应体，SSE 流未保存）|
 
@@ -1082,12 +1157,12 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ✅ 已实现（`minimax/chat.rs` + `minimax/stream.rs`），端到端实测通过 |
 | 4 | 思考强度映射（按模型分两个落点）| §5 | ✅ 已实现：目录 `thinking_config.mode` 分流落点 + 配置五档就近映射上游档位（§5.4）|
 | 5 | 令牌续期 `refresh_token` | §2 | ✅ 已实现（`auth::refresh` + `Provider::refresh` + 30s 窗口被动续期 + 401 刷新重试），端到端实测通过（§2 实测结论）|
-| 6 | 签到 | §7 | ❌ 端点未知，不可实现 |
+| 6 | 签到 `GET /signin/status` + `POST /signin/claim` | §7 | ✅ 已实现（`minimax/claim.rs`），已实测（幂等路径；首次领取未触发）|
 
 余额（非 `MAINTAIN.md` 必选项）：源码有端点（§6）但无抓包，且依赖会员/工作区两条前置请求，
 实现成本高于对话主链，建议后续再做。
 
-实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`chat`/`stream`/`mod`）。
+实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`chat`/`stream`/`claim`/`mod`）。
 
 要点：
 
