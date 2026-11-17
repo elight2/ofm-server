@@ -14,7 +14,7 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
 
     spawn_claim_loops(registry.clone(), &config, root.clone())?;
 
-    let state = AppState { registry };
+    let state = AppState { registry, root };
     server::run(state, &config).await?;
     Ok(())
 }

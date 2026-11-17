@@ -10,6 +10,9 @@ use axum::routing::{get, post};
 use futures_util::StreamExt;
 
 pub mod openai;
+pub mod prompt;
+
+use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::core::registry::Registry;
@@ -18,6 +21,8 @@ use crate::server::openai::{request as reqconv, translate, types};
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Arc<Registry>,
+    /// 运行目录，用于定位 `<root>/prompts/<供应商id>.md`。
+    pub root: PathBuf,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -92,7 +97,7 @@ async fn chat_completions(State(app): State<AppState>, body: String) -> Response
     let include_usage = req.stream_options.map(|o| o.include_usage).unwrap_or(false);
     let requested_model = req.model.clone();
 
-    let preq = match reqconv::to_provider_request(model, req) {
+    let mut preq = match reqconv::to_provider_request(model, req) {
         Ok(p) => p,
         Err(e) => {
             return openai::error_response(
@@ -103,6 +108,12 @@ async fn chat_completions(State(app): State<AppState>, body: String) -> Response
             );
         }
     };
+
+    // 自定义系统提示词：追加在客户端自带 system 之后（README「配置信息」）。
+    // 读文件失败/不存在都只是不注入，绝不阻断请求。
+    if let Some(prompt) = prompt::load(&app.root, &provider_id) {
+        prompt::apply(&mut preq, &prompt);
+    }
 
     let ctx = translate::Ctx {
         id: gen_id(),

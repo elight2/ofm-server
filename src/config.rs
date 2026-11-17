@@ -18,6 +18,9 @@ pub const PROVIDERS_DIR: &str = "providers";
 /// 凭证文件名（位于 `providers/<id>/` 下）。
 pub const CREDENTIAL_FILE: &str = "credential.toml";
 
+/// 自定义系统提示词目录。`<root>/prompts/<供应商id>.md` 追加到系统提示词之后。
+pub const PROMPTS_DIR: &str = "prompts";
+
 /// 内嵌的默认配置 = 仓库根的 `config.example.toml`。
 ///
 /// 它是**默认值的唯一真相**：`Config::default()` 直接解析这份文本，
@@ -364,6 +367,13 @@ impl Config {
     /// 某供应商的凭证文件 `<root>/providers/<id>/credential.toml`。
     pub fn credential_path(root: &Path, provider: &str) -> PathBuf {
         Self::provider_dir(root, provider).join(CREDENTIAL_FILE)
+    }
+
+    /// 某供应商的自定义系统提示词 `<root>/prompts/<id>.md`。
+    ///
+    /// 文件不存在即不注入，无需预先创建。
+    pub fn prompt_path(root: &Path, provider: &str) -> PathBuf {
+        root.join(PROMPTS_DIR).join(format!("{provider}.md"))
     }
 }
 
