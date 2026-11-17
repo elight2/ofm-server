@@ -32,7 +32,7 @@
 |-|-|
 | `temperature` / `top_p` / `top_k` | 官方客户端 26 次对话**一次都没发**（官方 UI 无此设置）。上游是否接受 `[未验证]` |
 | `stop_sequences` / `metadata` / `service_tier` | 同上，从未发送 `[抓包]` |
-| `tool_choice` | 从未发送 `[抓包]`；`count_tokens` 的允许字段里有它 `[源码]`，对话是否生效 `[未验证]` |
+| `tool_choice` | 官方客户端从未发送 `[抓包]`；但**上游实际支持**——四种形态均实测 200（§3.4），可正常映射 |
 | `n>1` | 无 Anthropic 对应字段，`[未验证]` |
 | `response_format: json_object` | Messages 侧映射到 `output_config.format`（`{type:"json_schema",schema}`）`[源码 local-turn-payload-transform.ts]`，官方对话未走到该分支 `[未验证]` |
 | `logprobs` / `seed` / `user` / `prompt_cache_*` | 无；缓存只用 Anthropic `cache_control`（见 §3.5） |
@@ -46,8 +46,11 @@
    源码 `packages/config/src/config.ts:1579` 把 `cn-prod` 预设定义为 `agent.minimax.cn`，
    把 `agent.minimaxi.com` 列入 `LEGACY_MANAGED_PRESET_BASE_URLS`。
    → **实现用预设域名，忽略目录里的 `baseURL`**，否则可能吃重定向或旧网关行为差异 `[抓包 + 源码]`
-2. **思考强度有两个落点，按模型分**：`MiniMax-M3` 用 `thinking.type`；
-   `MiniMax-M3.1-Flash` 用顶层 `output_config.effort`，且**不发 `thinking`**（见 §5）
+2. **思考强度有两个落点，按模型分，且互不通用**：`MiniMax-M3` 只认 `thinking.type`
+   （`adaptive`/`disabled`），发 `output_config.effort` 完全无效；
+   `MiniMax-M3.1-Flash` 只认 `output_config.effort`（真实档位，单调生效），
+   发 `thinking.type=disabled` 会被 **HTTP 400** 拒绝。另需注意官方 UI 显示的
+   M3 档位 `on`/`off` 是客户端内部字面量，直接发上游会被**静默忽略**（见 §5.2）
 3. **`count_tokens` 与 `/messages` 的 body 白名单不同**：`count_tokens` 必须在边界剥掉
    `max_tokens`/`output_config`/`tools[].eager_input_streaming`，否则严格端点 400
    `[源码 messages-count-tokens-payload.ts:27]`
@@ -58,7 +61,10 @@
 6. **令牌不是 JWT**（2026-11-17 实测更正）：本文件早前写「access_token 是 JWT」，
    实际是不透明串 `mmoat_…` / `mmort_…`（各 60 字符），无 `.` 分隔，
    **无法从令牌读到期时间**，只能用 `expires_in` 自算。详见 §1.4
-7. **浏览器必须由用户在图形会话里打开**：`xdg-open` 在没有 `DISPLAY`/`WAYLAND_DISPLAY`
+7. **上游会静默忽略不认识的思考字段**：M3 收到 `thinking.type=off`/`on`/`enabled`
+   或 `output_config.effort` 都不报错，照常思考；只有 `disabled` 真正关闭。
+   即「发了字段 ≠ 生效」，实现时不能靠不报错来判断是否生效（§5.2）
+8. **浏览器必须由用户在图形会话里打开**：`xdg-open` 在没有 `DISPLAY`/`WAYLAND_DISPLAY`
    的环境（ssh、agent 会话等）下仍会 `spawn` 成功但不打开任何窗口，
    会产生「以为已打开、实际在等一个用户看不到的 `user_code`」的假象
 
@@ -679,6 +685,10 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 | `MiniMax-M3` | `switchable`（默认 `"true"`） | `thinking`：`{"type":"adaptive"}` / `{"type":"disabled"}` | 二值开关，**无档位** |
 | `MiniMax-M3.1-Flash` | `forced_on` | `output_config`：`{"effort":"…"}`，**不发 `thinking`** | `default`/`low`/`medium`/`high`/`xhigh`/`max` |
 
+⚠️ 上表「允许值」是**上游实际接受的字段值**，不是客户端 UI 的档位名。
+官方 UI 对 M3 显示 `on`/`off`，但那是客户端内部字面量，会在发请求前被翻译成
+`adaptive`/`disabled`；把 `on`/`off` 直接发给上游会被**静默忽略**（§5.2 实测）。
+
 抓包交叉验证（26 次，按模型与字段组合计数）：
 
 | 模型 | thinking | output_config | 次数 |
@@ -710,7 +720,55 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 * 档位集合**禁止硬编码**，随目录 `effort_options` 变化；`default_effort` 为默认值
 * M3 的 `enabled` 取自 `effort==='on'`，且 `minimumMaxTokens = 1024`（防止关思考时 max_tokens 过小导致空响应）`[源码 thinking.ts:102]`
 * 内部 pi 档位名只是运输键：`thinkingLevelMap: {high: <用户值>}`，让 pi 的 `high` 透传成原值 `[源码]`
-* 各档实际思考深度差异 `[未验证]`（本次未做 token 计数对照实验）
+
+#### 上游真实接受范围 `[实测 2026-11-17]`
+
+上文「M3 的档位值是字面量 `on`/`off`」说的是**官方客户端 UI 的内部取值**，
+它在上游请求体里被翻译成 `thinking.type: adaptive|disabled`。
+直接把这些字面量发到上游会被**静默忽略**（不报错、照常思考）——这点极易踩坑，故单列实测结果。
+
+固定 prompt（概率推导题，`max_tokens=3000`），读 `message_delta.usage.output_tokens_details.thinking_tokens`：
+
+**M3（`switchable`）**
+
+| 请求字段 | 结果 |
+|-|-|
+| `thinking:{"type":"adaptive"}` | ✅ 开思考，132 / 175 / 233（3 次） |
+| `thinking:{"type":"disabled"}` | ✅ **真正关闭**，0 / 0 / 0（3 次） |
+| `thinking:{"type":"enabled"}` | ⚠️ 静默忽略，仍思考（141） |
+| `thinking:{"type":"on"}` | ⚠️ 静默忽略，仍思考（89） |
+| `thinking:{"type":"off"}` | ⚠️ 静默忽略，仍思考，97 / 101 / 137（3 次） |
+| `output_config:{"effort":"…"}`（`low`~`max` 5 档） | ❌ **完全无效**，79~250 全落在单档噪声范围内 |
+| 只发 `output_config`、**不发** `thinking` | ❌ **完全不思考**（thinking_tokens 恒 0） |
+| `thinking:{"type":"adaptive","budget_tokens":N}` | ❌ 无规律（1024→107、4096→217、16000→158、32000→95） |
+
+→ **M3 只有开/关二值可控**，档位概念在 M3 上不存在。`on`/`off` 是客户端内部字面量，
+**不能**直接当上游字段值用；`budget_tokens` 不被识别。
+
+**M3.1-Flash（`forced_on`）**
+
+| 请求字段 | 结果 |
+|-|-|
+| `output_config:{"effort":"low"}` | ✅ 46 / 65 / 69 |
+| `output_config:{"effort":"medium"}` | ✅ 75 / 76 / 78 |
+| `output_config:{"effort":"high"}` | ✅ 70 / 70 / 114 |
+| `output_config:{"effort":"xhigh"}` | ✅ 82 / 89 / 129 |
+| `output_config:{"effort":"max"}` | ✅ 125 / 218 / 266 |
+| `output_config:{"effort":"default"}` | 与省略字段无差别（76/152/73 vs 93/136/97，噪声内相同） |
+| 完全省略两个字段 | 正常思考（93 / 136 / 147） |
+| `thinking:{"type":"disabled"}` | ❌ **HTTP 400** `invalid params, model …` |
+| `thinking:{"type":"off"}` | ⚠️ 静默忽略，照常思考 |
+
+→ **Flash 的 `effort` 是真实档位**，单调生效（相邻档有重叠：`high` 有时低于 `medium`，
+但整体趋势 clear）。`default` 与不传等价，`none` 不允许（同 `disabled`）。
+
+**结论差异表**
+
+| 控制手段 | M3 | M3.1-Flash |
+|-|-|-|
+| `thinking.type` | ✅ 唯一有效手段（`adaptive`/`disabled`） | ❌ `disabled` 会 400，其余静默忽略 |
+| `output_config.effort` | ❌ 完全无效 | ✅ 唯一有效手段 |
+| 省略全部字段 | 不思考 | 正常思考（等于 `default`） |
 
 ### 5.3 `anthropic-beta: interleaved-thinking-2025-05-14`
 
@@ -726,19 +784,29 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 
 | `[minimax] reasoning_effort` | M3 | M3.1-Flash |
 |-|-|-|
-| `none` | `thinking:{"type":"disabled"}` | 不在 `effort_options` 里 → `[未验证]`，建议不发 `output_config` |
+| `none` | `thinking:{"type":"disabled"}` | **不发任何思考字段**（`none`/`disabled` 都会被 400 拒，§5.2） |
 | `low` | `thinking:{"type":"adaptive"}` | `output_config:{"effort":"low"}` |
 | `medium` | 同上 | `{"effort":"medium"}` |
 | `high` | 同上 | `{"effort":"high"}` |
 | `xhigh` | 同上 | `{"effort":"xhigh"}` |
 | `max` | 同上 | `{"effort":"max"}` |
 
-M3 只有开/关，所以 `low`~`max` 对 M3 **全部等价于开思考**，属上游能力限制，需在 `PROVIDERS.md` 说明。
+两条硬约束（§5.2 实测）：
 
-**实现状态**：配置已就位（`config.rs` 的 `MinimaxReasoningEffort`，含
-`effort_value()` / `m3_thinking_enabled()` 两个映射函数，均有单测），但**尚未接进请求体**
-——需第 3 步（对话）先把请求构造做完。代码默认 `low`，`config.example.toml`
-示例写的是 `medium`（示例取中位，代码取保守值）。
+* **M3 只有开/关**，`low`~`max` 对 M3 **全部等价于开思考**，属上游能力限制；
+  对 M3 **绝不能**发 `output_config`（无效）或 `on`/`off`（静默忽略）。
+* **Flash 绝不能发 `thinking`**：`disabled` 会被 HTTP 400 拒，`off` 被静默忽略。
+  档位只能走 `output_config.effort`。
+
+**实现状态**：已接入请求体（`minimax/chat.rs` 的 `thinking_fields`），
+落点由每轮拉取的目录 `models[<model>].thinking_config.mode` 分流：
+`forced_on` → 只发 `output_config.effort`；其余（含目录拉取失败）→ 只发 `thinking.type`。
+`effort_value()` / `m3_thinking_enabled()` 两个映射函数另有单测。
+
+**已知限制**：思考档位目前是**全局配置固定值**（`[minimax] reasoning_effort`），
+下游请求（如 pi 的 `:high`/`:max`）传不进来——`core::provider::ChatRequest` 无对应字段，
+`server/openai/request.rs` 也不解析。要支持按请求调节，需先扩展 `ChatRequest`。
+代码默认 `low`，`config.example.toml` 示例写的是 `medium`（示例取中位，代码取保守值）。
 
 ## 6. 余额获取
 
@@ -910,6 +978,10 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 * [x] 错误响应体形状（HTTP 400，见 §8.2）
 * [x] 端到端：`/v1/chat/completions` 流式/非流式、工具调用、多轮工具回传、
   `reasoning_content`、usage 全部经 `ofm-server` 打通
+* [x] **上游思考强度字段的真实接受范围**（§5.2）：M3 只认 `thinking.type` 的
+  `adaptive`/`disabled`，`on`/`off`/`enabled` 与 `budget_tokens`、`output_config.effort`
+  全部无效；Flash 只认 `output_config.effort`，`effort` 单调生效（low≈65 → max≈218
+  thinking_tokens），`thinking.type=disabled` 会被 400 拒
 
 ### 待验
 
@@ -961,7 +1033,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | 1 | 登录（设备码 + 轮询）写 `credential.toml` | §1.1/§1.2 | ✅ 已实现（`minimax/auth.rs`）|
 | 2 | 模型列表 `GET /v1/models?region=cn&buildEnv=prod` | §4 | ✅ 已实现（`minimax/models.rs`）|
 | 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ✅ 已实现（`minimax/chat.rs` + `minimax/stream.rs`），端到端实测通过 |
-| 4 | 思考强度映射（按模型分两个落点）| §5 | ✅ 已实现（`chat::thinking_fields`），随第 3 步一并接入请求体 |
+| 4 | 思考强度映射（按模型分两个落点）| §5 | ⚠︎ 落点分流已实现（`chat::thinking_fields`），但档位只能由配置文件设定，**下游请求传不进来**（`ChatRequest` 无该字段）|
 | 5 | 令牌续期 `refresh_token` | §2 | ⚠︎ 已写（`auth::refresh` + 自动续期），**未实测** |
 | 6 | 签到 | §7 | ❌ 端点未知，不可实现 |
 
@@ -987,3 +1059,5 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
   （实测 M3.1-Flash 发 `thinking.type=disabled` 会被 400 拒）。目录查不到时按 `switchable` 处理。
   每轮对话会拉一次目录来判定，失败降级不影响对话本身。
 * **`prompt_tokens` 必须算 `input_tokens + cache_read_input_tokens`**（§3.6 关键陷阱）
+* 思考字段**绝不能混发**：M3 会静默忽略 `output_config`，Flash 会用 400 拒绝 `thinking.type=disabled`
+* M3 的 `on`/`off` 是官方客户端内部字面量，**不是**上游字段值；发到上游等于没发（§5.2）
