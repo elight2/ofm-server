@@ -27,6 +27,12 @@ pub const PROMPTS_DIR: &str = "prompts";
 /// 代码里不再重复写一份常量。改默认值只改这个文件。
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../config.example.toml");
 
+/// 内嵌的默认系统提示词 = 仓库根的 `default-prompts.md`。
+///
+/// 同 [`DEFAULT_CONFIG_STR`]：它是**默认提示词的唯一真相**，运行目录下没有
+/// `<root>/prompts/<供应商id>.md` 时用它，代码里不重复写一份常量。
+pub const DEFAULT_PROMPTS_STR: &str = include_str!("../default-prompts.md");
+
 /// 未在 `[<provider>]` 表中写出 `claim_intervals` 时的兜底签到间隔（秒）。
 ///
 /// 取值为 6 小时，与 `config.example.toml` 的兜底说明保持一致。
