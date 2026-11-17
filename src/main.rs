@@ -32,7 +32,23 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn init_tracing() {
+    use std::io::IsTerminal;
     use tracing_subscriber::{EnvFilter, fmt};
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt().with_env_filter(filter).with_target(false).init();
+
+    // 只有终端才上色：重定向到文件、或由 systemd 接入 journald 时不上色。
+    //
+    // `tracing-subscriber` 的 `Layer::default()` 把 `is_ansi` 硬编码为 `true`
+    // （只看编译期 `ansi` feature 与 `NO_COLOR`，**不看 stdout 是不是 tty**），
+    // 不管输出到哪都写 `\x1b[2m` 之类转义。journald 会把这些控制字符原样存进
+    // 日志正文（`journalctl -o cat` / `-o json` 可见），日志收集器拿到的是脏数据。
+    let ansi = std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_ansi(ansi)
+        .init();
 }
