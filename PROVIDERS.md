@@ -4,3 +4,4 @@
 |TRAE|trae|字节|kimi pro模型和qwen4max是会员专属|
 |商汤小浣熊|raccoon|商汤|限速较低|
 |华为云 CodeArts Agent|codearts|华为云|部分模型是"限时体验"|
+|MiniMax Code|minimax|MiniMax|需微信扫码+手机号绑定才能登录;无签到功能;`MiniMax-M2.7` 在 `whitelist` 但不在 `models`,不可用|
