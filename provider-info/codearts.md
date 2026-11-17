@@ -21,18 +21,6 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 
 **本机 x86_64、安装包为 arm64，从未运行官方客户端**，故没有 `[抓包]` 证据。
 
-## UA / 客户端标识 `[打包JS]`
-
-不同进程发不同头，**不可混用**：
-
-| 发起进程 | 头 | 值 |
-|-|-|-|
-| kernel → 内部 HTTP | `User-Agent` | `AgentKernel/1.0`（offset 102046206 附近，node `d.request` 探测本机服务） |
-| kernel → inferhub | `x-ot-client-type` / `x-ot-client-version` / `x-ot-function` | CLI 模式固定 `CLI` / `126.11.1-20261110192452` / `agent-tui`；非 CLI 取调用方传入或空串 |
-| 华为 SDK（IAM/AKSK 签名） | `User-Agent` | `huaweicloud-usdk-nodejs/3.0`（offset 8892390，SDK 内 `_request` 默认，若调用方已设则**前缀拼接**为 `huaweicloud-usdk-nodejs/3.0 <原值>`） |
-| extension → 华为云 API | `User-Agent` | `DevKit-VSCode:<n>\|<r>:D1` |
-| OTel 上报 | `User-Agent` | `OTel-OTLP-Exporter-JavaScript/0.213.0` |
-
 ## 0. 总结
 
 * 客户端版本：app `26.11.100`（distro `d7ca751ba65ff48109f0f0a86178d1d659b4e399`），扩展 `huaweicloud.codearts-snap` `26.11.100`，kernel 内部 `VERSION="126.11.1-20261110192452"` `[打包JS]`
@@ -51,7 +39,7 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 | `user` | 同上 `[打包JS]`，但会被 `user-msg-id` 等自有头替代语义 |
 | `prompt_cache_*` | 无；上游以 `wl()` 返回 `cacheRead`/`cacheWrite` 统计（见 §3.4） |
 | 音频/视频输入 | 无 |
-| `--` 图片输入 | 有，但走多模态模型白名单（见 §4.4） |
+| 图片输入 | 有，但走多模态模型白名单（见 §4.3） |
 
 ### 本协议与官方客户端的出入
 
@@ -62,11 +50,9 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 5. **续期有两套、签到只有一套**：续期 IDE 带 `code_verifier`、kernel 不带且加
    `x-agent-user-account`（§2.1）；端到端只有 `refresh_token` 重放一条链路，
    `snap-manager/v1/token/renew` 是死声明（§2.3）。
-   签到只有 `/v1/ops/*` 一套（§7.2），与官方的差异仅是额外要求 `Agent-Type` 头。
+   签到只有 `/v1/ops/*` 一套（§8.2），与官方的差异仅是额外要求 `Agent-Type` 头。
 6. **签到不复刻 UI 面板**：官方在综合栏「限时福利」面板手动点「每日领取」；server 由
    `claim` 子命令直接调 `/v1/ops/{delivery,claim,confirm}`，幂等键自生成。
-
----
 
 ### 域名 `[打包JS，product.json + 全量 grep]`
 
@@ -79,14 +65,26 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 | `iamStsOpenDomain` | `https://sts.cn-north-4.myhuaweicloud.com` | 登录换 token：`/v1/oauth2/tokens`、`/v5/caller-identity` |
 | `codeartsWebNewUrl`（=`portalHcAuthorizeUrl`） | `https://codearts.huaweicloud.com` | OAuth 授权页 `/portal/authorize`、跳转 `/portal/login` |
 | `codeartsWebUrl`（=`toolkitHcOpenWebUrl`） | `https://devcloud.cn-north-4.huaweicloud.com` | 旧门户 |
-| **账户积分余额** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/snap-manager/v1/statistics/plugin`（见 §5.1） |
+| **账户积分余额** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/snap-manager/v1/statistics/plugin`（见 §6.1） |
 | 福利模型额度（内网） | `https://snapengine-apig.cn-north-7.myhuaweicloud.com` | `/api/v1/benefit/claim`、`/api/v1/user/tokens/balance`、`/api/v1/gateway/config` |
 | 福利模型额度（生产商用） | `https://opengw.developer.huaweicloud.com` | 同上；选择式 `MFn() = H()&&IS_PROD!=="true" ? 内网 : 生产`（`DFn()`）。**不是余额端点** |
-| **限时福利 / 每日签到** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/v1/ops/delivery`、`/v1/ops/claim`、`/v1/ops/confirm`、`/v1/ops/invite/generate`、`/v1/ops/tasks/conversation`（见 §7.2）。**与上面 benefit-service 完全无关**：workbench 用 `productService.snapEngineUrl`，扩展用 `policyCenterDomain`，两者在生产环境都指向本域名 |
+| **限时福利 / 每日签到** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/v1/ops/delivery`、`/v1/ops/claim`、`/v1/ops/confirm`、`/v1/ops/invite/generate`、`/v1/ops/tasks/conversation`（见 §8.2）。**与上面 benefit-service 完全无关**：workbench 用 `productService.snapEngineUrl`，扩展用 `policyCenterDomain`，两者在生产环境都指向本域名 |
 | 内网兜底 | `http://snapengine.codemate.cce.prod-kwe-g.dragon.tools.huawei.com/api/v2/` | `py.inferhubBaseUrl` 默认值（offset 103554750） |
 | OTel | `collector-agents-access.{cn-north-4,ap-southeast-1}.myhuaweicloud.com` | `/collector/v1/traces`、`/collector/v1/logs` |
 
 `isCommercialVersion:true`、`isNewFramework:true`、`externalBrandName:"CodeArts Agent"`、`isSupportWebUrl:false` `[product.json]`。
+
+### UA / 客户端标识 `[打包JS]`
+
+不同进程发不同头，**不可混用**：
+
+| 发起进程 | 头 | 值 |
+|-|-|-|
+| kernel → 内部 HTTP | `User-Agent` | `AgentKernel/1.0`（offset 102046206 附近，node `d.request` 探测本机服务） |
+| kernel → inferhub | `x-ot-client-type` / `x-ot-client-version` / `x-ot-function` | CLI 模式固定 `CLI` / `126.11.1-20261110192452` / `agent-tui`；非 CLI 取调用方传入或空串 |
+| 华为 SDK（IAM/AKSK 签名） | `User-Agent` | `huaweicloud-usdk-nodejs/3.0`（offset 8892390，SDK 内 `_request` 默认，若调用方已设则**前缀拼接**为 `huaweicloud-usdk-nodejs/3.0 <原值>`） |
+| extension → 华为云 API | `User-Agent` | `DevKit-VSCode:<n>\|<r>:D1` |
+| OTel 上报 | `User-Agent` | `OTel-OTLP-Exporter-JavaScript/0.213.0` |
 
 ## 1. 登录方式
 
@@ -641,7 +639,7 @@ raw = 原始 usage
 
 * `POST {SNAP_GATEWAY}/api/v2/chat/completions`，`stream:true`；非流式由 server 聚合。
 * AKSK 签名头：`content-type`、`x-sdk-content-sha256`（body SHA256）、
-  `x-security-token`；**不发 `maas_type`**（见 §5.5）；trace/model 头在签名后追加。
+  `x-security-token`；**不发 `maas_type`**（见 §6.5）；trace/model 头在签名后追加。
 * 请求体：`model`/`messages`/`stream`/`max_tokens:65536`/`tool_stream`/`tools`/
   `tool_choice`/`prompt_cache_key`；assistant 历史恒带 `reasoning_content`。
 * 响应：标准 CC SSE，解析 `content`、`reasoning_content`/`reasoning`、`tool_calls`、
@@ -655,7 +653,7 @@ raw = 原始 usage
 * 首帧租户冻结/内容安全扫描/客户端断开取消未复刻。
 * ~~`glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型带 `maas_type:benefit` 返回
   `APIG.0101.404`~~ —— **已定位为发送方错误**：`maas_type` 本身导致 404，与模型无关，
-  现完全不发送。见 §5.5。
+  现完全不发送。见 §6.5。
 
 **已实测**：`GLM-5.2` 流式/非流式、工具调用（`get_time`）、工具结果回传均正常；
 `test` 用户的 pi 通过本地 `ofm` provider 完成纯文本对话和工具获取系统信息测试。
@@ -672,7 +670,7 @@ raw = 原始 usage
 > Content-Type: application/json
 > Agent-Type: PromptCenter
 > X-Language: zh-cn
-> X-Security-Token: <security_token>   # 参与 AKSK 签名（SDK-HMAC-SHA256，同 §4.5 算法族）
+> X-Security-Token: <security_token>   # 参与 AKSK 签名（SDK-HMAC-SHA256，同 §4.4 算法族）
 > X-Sdk-Content-Sha256: UNSIGNED-PAYLOAD   # payload hash 固定值，不是空体 SHA256
 > ```
 >
@@ -689,10 +687,10 @@ raw = 原始 usage
 > - benefit-service `opengw…/api/v1/gateway/config`：AKSK 签名被服务端接受（HTTP 200），
 >   但业务恒报 `{"error_code":"4000","error_msg":"invalid channel, group not found"}`——账号未
 >   开通权益（extension 先查 `{policyCenterDomain}/v1/benefit-gateway-config`，`enabled=false`
->   时不走 benefit 网关），属预期；已开通权益的账号才会从 `gateway/config`（§5.4）拿到福利模型。
+>   时不走 benefit 网关），属预期；已开通权益的账号才会从 `gateway/config`（§6.4）拿到福利模型。
 > - xCenter/agent-center（§4.1/4.2）：商业版内核 `XCENTER_BASE_URLS=[]`、`CODEAGENT_ID=""`
 >   硬编码为空，`BD()` 直接短路，整条路径禁用。
-> - extension PromptCenter（§4.3）：商业版 `x-auth-token` 为空串（`Tr()`：`isDefaultToken=false`
+> - extension PromptCenter（§4.2）：商业版 `x-auth-token` 为空串（`Tr()`：`isDefaultToken=false`
 >   且非内部版 → `""`），不可复刻。
 > - 内部域名 `snapengine-apig.cn-north-7.myhuaweicloud.com`：仅 `IS_PROD!="true"` 的 HC 内部
 >   环境生效，公网 DNS 不解析。
@@ -729,7 +727,60 @@ X-Security-token: <security_token>     # 可选
 `ensureValidToken` 失败仅 warn `ensureValidToken failed, will attempt cache fallback`。
 ACP 模式下失败仅 warn `loadXCenterModels failed in ACP mode, continuing with local config models`。
 
-### 4.2 thinking variants `[打包JS]`
+### 4.2 IDE 扩展：PromptCenter `[打包JS]`
+
+| 端点 | 用途 |
+|-|-|
+| `GET {policyDomain}/v1/model/builtin` | 内置模型列表（`getModelBuiltinList`，返回 `builtinModels[]`） |
+| `GET {policyDomain}/v1/third-party-model/model/list?page_num=1&page_size=100` | 第三方模型（`getThirdPartyModelList`，返回 `list[]`） |
+| `GET {policyDomain}/v1/llm/vendors` | 供应商 |
+| `GET {policyDomain}/v1/llm/tenant/settings` | 读 `third_party_model_enabled`（自定义模型开关） |
+| `GET {policyDomain}/v1/default/models` | `_getAllmodels` |
+| `GET {policyDomain}/v1/model/credit-ratio` | `creditRatioDisplay`（`credit[].ratio_display` join `" "`） |
+
+共同 headers：
+```
+x-snap-traceid: <uuid 去 ->
+Content-Type: application/json
+x-auth-token: <accessToken>        # 注意不是 AKSK
+Agent-Type: PromptCenter           # 第三方模型列表用小写 agent-type
+X-Language: zh-cn
+```
+缓存 TTL `SETTING_PAGE_CACHE_TTL`；日志 `getModelBuiltinList cache hit, count:{0}`、`getThirdPartyModelList skipped: packageType is {0}`。
+
+`checkCustomModelPermission`（`NV()`）：
+token = `n.userToken || n.userInfo?.accessToken`；`Asu()` 为空 → `{allowCustomModel:false}`；
+逐 URL fallback，headers `Osu(...)`；异常 → 日志 `tenant settings API error, treating as free version` + `{allowCustomModel:true}`。
+日志 `checkCustomModelPermission start`、`trying baseUrl`、`all fallback urls exhausted`。
+
+### 4.3 多模态模型白名单 `[打包JS]`
+
+CLI 模式默认：`["Qwen3.6-27B-VL","Qwen3.5-397B-A17B-VL"]`；IDE 模式再加 `"Qwen3-VL-235B"`。
+过滤函数 `hw(_)`。缓存 `wD=600000`ms。
+图片输入仅在模型命中白名单时可用，否则报 `未获取到可用的多模态模型` / `No multimodal model is available`。
+
+### 4.4 AKSK 签名（模型详情请求用）`[打包JS]`
+
+`signSimple`（`YLn(n,u,t,i)`）：
+
+```
+X-Sdk-Date:            YYYYMMDDTHHmmssZ (ISO8601 无分隔)
+Host:                  <host>
+X-Sdk-Content-Sha256:  UNSIGNED-PAYLOAD
+X-Security-Token:      <security_token>
+canonical = [ method, pathname + "/", "", canonicalHeaders, signedHeaders, "UNSIGNED-PAYLOAD" ]
+Authorization: SDK-HMAC-SHA256 Access=<ak>, SignedHeaders=<signedHeaders>, Signature=<hex>
+```
+日志 `signSimple start` / `signSimple: parsed URL` / `signSimple: final signed headers`（Authorization 打码）。
+
+---
+
+## 5. reasoning_effort 字段映射
+
+**官方客户端有思考强度 UI，但档位集合是逐模型、由服务端下发的，不是固定枚举。**
+
+客户端把档位拉下来挂成 AI SDK 的 `variants`，用户选择后原样写入请求体
+`reasoning_effort`。`thinking_type == null` 的模型不显示滑杆，即不可调。
 
 ```
 POST {xCenterBase}/v1/model/thinking-variants      （hD）
@@ -765,7 +816,7 @@ body {"model_names":["GLM-5.2",...]}     ← 单次上限 50
 
 两档 `["high","max"]` 正对应 IDE 滑杆「滑到最右端时『高』变成『最大』」。
 
-#### 4.2.1 思考档位完整链路 `[打包JS]`
+### 5.1 思考档位完整链路（客户端实现）`[打包JS]`
 
 CodeArts 的思考档位**不来自本地规则**，全部由服务端下发。证据：本地档位生成函数
 `kS.variants`（`q(L)`，offset 111131407 区）对 GLM 等模型明确返回空：
@@ -815,8 +866,7 @@ function q(L){
 `POST /v1/model/thinking-variants` 取 `strengths`，再把用户档位作为 `reasoning_effort` 透传；
 不应硬编码 `low`/`high`，因为档位集合是逐模型、服务端下发的。
 
-**实现（已落地，见 §4.2.2）**。
-#### 4.2.2 本实现的落地方式 `src/providers/codearts/variants.rs`
+### 5.2 本实现的落地方式 `src/providers/codearts/variants.rs`
 
 * 配置只暴露抽象档位 `[codearts] reasoning_effort = "low"|"high"`，**不暴露上游取值**。
 * 启动/首次使用时拉一次全量档位，缓存 `REFRESH_INTERVAL = 1h`（单一常量，便于调整）。
@@ -830,58 +880,21 @@ function q(L){
 ⚠︎ 映射结果的**语义效果未经实测**（只验证了字段确实按上述规则发出）。
 `high`/`max` 哪个思考更深取决于上游，与 raccoon 一样可能存在非单调。
 
+### 5.3 取值效果
 
-### 4.3 IDE 扩展：PromptCenter `[打包JS]`
+上游档位取值**不固定**，取决于 `thinking-variants` 对每个模型返回的 `strengths`
+（见上表：12 个模型中仅 `GLM-5.2`、`glm-5.2-sft-harmony` 有 `["high","max"]`，其余为空）。
 
-| 端点 | 用途 |
-|-|-|
-| `GET {policyDomain}/v1/model/builtin` | 内置模型列表（`getModelBuiltinList`，返回 `builtinModels[]`） |
-| `GET {policyDomain}/v1/third-party-model/model/list?page_num=1&page_size=100` | 第三方模型（`getThirdPartyModelList`，返回 `list[]`） |
-| `GET {policyDomain}/v1/llm/vendors` | 供应商 |
-| `GET {policyDomain}/v1/llm/tenant/settings` | 读 `third_party_model_enabled`（自定义模型开关） |
-| `GET {policyDomain}/v1/default/models` | `_getAllmodels` |
-| `GET {policyDomain}/v1/model/credit-ratio` | `creditRatioDisplay`（`credit[].ratio_display` join `" "`） |
+|`strengths`|`[codearts] reasoning_effort="low"`|`"high"`|
+|-|-|-|
+|`["high","max"]`|发 `high`（最浅）|发 `max`（最深）|
+|`[]` / 模型未知|**不发**该字段|**不发**该字段|
 
-共同 headers：
-```
-x-snap-traceid: <uuid 去 ->
-Content-Type: application/json
-x-auth-token: <accessToken>        # 注意不是 AKSK
-Agent-Type: PromptCenter           # 第三方模型列表用小写 agent-type
-X-Language: zh-cn
-```
-缓存 TTL `SETTING_PAGE_CACHE_TTL`；日志 `getModelBuiltinList cache hit, count:{0}`、`getThirdPartyModelList skipped: packageType is {0}`。
+⚠︎ `high` 与 `max` 的**实际思考深度差异未经实测**，不能假定单调（raccoon 正是反例）。
 
-`checkCustomModelPermission`（`NV()`）：
-token = `n.userToken || n.userInfo?.accessToken`；`Asu()` 为空 → `{allowCustomModel:false}`；
-逐 URL fallback，headers `Osu(...)`；异常 → 日志 `tenant settings API error, treating as free version` + `{allowCustomModel:true}`。
-日志 `checkCustomModelPermission start`、`trying baseUrl`、`all fallback urls exhausted`。
+## 6. 余额获取
 
-### 4.4 多模态模型白名单 `[打包JS]`
-
-CLI 模式默认：`["Qwen3.6-27B-VL","Qwen3.5-397B-A17B-VL"]`；IDE 模式再加 `"Qwen3-VL-235B"`。
-过滤函数 `hw(_)`。缓存 `wD=600000`ms。
-图片输入仅在模型命中白名单时可用，否则报 `未获取到可用的多模态模型` / `No multimodal model is available`。
-
-### 4.5 AKSK 签名（模型详情请求用）`[打包JS]`
-
-`signSimple`（`YLn(n,u,t,i)`）：
-
-```
-X-Sdk-Date:            YYYYMMDDTHHmmssZ (ISO8601 无分隔)
-Host:                  <host>
-X-Sdk-Content-Sha256:  UNSIGNED-PAYLOAD
-X-Security-Token:      <security_token>
-canonical = [ method, pathname + "/", "", canonicalHeaders, signedHeaders, "UNSIGNED-PAYLOAD" ]
-Authorization: SDK-HMAC-SHA256 Access=<ak>, SignedHeaders=<signedHeaders>, Signature=<hex>
-```
-日志 `signSimple start` / `signSimple: parsed URL` / `signSimple: final signed headers`（Authorization 打码）。
-
----
-
-## 5. 余额获取
-
-### 5.1 唯一的账户余额端点 `[打包JS + curl 实测 2026-11-16]`
+### 6.1 唯一的账户余额端点 `[打包JS + curl 实测 2026-11-16]`
 
 UI 上「总已用积分: 2.78/9600」的数据源**不是** benefit-service，也不是 `/v1/ops/credit/usage`：
 
@@ -917,7 +930,7 @@ GET {chatDomain}/snap-manager/v1/statistics/plugin
 `/v1/ops/credit/usage` 的响应形如 `{totalTokenUsed,promptTokenUsed,completionTokenUsed,
 cachedTokenUsed,cacheHitRatio,creditCost}`。
 
-### 5.2 已被证伪的三个来源（勿再使用）
+### 6.2 已被证伪的三个来源（勿再使用）
 
 | 来源 | 结论 |
 |-|-|
@@ -926,9 +939,9 @@ cachedTokenUsed,cacheHitRatio,creditCost}`。
 | `claim`/`confirm` 的 `totalAmount`/`remainingAmount` | 单个活动积分包的量（100、1800…），非账户总额 |
 
 > 早期本文档把 `tokens/balance` 当作余额、`benefit/claim` 当作签到，均属误判，
-> 已于 2026-11-16 更正。benefit-service 的真实语义见 §5.4。
+> 已于 2026-11-16 更正。benefit-service 的真实语义见 §6.4。
 
-### 5.3 server 实现
+### 6.3 server 实现
 
 `ops::fetch_balance` → `fetch_credit_usage`，取 `usageTotalPackageCredit` 的
 `package_credit_amount − package_credit_used`。
@@ -938,7 +951,7 @@ cachedTokenUsed,cacheHitRatio,creditCost}`。
 
 实测 `ofm-server status codearts` → `余额: 9597.22`（= 9600 − 2.78，与 UI 一致）。
 
-### 5.4 benefit-service（福利模型额度，不是余额）
+### 6.4 benefit-service（福利模型额度，不是余额）
 
 > 代码位于 **agent kernel** 的 `benefit-service`（`_D`/`PFn`/`DFn`/`MFn`），非 IDE 扩展。
 > 独立网关 `opengw.developer.huaweicloud.com`（生产）/ `snapengine-apig.cn-north-7`（内网），与 chat 域名不同。
@@ -983,7 +996,7 @@ headers（`PFn()`）：`Content-Type: application/json` + `x-snap-traceid: <uuid
 的模型表里查，命中则仍走 `inferhub-provider` 并带 `traceMaasType`，否则 `providerID="benefit-model"`。
 **福利模型和能力模型走不同计费通道**，不区分会导致双计费（代码注释原文 `potential dual-billing risk`）。
 
-### 5.5 `maas_type: benefit` 的真实语义（2026-11-16 实测更正）
+### 6.5 `maas_type: benefit` 的真实语义（2026-11-16 实测更正）
 
 早期实现按模型名前缀（`glm-5.3-flash`/`deepseek-v4.1-flash`）给 chat 请求追加
 `maas_type: benefit`，导致这些模型恒返回 `404 InferHub.APIG.0101.404`。
@@ -1012,14 +1025,14 @@ headers（`PFn()`）：`Content-Type: application/json` + `x-snap-traceid: <uuid
 > `education`/`examination` 渠道当前签名失败（query 参与签名导致 `APIG.0301`），但与本问题无关。
 
 `server 实现`：`benefit.rs` 仅保留 `fetch_config`（当前无调用点）。
-`maas_type: benefit` 已确认是**错误方向**（实测本账号恒 404，见 §5.5），
+`maas_type: benefit` 已确认是**错误方向**（实测本账号恒 404，见 §6.5），
 chat 侧完全不发送该头；12 个模型全部正常。
 
-## 6. 上游异常响应
+## 7. 上游异常响应
 
 > 本节（错误码表 `hVn`/`RFn`、流内错误 `_P`、4291→402 映射）代码位于 **agent kernel**（`benefit-service` 等），非 IDE 扩展。
 
-### 6.1 业务错误码 `hVn` `[打包JS]`
+### 7.1 业务错误码 `hVn` `[打包JS]`
 
 | code | 含义 |
 |-|-|
@@ -1037,7 +1050,7 @@ chat 侧完全不发送该头；12 个模型全部正常。
 * zh：`福利模型额度已用尽，请切换其他模型继续使用`
 * en：`The free benefit model quota is used up. Please switch to another model to continue.`
 
-### 6.2 流内错误 `_P(n,u,t)`（offset 150640877）`[打包JS]`
+### 7.2 流内错误 `_P(n,u,t)`（offset 150640877）`[打包JS]`
 
 `H()` 分支解析 `{error_code, error_msg}`；非 `H()` 为 `{...n.error, rateLimitInfo}`。
 判定：
@@ -1045,7 +1058,7 @@ chat 侧完全不发送该头；12 个模型全部正常。
 * `InferHub.4291.200` → 402 不可重试
 * 含 `.429` → 结合 `x-session-retry` 计数判定可重试
 
-### 6.3 限流 `fP` + 退避 `[打包JS]`
+### 7.3 限流 `fP` + 退避 `[打包JS]`
 
 限流维度键：`RPM` / `RPH` / `RP6H` / `RPD` / `TPM` / `TPH` / `TP6H` / `TPD`。
 `Bw(n)` 只判 `RPM` / `TPM`（决定是否算"短时限流"）。
@@ -1065,7 +1078,7 @@ token 限额告警阈值：90% / 100%。
 * `x-session-retry >= 3` → 停止
 * 响应头含 `need-switch-model` → 建议换模型（日志 `[retriable decision] response header hasRetry: …, needswitch: …`）
 
-### 6.4 权益/签到错误码 `RFn` `[打包JS]`
+### 7.4 权益/签到错误码 `RFn` `[打包JS]`
 
 | 端点 | 错误码 |
 |-|-|
@@ -1075,7 +1088,7 @@ token 限额告警阈值：90% / 100%。
 
 失败统一 `{success:false, error_code, error_message}`；网络异常 `error_code:"network_error"`。
 
-### 6.5 其他 `[打包JS]`
+### 7.5 其他 `[打包JS]`
 
 * `InferhubBaseUrlMissing`：`statusCode 555`、`isRetryable:false`（配置缺失，不应重试）
 * 租户冻结：首 chunk `TM.00020005` → 400；`ModelArts.81101`/`81111`/`81114`/`BusyException`
@@ -1085,18 +1098,18 @@ token 限额告警阈值：90% / 100%。
 
 ---
 
-## 7. 签到协议（限时福利 / 每日签到）
+## 8. 签到协议（限时福利 / 每日签到）
 
 签到走 `https://snap-access.cn-north-4.myhuaweicloud.com/v1/ops/*`，**AKSK 签名即可调通**，
-server 已实现并实领成功（§7.2）。
+server 已实现并实领成功（§8.2）。
 
 > 客户端里另有一套 benefit-service（`opengw.developer.huaweicloud.com`），只管**福利模型额度**，
-> 与签到、积分余额均无关。见 §5.4 与 §7.1。
+> 与签到、积分余额均无关。见 §6.4 与 §8.1。
 
-### 7.1 benefit-service 的 `claim` **不是签到** `[打包JS + curl]`
+### 8.1 benefit-service 的 `claim` **不是签到** `[打包JS + curl]`
 
 > ⚠️ 客户端里有两套互不相干的「福利」，早期文档把二者混为一谈。
-> benefit-service 的 `claim` 只是**福利模型渠道的加载开关**，完整语义与签名见 **§5.4**。
+> benefit-service 的 `claim` 只是**福利模型渠道的加载开关**，完整语义与签名见 **§6.4**。
 > 本账号对该端点恒返回 `{"error_code":"4000","error_msg":"invalid channel, group not found"}`
 > （福利模型渠道未开通），与 method / channel / body 均无关。
 
@@ -1115,7 +1128,7 @@ server 已实现并实领成功（§7.2）。
 
 server 侧已删除这套 claim 实现，`benefit.rs` 仅保留 `fetch_config`（无调用点）。
 
-### 7.2 「限时福利 / 每日签到」`/v1/ops/*`（workbench 面板 + 扩展消息通道）`[打包JS]`
+### 8.2 「限时福利 / 每日签到」`/v1/ops/*`（workbench 面板 + 扩展消息通道）`[打包JS]`
 
 这是用户在 UI 上看到的「限时福利 → 每日签到领 100 积分」。代码里叫 **welfare / activity**，
 **关键词不是「签到」**（`签到` 只出现在语言包里，见下），搜 `claim` / `benefit` 也搜不到，
@@ -1243,7 +1256,7 @@ GET  /v1/ops/delivery?channel=IDE
 
 #### 7.2.4b 账户积分余额
 
-见 **§5.3**（`/snap-manager/v1/statistics/plugin`）。`claim`/`confirm` 响应的
+见 **§6.3**（`/snap-manager/v1/statistics/plugin`）。`claim`/`confirm` 响应的
 `totalAmount`/`remainingAmount` 只是该活动积分包的量，不是账户总额。
 
 #### 7.2.5 业务语义 `[打包JS]`
@@ -1270,40 +1283,14 @@ webview 侧在 `index-BIyAOOK4.js` @~322928（`freeBenefit: "限时福利"`、
 > 「100 积分」这个具体数值**不在客户端任何静态资源里**，由服务端 `displayConfig` 下发，
 > 因此无法从代码确认；「每日签到」的判定也完全在服务端（`campaignId` 由 delivery 下发）。
 
-## 8. 未验证清单（实现时优先实测）
+## 9. 未验证清单
 
-1. ~~SM4-GCM 密钥协商报文与 AAD 构成~~ → **已从源码解析**：协商 body=`{clientPublicKey,sessionId,timestamp}`，响应 `{serverPublicKey(base64 DER),keyId,expiresIn}`；key=`sha256(shared)[0..16]`；请求 AAD=`method|pathname|ts`（iv/tag/ts 走 header），响应 AAD=`${keyId}|${chunkIndex}`。仅剩「服务端是否真接受明文回退」需实测
-2. ~~`/v1/oauth2/tokens` 响应字段名~~ → **已核实**：`{credentials:{access_key_id, secret_access_key, security_token, expiration}, refresh_token}`，`refresh_token` 与 `credentials` 平级。续期时 IDE 带 `code_verifier`、kernel 不带且加 `x-agent-user-account`（§2.1）
-3. ~~`/snap-manager/v1/token/renew` 的 method 与响应结构~~ → **已核实为死端点**：IDE 端点表仅声明 + getter，无调用方；kernel 无此字符串。续期唯一链路是 `refresh_token` 重放（§2.3）
-4. ~~`balance` 返回字段~~ → **已解决**：账户余额真正来源是
-   `/snap-manager/v1/statistics/plugin`（§5.1），已实测 `9600 − 2.78 = 9597.22`。
-   原 `tokens/balance` 的 `used_amount`/`total_quota` 属福利模型额度，非账户积分（§5.2）
-5. ~~`claim` 是否需要 `channel` 参数~~ → **与签到无关**：benefit-service 的 `claim`
-   是福利模型渠道的加载开关（§5.4），本账号恒 `4000`。
-   真正的每日签到走 `/v1/ops/*`（§7.2），已实现并实测成功
-6. **上游是否真接受未加密（明文）chat 请求** ← 实现前最高优先级，用一次真实请求定夺，决定是否需复刻 SM4-GCM
-7. `response_format` / `logprobs` / `n>1` 上游支持情况
-8. 排队态是否发 notice 帧给下游
-9. `X-Remote-Origin-Url`、`maas_type`、`client-ip` 是否服务端强校验
+仅列正文无法定论的点；已解决项均已并入 §1–§8。
 
-10. ~~`client_id` 实际值~~ → **已从 product.json/package.json 取证**：扩展 `name` 为
-    `codearts-snap`（26.11.100），`QH()` 返回该值；`"vscode-codebot"` 仅是 fallback 常量。
-    kernel 版为 `CodeArts_Tui`。登录实现已按 `codearts-snap` 落地，**已实测接受**
-    （登录/刷新均签发成功，见 credential.toml）
-11. 授权 URL 的 `port` 参数对服务端是否必需（官方为本地回调端口，本实现已带上）。
-    `secret` 路径已按 §1.6 实现（10×1s 重试），但未做真实登录实测。
-12. token 响应的 `refresh_token` 在扩展侧读顶层字段（`t.refresh_token`），kernel 亦同；
-    与 `credentials` 平级，**已核实**。**响应确有 AKSK/STS 形态与其它形态两种**
-    （`jri`/`bZe`），实测时注意区分。
-13. 官方扩展的 token 请求在直连失败后会读代理并用 `HttpsProxyAgent` 重试一次；
-    本 server 的 `token_client()` 目前固定 `no_proxy`，未复刻该重试。
-14. ~~续期协议是否可用~~ → **已实测**（§2.1 实测段）：IDE 形态一次成功并轮换 `refresh_token`；
-    `refresh_token` 与签发方 `client_id` 强绑定、一次性使用。
-
-> **加密对本项目的影响**：客户端对 `/api/v2/chat/completions` 强制加密，但有明文回退分支（key 协商失败/网络错误/非 2xx 时 `falling back to plaintext`）。若服务端接受明文 → 无需碰 SM4-GCM，直接明文转发；若强制加密 → 须用 Rust 复刻整条链路（ECDH+SM4-GCM，格式已全暴露）。**实现第一步先用明文 curl 探测，再定夺**。
-16. ~~真正的「每日签到领积分」无法复刻~~ → **已证伪并已实现**（§7.2.4）：AKSK 签名即可调通
-    `/v1/ops/*`，`x-auth-token` 商用版本就是空串。关键条件是「带 `Agent-Type`」+「query 参与签名」。
-    `src/providers/codearts/ops.rs` 已完成 delivery / claim / confirm，`claim` 子命令已切到该实现。
-17. ~~「100 积分」需真实 delivery 响应取证~~ → **已取证**：`campaignId:34`「每日签到领100积分」，
-    `benefitAmount:100`、`benefitUnit:"CREDIT"`、`triggerMode:"MANUAL_CLAIM"`、
-    有效期 `2026-10-26T16:00:00Z ~ 2026-12-31T15:59:59Z`；领取后积分 24h 过期。
+| # | 项 | 影响 |
+|-|-|-|
+| 1 | 排队态是否向客户端发 notice 帧 | 下游无进度提示（§3.5） |
+| 2 | `X-Remote-Origin-Url`、`client-ip` 是否服务端强校验 | 未发送，实测不影响 |
+| 3 | 授权 URL 的 `port` 参数是否必需 | 已带上，未做真实登录对照 |
+| 4 | 官方 token 请求直连失败后经 `HttpsProxyAgent` 重试一次 | 本 server `token_client()` 固定 `no_proxy`，未复刻 |
+| 5 | SM4-GCM 是否被服务端强制 | 不强制则无需复刻，实测明文可用（§3.2） |

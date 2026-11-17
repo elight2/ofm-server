@@ -31,7 +31,7 @@
 * `n` / `logprobs` / `logit_bias` / `seed` / `stop` 之外的采样细节取决于上游网关，客户端不显式传
 * 思考档位可用标准 `reasoning_effort` 表达：`low`/`medium`/`high` 是**真实枚举**，
   其中 `low` 能稳定抑制思考（0 思考字符）。非标准值（`xhigh`/`minimal`/`none`）会被
-  当默认处理，思考量与不传相当。实测见 §3.7
+  当默认处理，思考量与不传相当。实测见 §5
 * （**`tool_choice` 不在此列**：四种取值均实测生效，已实现透传，见 §3 `tool_choice` 实测）
 
 ### 本协议与官方客户端的出入
@@ -223,39 +223,7 @@
 * 顶层 `thinking`、`thinking_budget` 实测无效
 
 > 早前结论「`reasoning_effort` 也无效」是**误判**：当时用 8 个非标准枚举值测试，
-> 均走默认路径，思考量自然与基线相当。换用标准值 `low` 后可稳定抑制，见 §3.7。
-
-#### 3.7 思考强度 `reasoning_effort` 实测 `[curl，2026-11-16]`
-
-**结论：上游是标准 OpenAI 语义，`low` 可稳定关闭思考。**
-
-测试条件：`sn-glm-5-3`，`stream:true`，固定 prompt，统计 `delta.reasoning_content`
-累计字符数（比数帧更可靠，帧数与内容长度不成正比）。
-
-|取值|思考字符|判定|
-|-|-|-|
-|`low`|0, 0, 0, 0, 0|✅ 真实枚举，思考被抑制|
-|`medium`|0, 0, 0|✅ 真实枚举|
-|`high`|79, 70, 61, 102, 225|✅ 真实枚举，但思考量远低于不传|
-|`xhigh`|1009, 638|❌ 非标准值 → 走默认|
-|`minimal`|1060, 877, 3592|❌ 非标准值 → 走默认|
-|`none`|1890|❌ 非标准值 → 走默认|
-|**不传（基线）**|1134, 1606|—|
-
-要点：
-* `low`/`medium`/`high` 是真实枚举，能被下游识别；其余取值被当默认。
-  用非标准值测试是早前误判「无效」的原因。
-* **不构成单调关系**：`high` 反而比不传时思考更少。故无法用 `high` 实现「加深思考」，
-  「深度思考」只能靠**不发送该字段**（走基线）。
-* ⚠︎ **限流**：连续请求会触发 `HTTP 429 user_model_rate_limited`。429 时思考字符也为 0，
-  与 `low` 的真实抑制**无法区分**，测时必须校验 `err` 为空，否则得到假阳性。
-
-服务端实现（`RaccoonProvider::effort`，见 §3 实现要点）：
-
-|配置 `[raccoon] reasoning_effort`|上游请求体|
-|-|-|
-|`low`|`"reasoning_effort": "low"`|
-|`high`|不发送该字段|
+> 均走默认路径，思考量自然与基线相当。换用标准值 `low` 后可稳定抑制，见 §5。
 
 #### 其它实测结论
 * 多轮工具结果回传正常（`role:tool` + `tool_call_id` 被上游正确理解）
@@ -270,7 +238,7 @@
 * 工具调用键名是标准 `function`（非 trae 的 `function_call`）
 * 无参数工具省略 `parameters` 字段
 * 思考强度取 `RaccoonProvider::effort`（来自 `[raccoon] reasoning_effort`）：
-  `Low` → 发 `reasoning_effort:"low"`；`High` → 不发该字段（实测见 §3.7）
+  `Low` → 发 `reasoning_effort:"low"`；`High` → 不发该字段（实测见 §5）
 
 `src/providers/raccoon/stream.rs`：帧解析
 * 空串 `delta.content`/`reasoning_content` 不产事件
@@ -330,7 +298,47 @@
   注意 `Some(0.0)`(限免) 不等于 `None`，需原样保留
 * 未过滤前 9 个，过滤后 6 个
 
-## 5. 余额获取
+## 5. reasoning_effort 字段映射
+
+官方客户端**没有**思考强度 UI，也不发送该字段；上游按标准 OpenAI `reasoning_effort` 语义处理。
+
+**结论：上游是标准 OpenAI 语义，`low` 可稳定关闭思考。**
+
+测试条件：`sn-glm-5-3`，`stream:true`，固定 prompt，统计 `delta.reasoning_content`
+累计字符数（比数帧更可靠，帧数与内容长度不成正比）。
+
+|取值|思考字符|判定|
+|-|-|-|
+|`low`|0, 0, 0, 0, 0|✅ 真实枚举，思考被抑制|
+|`medium`|0, 0, 0|✅ 真实枚举|
+|`high`|79, 70, 61, 102, 225|✅ 真实枚举，但思考量远低于不传|
+|`xhigh`|1009, 638|❌ 非标准值 → 走默认|
+|`minimal`|1060, 877, 3592|❌ 非标准值 → 走默认|
+|`none`|1890|❌ 非标准值 → 走默认|
+|**不传（基线）**|1134, 1606|—|
+
+取值效果：
+* `low`：思考被**完全抑制**（0 字符），可替代官方缺失的「关闭思考」开关
+* `medium`：思考极少，接近 `low`
+* `high`：**不等于加深思考**，思考量反而低于不传基线；等效于「不过度抑制」
+* `xhigh`/`minimal`/`none`：非标准值，服务端忽略，行为等同不传
+
+要点：
+* `low`/`medium`/`high` 是真实枚举，能被下游识别；其余取值被当默认。
+  用非标准值测试是早前误判「无效」的原因。
+* **不构成单调关系**：`high` 反而比不传时思考更少。故无法用 `high` 实现「加深思考」，
+  「深度思考」只能靠**不发送该字段**（走基线）。
+* ⚠︎ **限流**：连续请求会触发 `HTTP 429 user_model_rate_limited`。429 时思考字符也为 0，
+  与 `low` 的真实抑制**无法区分**，测时必须校验 `err` 为空，否则得到假阳性。
+
+服务端实现（`RaccoonProvider::effort`，见 §3 实现要点）：
+
+|配置 `[raccoon] reasoning_effort`|上游请求体|
+|-|-|
+|`low`|`"reasoning_effort": "low"`|
+|`high`|不发送该字段|
+
+## 6. 余额获取
 * 积分余额：`GET https://xiaohuanxiong.com/api/web/points/v1/balance`
   (类 `PointsApi.baseUrl = ${origin}/api/web/points`，头带 `Authorization`，
   非 personal 加 `X-Org-Code`)
@@ -345,7 +353,7 @@
 * 积分流水：`GET /api/web/points/v2/bills?paging.limit=20&type=all[&cursor=]`
 * 会话消耗：`GET /api/web/desktop/v1/sessions/{sessionId}/points-consumed`
   → `{code:0, data:{total_points_consumed: number}}`
-## 6. 上游异常响应
+## 7. 上游异常响应
 通用业务信封：`{code: <int>, message: <str>, data: ...}`，**HTTP 200 也可能 `code!=0`**，必须解析业务码。
 客户端已识别的错误码：
 |场景|判定|
@@ -358,7 +366,7 @@
 |模型目录超时|客户端本地错误 `HOSTED_MODEL_CATALOG_TIMEOUT`|
 |请求体过大|`HTTP 413`，客户端文案 `request body exceeds 10MB`|
 
-## 7. 签到协议
+## 8. 签到协议
 **没有传统意义的「签到」端点**，但有一个**登录领取**端点：
 `POST /api/web/mobile/v1/login/points/grant`（移动端）。
 
