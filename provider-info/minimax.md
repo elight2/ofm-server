@@ -784,7 +784,6 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 
 | `[minimax] reasoning_effort` | M3 | M3.1-Flash |
 |-|-|-|
-| `none` | `thinking:{"type":"disabled"}` | **不发任何思考字段**（`none`/`disabled` 都会被 400 拒，§5.2） |
 | `low` | `thinking:{"type":"adaptive"}` | `output_config:{"effort":"low"}` |
 | `medium` | 同上 | `{"effort":"medium"}` |
 | `high` | 同上 | `{"effort":"high"}` |
@@ -801,12 +800,39 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 **实现状态**：已接入请求体（`minimax/chat.rs` 的 `thinking_fields`），
 落点由每轮拉取的目录 `models[<model>].thinking_config.mode` 分流：
 `forced_on` → 只发 `output_config.effort`；其余（含目录拉取失败）→ 只发 `thinking.type`。
-`effort_value()` / `m3_thinking_enabled()` 两个映射函数另有单测。
 
-**已知限制**：思考档位目前是**全局配置固定值**（`[minimax] reasoning_effort`），
-下游请求（如 pi 的 `:high`/`:max`）传不进来——`core::provider::ChatRequest` 无对应字段，
-`server/openai/request.rs` 也不解析。要支持按请求调节，需先扩展 `ChatRequest`。
-代码默认 `low`，`config.example.toml` 示例写的是 `medium`（示例取中位，代码取保守值）。
+**配置档位 → 上游档位：就近映射**（`MinimaxReasoningEffort::nearest_effort`）：
+
+配置文件**只能**填 `low`/`medium`/`high`/`xhigh`/`max` 五档（写其它值会报错）。
+上游档位集合由目录 `effort_options` 决定，**不硬编码**，故需要「就近」：
+
+1. 上游表里有同名档位 → 直接用（当前目录五档齐全，全部命中同名）；
+2. 否则按「五档序号距离」挑最近的，**距离相同取较低档**（更省 token）；
+3. 上游表里没有任何可识别档位名 → 回退到本档位的标准名；
+4. `default` **不参与**距离计算——它表示「让上游自己决定」，与本档位不是同维度。
+
+**不提供「关闭思考」档位**：上游对 Flash 无「关」档位（`disabled` 会被 400 拒），
+M3 的 `disabled` 又会让模型完全不思考、退化明显，故配置层不暴露该选项。
+
+M3（`switchable`）无档位，`low`~`max` 五档一律映射为 `thinking.type=adaptive`。
+
+**实测验证**（2026-11-17，固定概率题，`max_tokens=3000`，每档 3 次，
+读 `usage.completion_tokens_details.reasoning_tokens`）：
+
+| 配置档位 | M3.1-Flash thinking_tokens | 说明 |
+|-|-|-|
+| `low` | 100 / 105 / 102 | 基线 |
+| `medium` | 100 / 131 / 143 | 明显更高 |
+| `high` | 215 / 98 / 148 | 相邻档重叠（§5.2 已知现象）|
+| `xhigh` | 222 / 235 / 123 | |
+| `max` | 146 / 345 / 272 | 最高 |
+
+单调趋势成立（均值 102 → 125 → 154 → 193 → 254）。M3 在 `low` 与 `max` 下
+thinking_tokens 均在 140~370 区间、无档位差异，符合「M3 只有开/关」的结论。
+
+注意 `nearest_effort` 的判定只依赖目录 `effort_options` 的**字符串**，
+若上游将来改名（如把 `xhigh` 改为 `x-high`），会退化到第 3 条规则（回退标准名），
+此时发出去的档位名可能不在上游表里 —— 需要在目录变更时同步 `rank_of_upstream`。
 
 ## 6. 余额获取
 
@@ -1033,7 +1059,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | 1 | 登录（设备码 + 轮询）写 `credential.toml` | §1.1/§1.2 | ✅ 已实现（`minimax/auth.rs`）|
 | 2 | 模型列表 `GET /v1/models?region=cn&buildEnv=prod` | §4 | ✅ 已实现（`minimax/models.rs`）|
 | 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ✅ 已实现（`minimax/chat.rs` + `minimax/stream.rs`），端到端实测通过 |
-| 4 | 思考强度映射（按模型分两个落点）| §5 | ⚠︎ 落点分流已实现（`chat::thinking_fields`），但档位只能由配置文件设定，**下游请求传不进来**（`ChatRequest` 无该字段）|
+| 4 | 思考强度映射（按模型分两个落点）| §5 | ✅ 已实现：目录 `thinking_config.mode` 分流落点 + 配置五档就近映射上游档位（§5.4）|
 | 5 | 令牌续期 `refresh_token` | §2 | ⚠︎ 已写（`auth::refresh` + 自动续期），**未实测** |
 | 6 | 签到 | §7 | ❌ 端点未知，不可实现 |
 
@@ -1053,7 +1079,8 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
   实际使用时由用户在自己的终端跑 `ofm-server login minimax`
 * 下游 `stream:false` 必须自己聚合 SSE（§3.8）；上游恒 `stream:true`
 * 自动刷新阈值：取令牌时剩余有效期 < 30s 就先刷新 `[源码]`；401 时刷新重试一次
-* `reasoning_effort` 档位**从目录读**（`effort_options`），不硬编码；M3 只有 `on`/`off`
+* `reasoning_effort` 档位**从目录读**（`effort_options`），不硬编码；配置五档
+  (`low`~`max`) 按就近规则映射，M3 只有开/关
 * **思考落点按模型的 `thinking_config.mode` 分流**：`switchable` → 发 `thinking.type`
   （`adaptive`/`disabled`）；`forced_on` → 只发 `output_config.effort`，**绝不发 `thinking`**
   （实测 M3.1-Flash 发 `thinking.type=disabled` 会被 400 拒）。目录查不到时按 `switchable` 处理。

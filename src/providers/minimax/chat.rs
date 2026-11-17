@@ -143,15 +143,20 @@ pub enum UpToolChoice {
 impl ChatBody {
     /// `reasoning_effort` 与模型形态共同决定思考字段落点。
     ///
-    /// * `switchable`（M3）：`thinking.type` 开/关，**不发** `output_config`；
-    /// * `forced_on`（M3.1-Flash）：只发 `output_config.effort`，**不发** `thinking`
-    ///   （该模型发 `thinking.type=disabled` 会被 400 拒绝，见本文档 §5.1）。
+    /// * `forced_on`（M3.1-Flash）：档位**就近映射**到目录的 `effort_options`，
+    ///   只发 `output_config.effort`，**不发** `thinking`
+    ///   （该模型发 `thinking.type=disabled` 会被 400 拒绝，实测）。
+    /// * `switchable`（M3）：五档全部等价于开，只发 `thinking.type=adaptive`。
     ///
     /// 模型形态从目录里查不到时按 `switchable` 处理：明确发 `thinking.type`
     /// 比猜测 `effort` 更安全（发错档位值会被 400 拒）。
-    pub fn build(req: &ChatRequest, effort: MinimaxReasoningEffort, thinking_mode: &str) -> Self {
+    pub fn build(
+        req: &ChatRequest,
+        effort: MinimaxReasoningEffort,
+        thinking: &ThinkingShape,
+    ) -> Self {
         let (system, messages) = split_messages(&req.messages);
-        let (thinking, output_config) = thinking_fields(effort, thinking_mode);
+        let (thinking_field, output_config) = thinking_fields(effort, thinking);
         Self {
             model: req.model.clone(),
             max_tokens: MAX_TOKENS,
@@ -171,33 +176,41 @@ impl ChatBody {
                 })
                 .collect(),
             tool_choice: tool_choice(req),
-            thinking,
+            thinking: thinking_field,
             output_config,
         }
     }
 }
 
+/// 模型在目录里的思考形态（§5.1）。
+///
+/// 目录拉不到或模型不在目录时用 [`ThinkingShape::default`]（按 `switchable` 处理）。
+#[derive(Debug, Clone, Default)]
+pub struct ThinkingShape {
+    /// `thinking_config.mode`：`switchable` | `forced_on` | 空（未知）。
+    pub mode: String,
+    /// 目录下发的可选档位（只有 `forced_on` 模型有），§5.2。
+    pub effort_options: Vec<String>,
+}
+
 /// 思考字段落点（§5.1/§5.4）。
 ///
-/// 返回 `(thinking, output_config)`，二者至多一个为 `Some`。
+/// 返回 `(thinking, output_config)`，二者恰好一个为 `Some`。
 fn thinking_fields(
     effort: MinimaxReasoningEffort,
-    thinking_mode: &str,
+    shape: &ThinkingShape,
 ) -> (Option<Thinking>, Option<OutputConfig>) {
-    if thinking_mode == "forced_on" {
-        // M3.1-Flash：档位原样进 effort；`none` 不在 effort_options 里，不发（§5.4）。
+    if shape.mode == "forced_on" {
+        // M3.1-Flash：档位就近映射到目录档位表（§5.2）。
         return (
             None,
-            effort.effort_value().map(|e| OutputConfig { effort: e }),
+            Some(OutputConfig {
+                effort: effort.nearest_effort(&shape.effort_options),
+            }),
         );
     }
-    // M3（switchable）：无档位，只有开/关。
-    let kind = if effort.m3_thinking_enabled() {
-        "adaptive"
-    } else {
-        "disabled"
-    };
-    (Some(Thinking { kind }), None)
+    // M3（switchable）：无档位，五档一律等价于开思考。
+    (Some(Thinking { kind: "adaptive" }), None)
 }
 
 /// `tool_choice` 映射（CC 四值 → Anthropic 四型）。
@@ -406,8 +419,23 @@ mod tests {
         }
     }
 
+    /// 构造思考形态。`mode` 为 `""` 表示目录拉取失败/模型不在目录。
+    fn shape(mode: &str, options: &[&str]) -> ThinkingShape {
+        ThinkingShape {
+            mode: mode.to_string(),
+            effort_options: options.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// 上游实际下发的档位表（§5.2）。
+    const FLASH_OPTIONS: &[&str] = &["default", "low", "medium", "high", "xhigh", "max"];
+
     fn body(req: &ChatRequest, effort: MinimaxReasoningEffort, mode: &str) -> serde_json::Value {
-        serde_json::to_value(ChatBody::build(req, effort, mode)).unwrap()
+        let s = match mode {
+            "forced_on" => shape(mode, FLASH_OPTIONS),
+            other => shape(other, &[]),
+        };
+        serde_json::to_value(ChatBody::build(req, effort, &s)).unwrap()
     }
 
     fn req(messages: Vec<Message>) -> ChatRequest {
@@ -704,17 +732,15 @@ mod tests {
         assert!(v.get("tool_choice").is_none());
     }
 
-    /// M3（switchable）：档位只决定开关，不发 output_config。
+    /// M3（switchable）：五档全部等价于开思考，不发 output_config。
     #[test]
-    fn m3用thinking开关() {
+    fn m3五档都开思考() {
         let r = req(vec![msg(Role::User, "hi")]);
-        let on = body(&r, MinimaxReasoningEffort::High, "switchable");
-        assert_eq!(on["thinking"]["type"], "adaptive");
-        assert!(on.get("output_config").is_none());
-
-        let off = body(&r, MinimaxReasoningEffort::None, "switchable");
-        assert_eq!(off["thinking"]["type"], "disabled");
-        assert!(off.get("output_config").is_none());
+        for effort in MinimaxReasoningEffort::ALL {
+            let v = body(&r, effort, "switchable");
+            assert_eq!(v["thinking"]["type"], "adaptive", "{effort:?} 应当开思考");
+            assert!(v.get("output_config").is_none(), "{effort:?} 不应发 output_config");
+        }
     }
 
     /// M3.1-Flash（forced_on）：只发 output_config.effort，**绝不发** thinking。
@@ -728,13 +754,83 @@ mod tests {
         assert!(v.get("thinking").is_none(), "forced_on 模型不能发 thinking");
     }
 
-    /// `none` 档在 forced_on 模型上不发 output_config（`none` 不在 effort_options）。
+    /// Flash 恒发 output_config、恒不发 thinking——即使目录档位表是空的。
     #[test]
-    fn flash的none档不发字段() {
+    fn flash恒发output_config() {
         let r = req(vec![msg(Role::User, "hi")]);
-        let v = body(&r, MinimaxReasoningEffort::None, "forced_on");
-        assert!(v.get("output_config").is_none());
-        assert!(v.get("thinking").is_none());
+        let empty = shape("forced_on", &[]);
+        for effort in MinimaxReasoningEffort::ALL {
+            let v = serde_json::to_value(ChatBody::build(&r, effort, &empty)).unwrap();
+            assert_eq!(
+                v["output_config"]["effort"],
+                effort.effort_value(),
+                "{effort:?} 档位表为空时回退标准名"
+            );
+            assert!(v.get("thinking").is_none(), "forced_on 模型不能发 thinking");
+        }
+    }
+
+    /// 就近映射：上游档位表完整时，每档命中同名档位。
+    #[test]
+    fn flash档位同名命中的() {
+        let r = req(vec![msg(Role::User, "hi")]);
+        let opts = shape("forced_on", FLASH_OPTIONS);
+        for (effort, want) in [
+            (MinimaxReasoningEffort::Low, "low"),
+            (MinimaxReasoningEffort::Medium, "medium"),
+            (MinimaxReasoningEffort::High, "high"),
+            (MinimaxReasoningEffort::Xhigh, "xhigh"),
+            (MinimaxReasoningEffort::Max, "max"),
+        ] {
+            let v = serde_json::to_value(ChatBody::build(&r, effort, &opts)).unwrap();
+            assert_eq!(v["output_config"]["effort"], want, "{effort:?} 应当发 {want}");
+        }
+    }
+
+    /// 就近映射：上游档位表缺档时选最近的一档。
+    #[test]
+    fn flash档位就近映射的() {
+        let r = req(vec![msg(Role::User, "hi")]);
+        // 只有 low / high：medium 距离 0 和 2 各 1，取较低档 low
+        let sparse = shape("forced_on", &["low", "high"]);
+        let cases = [
+            (MinimaxReasoningEffort::Low, "low"),
+            (MinimaxReasoningEffort::Medium, "low"),
+            (MinimaxReasoningEffort::High, "high"),
+            (MinimaxReasoningEffort::Xhigh, "high"),
+            (MinimaxReasoningEffort::Max, "high"),
+        ];
+        for (effort, want) in cases {
+            let v = serde_json::to_value(ChatBody::build(&r, effort, &sparse)).unwrap();
+            assert_eq!(v["output_config"]["effort"], want, "{effort:?} 应当就近到 {want}");
+        }
+    }
+
+    /// 就近映射：上游档位表里只有 `default`（不可识别档位）时回退到标准名。
+    #[test]
+    fn flash档位表不可识别时回退的() {
+        let r = req(vec![msg(Role::User, "hi")]);
+        let only_default = shape("forced_on", &["default"]);
+        let v = serde_json::to_value(ChatBody::build(
+            &r,
+            MinimaxReasoningEffort::Xhigh,
+            &only_default,
+        ))
+        .unwrap();
+        assert_eq!(v["output_config"]["effort"], "xhigh");
+    }
+
+    /// 就近映射：`default` 不参与距离计算（它是「让上游自己决定」，不是档位）。
+    #[test]
+    fn flash的default不参与距离计算() {
+        let opts: Vec<String> = ["default", "low", "max"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for effort in MinimaxReasoningEffort::ALL {
+            let got = effort.nearest_effort(&opts);
+            assert_ne!(got, "default", "{effort:?} 不应映射到 default");
+        }
     }
 
     /// 目录查不到形态时按 switchable 处理（发 thinking 比猜 effort 安全）。

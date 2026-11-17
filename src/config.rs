@@ -146,17 +146,19 @@ pub struct MinimaxConfig {
 
 /// minimax 的思考强度。
 ///
-/// 对应官方客户端的两类落点（`provider-info/minimax.md` §5.1/§5.4）：
-/// * `MiniMax-M3`（`thinking_config.mode = switchable`）：只有开/关二值，
-///   `low`~`max` 对 M3 **全部等价于开思考**，属上游能力限制；
-/// * `MiniMax-M3.1-Flash`（`forced_on`）：档位值原样写进 `output_config.effort`，
-///   可选集合来自目录的 `effort_options`（当前为
-///   `default/low/medium/high/xhigh/max`），代码里不硬编码。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// 配置文件只接受 `low`/`medium`/`high`/`xhigh`/`max` 五档，实现按「就近映射」
+/// 落到上游（`provider-info/minimax.md` §5.2/§5.4）：
+///
+/// * `MiniMax-M3`（`thinking_config.mode = switchable`）：上游只有开/关二值，
+///   五档**全部映射为开思考**（`thinking.type=adaptive`），档位在 M3 上不生效，
+///   属上游能力限制；
+/// * `MiniMax-M3.1-Flash`（`forced_on`）：档位就近映射到目录下发的
+///   `effort_options`（当前为 `default/low/medium/high/xhigh/max`）。
+///
+/// 就近映射的细节见 [`Self::nearest_effort`]。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MinimaxReasoningEffort {
-    /// 关闭思考（M3 `thinking.type=disabled`；M3.1-Flash 不发 `output_config`）。
-    None,
     /// 低。
     #[default]
     Low,
@@ -171,29 +173,88 @@ pub enum MinimaxReasoningEffort {
 }
 
 impl MinimaxReasoningEffort {
-    /// 映射到 `output_config.effort` 的取值（M3.1-Flash 用）。
+    /// 五档全表，按强度升序。
     ///
-    /// `None` 返回 `None`：`none` 不在 `effort_options` 里，按 §5.4 不发该字段。
+    /// 上游档位名以目录 `effort_options` 为准，本常量只用于配置校验与测试。
+    #[cfg(test)]
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::Xhigh, Self::Max];
+
+    /// 档位在本档位在五档中的序号（`0`~`4`）。
     ///
-    /// 思考强度映射属 `MAINTAIN.md` 第 4 步，下一步接入时启用。
-    #[allow(dead_code)]
-    pub fn effort_value(self) -> Option<&'static str> {
+    /// 就近映射的距离计算基准。
+    pub fn rank(self) -> u8 {
+        self as u8
+    }
+
+    /// 本档位在**上游**档位名里的「标准名」（小写）。
+    ///
+    /// 注意：这只是本档位的期望名，实际发给上游的值由
+    /// [`Self::nearest_effort`] 在目录 `effort_options` 里就近挑选，
+    /// 因目录档位集合**禁止硬编码**（§5.2）。
+    pub fn effort_value(self) -> &'static str {
         match self {
-            Self::None => None,
-            Self::Low => Some("low"),
-            Self::Medium => Some("medium"),
-            Self::High => Some("high"),
-            Self::Xhigh => Some("xhigh"),
-            Self::Max => Some("max"),
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
-    /// M3 的思考开关：`none` 关，其余一律开（M3 无档位）。
+    /// 就近映射：在本档位与上游目录档位表之间取最接近的一个。
     ///
-    /// 同 b `effort_value`，第 4 步接入。
-    #[allow(dead_code)]
-    pub fn m3_thinking_enabled(self) -> bool {
-        !matches!(self, Self::None)
+    /// 上游档位集合由目录下发的 `effort_options` 决定（当前为
+    /// `default/low/medium/high/xhigh/max`），**禁止硬编码**（§5.2）。
+    ///
+    /// 规则：
+    /// 1. 上游表里有同名档位（`low`→`low`）→ 直接用它，这是绝大多数情况；
+    /// 2. 否则按「五档序号距离」挑最近的，**距离相同取较低档**（更省 token）；
+    /// 3. 上游表里没有任何可识别档位名时，回退到本档位的标准名。
+    ///
+    /// `default` 是客户端 UI 的「默认」，**不参与**距离计算——它表示
+    /// 「让上游自己决定」，与本档位的具体档位不是同维度（§5.2）。
+    pub fn nearest_effort(self, upstream: &[String]) -> &'static str {
+        let own = self.effort_value();
+        // 1. 同名直接命中
+        if upstream.iter().any(|s| s == own) {
+            return own;
+        }
+        // 2. 按序号距离就近挑；`(距离, 序号)` 取最小 → 距离相同自然落在较低档
+        let want = self.rank();
+        let best = upstream
+            .iter()
+            .filter_map(|name| rank_of_upstream(name).map(|rank| (rank.abs_diff(want), rank)))
+            .min();
+        if let Some((_, rank)) = best {
+            return Self::name_of_rank(rank);
+        }
+        // 3. 上游表里没有一个可识别的档位名
+        own
+    }
+
+    /// 序号 → 上游标准档位名。
+    pub fn name_of_rank(rank: u8) -> &'static str {
+        match rank {
+            0 => "low",
+            1 => "medium",
+            2 => "high",
+            3 => "xhigh",
+            _ => "max",
+        }
+    }
+}
+
+/// 上游档位名 → 五档序号。
+///
+/// `default` 与未知名返回 `None`（不参与距离计算，§5.2）。
+fn rank_of_upstream(name: &str) -> Option<u8> {
+    match name {
+        "low" => Some(0),
+        "medium" => Some(1),
+        "high" => Some(2),
+        "xhigh" => Some(3),
+        "max" => Some(4),
+        _ => None,
     }
 }
 
@@ -358,29 +419,18 @@ mod tests {
         assert_eq!(from_default.minimax, from_str.minimax);
     }
 
-    /// minimax 的思考档位：`none` 不发 `output_config`，其余原样透传（§5.4）。
+    /// 五档全表按强度升序，`rank()` 与下标一致（就近映射的距离基准）。
     #[test]
-    fn minimax_档位映射() {
+    fn minimax_五档序号() {
         use MinimaxReasoningEffort as E;
-        assert_eq!(E::None.effort_value(), None);
-        assert_eq!(E::Low.effort_value(), Some("low"));
-        assert_eq!(E::Medium.effort_value(), Some("medium"));
-        assert_eq!(E::High.effort_value(), Some("high"));
-        assert_eq!(E::Xhigh.effort_value(), Some("xhigh"));
-        assert_eq!(E::Max.effort_value(), Some("max"));
-    }
-
-    /// M3 只有开/关：`none` 关，`low`~`max` 全部等价于开。
-    #[test]
-    fn minimax_m3_只有开关() {
-        use MinimaxReasoningEffort as E;
-        assert!(!E::None.m3_thinking_enabled());
-        for e in [E::Low, E::Medium, E::High, E::Xhigh, E::Max] {
-            assert!(e.m3_thinking_enabled(), "{e:?} 应当开思考");
+        assert_eq!(E::ALL.len(), 5);
+        for (i, e) in E::ALL.iter().enumerate() {
+            assert_eq!(e.rank(), i as u8, "{e:?} 序号错");
+            assert_eq!(E::name_of_rank(e.rank()), e.effort_value());
         }
     }
 
-    /// 档位名与 §5.4 / 目录 `effort_options` 完全对齐（小写往返）。
+    /// 档位名与 §5.4 / 目录 `effort_options` 对齐（小写往返）。
     #[test]
     fn minimax_档位名与目录一致() {
         #[derive(serde::Deserialize)]
@@ -388,22 +438,55 @@ mod tests {
             v: MinimaxReasoningEffort,
         }
         let c = Config::default();
-        assert_eq!(c.minimax.reasoning_effort, MinimaxReasoningEffort::Medium);
-        for (s, want) in [
-            ("none", MinimaxReasoningEffort::None),
-            ("low", MinimaxReasoningEffort::Low),
-            ("medium", MinimaxReasoningEffort::Medium),
-            ("high", MinimaxReasoningEffort::High),
-            ("xhigh", MinimaxReasoningEffort::Xhigh),
-            ("max", MinimaxReasoningEffort::Max),
-        ] {
+        assert_eq!(c.minimax.reasoning_effort, MinimaxReasoningEffort::Low);
+        for want in MinimaxReasoningEffort::ALL {
+            let s = want.effort_value();
             let got: W = toml::from_str(&format!("v = \"{s}\"")).unwrap();
             assert_eq!(got.v, want, "档位 {s} 解析错");
-            // 序列化也必须回到同一个小写串
             assert_eq!(serde_json::to_string(&want).unwrap(), format!("\"{s}\""));
-            // §5.4 表里的字符串集合与目录 `effort_options` 同集（除 none）
-            if want != MinimaxReasoningEffort::None {
-                assert_eq!(want.effort_value(), Some(s));
+        }
+    }
+
+    /// 就近映射：上游档位表齐全时每档命中同名。
+    #[test]
+    fn minimax_就近映射同名命中() {
+        use MinimaxReasoningEffort as E;
+        let full: Vec<String> = ["default", "low", "medium", "high", "xhigh", "max"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for e in E::ALL {
+            assert_eq!(e.nearest_effort(&full), e.effort_value());
+        }
+    }
+
+    /// 就近映射：上游缺档时取最近；距离相同取较低档。
+    #[test]
+    fn minimax_就近映射缺档() {
+        use MinimaxReasoningEffort as E;
+        let opts: Vec<String> = ["low", "high"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(E::Low.nearest_effort(&opts), "low");
+        // medium 到 low/high 距离都是 1 → 取较低档 low
+        assert_eq!(E::Medium.nearest_effort(&opts), "low");
+        assert_eq!(E::High.nearest_effort(&opts), "high");
+        // xhigh/max 到 high 更近
+        assert_eq!(E::Xhigh.nearest_effort(&opts), "high");
+        assert_eq!(E::Max.nearest_effort(&opts), "high");
+
+        // 只有 low 一档时，全部落到 low
+        let only_low: Vec<String> = ["low"].iter().map(|s| s.to_string()).collect();
+        for e in E::ALL {
+            assert_eq!(e.nearest_effort(&only_low), "low", "{e:?} 应落到唯一档位");
+        }
+    }
+
+    /// 就近映射：上游档位表全是不可识别的名字时回退到标准名。
+    #[test]
+    fn minimax_就近映射不可识别() {
+        use MinimaxReasoningEffort as E;
+        for opts in [vec![], vec!["default".to_string()], vec!["ultra".to_string()]] {
+            for e in E::ALL {
+                assert_eq!(e.nearest_effort(&opts), e.effort_value(), "{e:?} 应回退标准名");
             }
         }
     }
@@ -496,7 +579,7 @@ mod tests {
         assert_eq!(c.trae.reasoning_effort, TraeReasoningEffort::None);
         assert_eq!(c.raccoon.reasoning_effort, RaccoonReasoningEffort::Low);
         assert_eq!(c.codearts.reasoning_effort, CodeartsReasoningEffort::Low);
-        assert_eq!(c.minimax.reasoning_effort, MinimaxReasoningEffort::Medium);
+        assert_eq!(c.minimax.reasoning_effort, MinimaxReasoningEffort::Low);
     }
 
     /// 各供应商的档位集合**互相独立**：给 trae 写 `low` 必须报错。

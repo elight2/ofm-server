@@ -108,11 +108,11 @@ impl MinimaxProvider {
             .map_err(ProviderError::from)
     }
 
-    /// 查该模型在目录里的 `thinking_config.mode`（§5.1）。
+    /// 查该模型在目录里的思考形态（§5.1/§5.2）。
     ///
-    /// 目录拉不到或模型不在目录时返回 `""`，由 `chat` 按 `switchable` 处理——
+    /// 目录拉不到或模型不在目录时返回默认形态（按 `switchable` 处理）——
     /// 明确发 `thinking.type` 比猜 `effort` 安全（档位值错了会被 400 拒）。
-    async fn thinking_mode(&self, token: &str, model: &str) -> String {
+    async fn thinking_mode(&self, token: &str, model: &str) -> chat::ThinkingShape {
         let url = format!(
             "{}{}?{}",
             api::AGENT_HOST,
@@ -120,16 +120,26 @@ impl MinimaxProvider {
             api::MODELS_QUERY
         );
         match api::get_json::<models::Catalog>(&self.models_client, &url, token).await {
-            Ok(cat) => cat
-                .providers
-                .first()
-                .and_then(|p| p.config.models.get(model))
-                .and_then(|m| m.thinking_config.as_ref())
-                .and_then(|t| t.mode.clone())
-                .unwrap_or_default(),
+            Ok(cat) => {
+                let Some(entry) = cat
+                    .providers
+                    .first()
+                    .and_then(|p| p.config.models.get(model))
+                else {
+                    return chat::ThinkingShape::default();
+                };
+                chat::ThinkingShape {
+                    mode: entry
+                        .thinking_config
+                        .as_ref()
+                        .and_then(|t| t.mode.clone())
+                        .unwrap_or_default(),
+                    effort_options: entry.effort_options.clone().unwrap_or_default(),
+                }
+            }
             Err(e) => {
                 tracing::warn!("[{ID}] 拉取目录以判定思考形态失败（按 switchable 处理）: {e}");
-                String::new()
+                chat::ThinkingShape::default()
             }
         }
     }
@@ -168,9 +178,9 @@ impl Provider for MinimaxProvider {
     /// 上游恒回 SSE（§3.2），非流式由下游聚合。
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let token = self.access_token().await?;
-        // 思考落点由目录里的 `thinking_config.mode` 决定（§5.1）。
-        let mode = self.thinking_mode(&token, &req.model).await;
-        let body = chat::ChatBody::build(&req, self.effort, &mode);
+        // 思考落点与档位由目录里的思考配置决定（§5.1/§5.2）。
+        let shape = self.thinking_mode(&token, &req.model).await;
+        let body = chat::ChatBody::build(&req, self.effort, &shape);
         let url = format!("{}{}", api::AGENT_HOST, chat::PATH);
 
         // 自己序列化并 .body()：避免 .json() 追加第二个 content-type 头。
