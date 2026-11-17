@@ -1,5 +1,5 @@
 # 禁止行为
-* 禁止修改的文件: `./AGENTS.md`, `./README.md`, `./config.example.toml`, `./PROVIDERS.md`
+* 禁止修改的文件: `./AGENTS.md`, `./README.md`, `./config.example.toml`, `./PROVIDERS.md`, `./TODO.md`
 * 需要的工具未安装时，须暂停工作要求用户安装，禁止绕路或自行安装
 * 未经允许, **禁止修改项目目录外文件**
 
