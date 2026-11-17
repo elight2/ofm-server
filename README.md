@@ -12,7 +12,7 @@
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
 * `ofm-server status 供应商id`: 获取供应商当前信息(输出接入状态, 当前余额, 最近一次成功签到的时间与增量, 凭证到期时间, 模型列表)
-* `ofm-server config`: 打印默认配置文件
+* `ofm-server config`: 打印[默认配置文件](./config.example.toml)
 * `ofm-server refresh 供应商id`: 刷新供应商登录令牌
 
 ## 配置信息
@@ -22,8 +22,9 @@
 * 端口: 默认`3060`
 * 登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 签到记录: `运行目录/providers/供应商id/claim.log`
+* 由于每个供应商接口差异大, 本项目没有实现自定义上下文大小限制, 走下游客户端默认大小; 同时也没有实现缓存token数量, 只实现了输入输出token数量的获取
 * 由于OpenAI协议没有获取模型推理强度列表的部分, 思考强度设置只能在软件配置文件手动改
-* 部分供应商的模型表现可能与官方模型不同, 可以添加自定义系统提示词修正模型行为: `运行目录/prompts/供应商id.md`会自动加入系统提示词发送给模型
+* 部分供应商的模型表现可能与官方模型不同, 可以添加自定义系统提示词修正模型行为: `运行目录/prompts/供应商id.md`会自动加入系统提示词发送给模型, [默认版本](./default-prompts.md)
 
 ## 技术信息
 * 使用Rust语言
