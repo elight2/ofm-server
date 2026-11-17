@@ -355,6 +355,66 @@ mod tests {
         assert_eq!(from_default.trae, from_str.trae);
         assert_eq!(from_default.raccoon, from_str.raccoon);
         assert_eq!(from_default.codearts, from_str.codearts);
+        assert_eq!(from_default.minimax, from_str.minimax);
+    }
+
+    /// minimax 的思考档位：`none` 不发 `output_config`，其余原样透传（§5.4）。
+    #[test]
+    fn minimax_档位映射() {
+        use MinimaxReasoningEffort as E;
+        assert_eq!(E::None.effort_value(), None);
+        assert_eq!(E::Low.effort_value(), Some("low"));
+        assert_eq!(E::Medium.effort_value(), Some("medium"));
+        assert_eq!(E::High.effort_value(), Some("high"));
+        assert_eq!(E::Xhigh.effort_value(), Some("xhigh"));
+        assert_eq!(E::Max.effort_value(), Some("max"));
+    }
+
+    /// M3 只有开/关：`none` 关，`low`~`max` 全部等价于开。
+    #[test]
+    fn minimax_m3_只有开关() {
+        use MinimaxReasoningEffort as E;
+        assert!(!E::None.m3_thinking_enabled());
+        for e in [E::Low, E::Medium, E::High, E::Xhigh, E::Max] {
+            assert!(e.m3_thinking_enabled(), "{e:?} 应当开思考");
+        }
+    }
+
+    /// 档位名与 §5.4 / 目录 `effort_options` 完全对齐（小写往返）。
+    #[test]
+    fn minimax_档位名与目录一致() {
+        #[derive(serde::Deserialize)]
+        struct W {
+            v: MinimaxReasoningEffort,
+        }
+        let c = Config::default();
+        assert_eq!(c.minimax.reasoning_effort, MinimaxReasoningEffort::Medium);
+        for (s, want) in [
+            ("none", MinimaxReasoningEffort::None),
+            ("low", MinimaxReasoningEffort::Low),
+            ("medium", MinimaxReasoningEffort::Medium),
+            ("high", MinimaxReasoningEffort::High),
+            ("xhigh", MinimaxReasoningEffort::Xhigh),
+            ("max", MinimaxReasoningEffort::Max),
+        ] {
+            let got: W = toml::from_str(&format!("v = \"{s}\"")).unwrap();
+            assert_eq!(got.v, want, "档位 {s} 解析错");
+            // 序列化也必须回到同一个小写串
+            assert_eq!(serde_json::to_string(&want).unwrap(), format!("\"{s}\""));
+            // §5.4 表里的字符串集合与目录 `effort_options` 同集（除 none）
+            if want != MinimaxReasoningEffort::None {
+                assert_eq!(want.effort_value(), Some(s));
+            }
+        }
+    }
+
+    /// 未知档位字符串必须报错（`deny_unknown_fields` + 枚举无 `other`）。
+    #[test]
+    fn minimax_未知档位报错() {
+        assert!(parse("[minimax]\nreasoning_effort = \"ultra\"\n").is_err());
+        assert!(parse("[minimax]\nclaim_intervals = 10\n").is_ok());
+        let c = parse("[minimax]\nclaim_intervals = 10\n").unwrap();
+        assert!(c.claim_interval_for("minimax").is_err());
     }
 
     /// 示例文件里 trae=6h、raccoon=12h。
@@ -436,6 +496,7 @@ mod tests {
         assert_eq!(c.trae.reasoning_effort, TraeReasoningEffort::None);
         assert_eq!(c.raccoon.reasoning_effort, RaccoonReasoningEffort::Low);
         assert_eq!(c.codearts.reasoning_effort, CodeartsReasoningEffort::Low);
+        assert_eq!(c.minimax.reasoning_effort, MinimaxReasoningEffort::Medium);
     }
 
     /// 各供应商的档位集合**互相独立**：给 trae 写 `low` 必须报错。
@@ -444,6 +505,9 @@ mod tests {
         assert!(parse("[trae]\nreasoning_effort = \"low\"\n").is_err());
         assert!(parse("[raccoon]\nreasoning_effort = \"none\"\n").is_err());
         assert!(parse("[codearts]\nreasoning_effort = \"max\"\n").is_err());
+        // minimax 有 `max`，但没有 `minimal`/`ultra`
+        assert!(parse("[minimax]\nreasoning_effort = \"minimal\"\n").is_err());
+        assert!(parse("[minimax]\nreasoning_effort = \"max\"\n").is_ok());
     }
 
     /// 合法档位可解析。
