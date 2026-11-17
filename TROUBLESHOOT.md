@@ -119,6 +119,29 @@
 **结论**：不破解加密就没有入口。剩下只有 `create_agent_task`（需重写 stream，SSE 帧集合不同）。
 脚本 `tmp/re-test/probe_nested.py`，数据 `tmp/re-test/results_nested.json`。
 
+**2026-11-17 三条定论**（详见 `provider-info/trae.md` §5）：
+
+1. **类型错配探针**（比行为差分强）：给字段塞 number 但应为 string，字段存在则 Go 报
+   `cannot unmarshal … into Go struct field <名>.<字段>`，不存在则静默忽略。
+   结果：`llm_utils_chat` 上 `reasoning_effort_level` / `reasoning_effort` / `custom_model` /
+   `model_info` **四个全部不存在** → 不是「接受但忽略」，是结构体里没有，别再试。
+   （对照组：`tool_choice` 传对象能报错，证明探针有效。）
+2. **官方档位根本不在 `llm_utils_chat` 上**：`solo-lite` 的 `RustAdapter` 前插桩 dump 明文
+   → side_chat 走 `{service:"lite", method:"send_message"}`（Js→Rust IPC，**非 HTTP**），
+   字段是 `custom_model.reasoning_effort_level`，逐消息携带，三次改档两两 diff 只差这 1 处。
+3. **`create_agent_task` 明文能跑到 `task_created`**：必填链
+   `app_id→conversation_id→session_id→user_id→device_id→agent_type→model_name→config_name→ide_version→user_input.id`，
+   再加 `is_custom_model`/`custom_model`/`tool_list`/`history_id_list`/`render_context`/`extra_config`/
+   `mcp_tool_list`/`prompt_set`/`agent_version`/`e_version`/`config_source` 后正常开流，
+   随后被 `8000001 no user input prompt template found for agent type: solo_agent` 卡死。
+   `mode_type` / `prompt_set` / `extra_config.{use_v2_process,v2_use_session_context}` 均不影响该开关。
+
+**插桩方法**（本机 Linux 即可，不必 Windows）：`tmp/trae-extract/` 是解包 deb，
+`node_modules.asar` 只有 28 字节 stub → 直接改 `node_modules/` 下的 `dist/*.mjs` 生效。
+锚点选在 `r=await el(s.request(C),a.signal)` **之前** —— 这是 payload 交给 native 前的最后一份明文。
+捕获器 `tmp/dump-server.py`（双栈 17391）→ `tmp/trae-dump.jsonl`。改完 `node --check` 验语法。
+**改前必须 `cp -n` 备份**（`7528.da417b03.mjs.bak`）。
+
 ## CodeArts benefit 签名 401（APIG.0301）：两个坑叠加（2026-11-16）
 
 **问题**：claim/balance 签名被拒 `APIG.0301 verify ak sk signature fail`，
