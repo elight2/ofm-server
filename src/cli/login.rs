@@ -11,10 +11,12 @@
 //!   （`raccoon::auth`，自带一次性回调服务，不走 `wait_callback_on`）
 //! * codearts：PKCE(SHA-256) + DPoP(ES256)，门户授权 + STS 换 AKSK
 //!   （`codearts::auth`，自带回调服务）
+//! * minimax：OAuth 2.0 设备码 + PKCE，**无本地回调**，打印 `user_code`
+//!   后轮询令牌（`minimax::auth`，需要用户在浏览器扫码 + 短信验证）
 
 use std::time::Duration;
 
-use crate::providers::{codearts, raccoon, trae};
+use crate::providers::{codearts, minimax, raccoon, trae};
 
 /// 浏览器 OAuth 登录。
 pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<()> {
@@ -22,11 +24,13 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
         trae::ID => trae::auth::login(root).await,
         raccoon::ID => raccoon::auth::run(root).await,
         codearts::ID => codearts::auth::run(root).await,
+        minimax::ID => minimax::auth::run(root).await,
         other => anyhow::bail!(
-            "未知供应商 `{other}`，可用: {}, {}, {}",
+            "未知供应商 `{other}`，可用: {}, {}, {}, {}",
             trae::ID,
             raccoon::ID,
-            codearts::ID
+            codearts::ID,
+            minimax::ID
         ),
     }
 }

@@ -57,6 +57,10 @@ fn default_codearts() -> CodeartsConfig {
     example().codearts
 }
 
+fn default_minimax() -> MinimaxConfig {
+    example().minimax
+}
+
 /// 解析示例文件。供 `Config::default()` 与字段级默认共用。
 fn example() -> Config {
     toml::from_str(DEFAULT_CONFIG_STR).expect("config.example.toml 必须可解析")
@@ -80,6 +84,9 @@ pub struct Config {
     /// codearts 供应商设置。
     #[serde(default = "default_codearts")]
     pub codearts: CodeartsConfig,
+    /// minimax 供应商设置。
+    #[serde(default = "default_minimax")]
+    pub minimax: MinimaxConfig,
 }
 
 /// trae 供应商设置。
@@ -120,6 +127,74 @@ pub struct CodeartsConfig {
     /// 思考强度。
     #[serde(default)]
     pub reasoning_effort: CodeartsReasoningEffort,
+}
+
+/// minmax 供应商设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MinimaxConfig {
+    /// 自动签到间隔（秒）。
+    ///
+    /// ⚠︎ 签到端点目前未知（`provider-info/minimax.md` §7：官方客户端无签到功能），
+    /// 故该值暂时无效果，保留以保持配置形状一致。
+    #[serde(default = "default_claim_interval_secs")]
+    pub claim_intervals: u64,
+    /// 思考强度。
+    #[serde(default)]
+    pub reasoning_effort: MinimaxReasoningEffort,
+}
+
+/// minimax 的思考强度。
+///
+/// 对应官方客户端的两类落点（`provider-info/minimax.md` §5.1/§5.4）：
+/// * `MiniMax-M3`（`thinking_config.mode = switchable`）：只有开/关二值，
+///   `low`~`max` 对 M3 **全部等价于开思考**，属上游能力限制；
+/// * `MiniMax-M3.1-Flash`（`forced_on`）：档位值原样写进 `output_config.effort`，
+///   可选集合来自目录的 `effort_options`（当前为
+///   `default/low/medium/high/xhigh/max`），代码里不硬编码。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MinimaxReasoningEffort {
+    /// 关闭思考（M3 `thinking.type=disabled`；M3.1-Flash 不发 `output_config`）。
+    None,
+    /// 低。
+    #[default]
+    Low,
+    /// 中。
+    Medium,
+    /// 高。
+    High,
+    /// 极高。
+    Xhigh,
+    /// 最大。
+    Max,
+}
+
+impl MinimaxReasoningEffort {
+    /// 映射到 `output_config.effort` 的取值（M3.1-Flash 用）。
+    ///
+    /// `None` 返回 `None`：`none` 不在 `effort_options` 里，按 §5.4 不发该字段。
+    ///
+    /// 思考强度映射属 `MAINTAIN.md` 第 4 步，下一步接入时启用。
+    #[allow(dead_code)]
+    pub fn effort_value(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+            Self::Xhigh => Some("xhigh"),
+            Self::Max => Some("max"),
+        }
+    }
+
+    /// M3 的思考开关：`none` 关，其余一律开（M3 无档位）。
+    ///
+    /// 同 b `effort_value`，第 4 步接入。
+    #[allow(dead_code)]
+    pub fn m3_thinking_enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 fn default_claim_interval_secs() -> u64 {
@@ -207,6 +282,7 @@ impl Config {
             crate::providers::trae::ID => self.trae.claim_intervals,
             crate::providers::raccoon::ID => self.raccoon.claim_intervals,
             crate::providers::codearts::ID => self.codearts.claim_intervals,
+            crate::providers::minimax::ID => self.minimax.claim_intervals,
             _ => FALLBACK_CLAIM_INTERVAL_SECS,
         };
         if secs < MIN_CLAIM_INTERVAL_SECS {

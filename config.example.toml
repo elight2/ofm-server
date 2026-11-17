@@ -19,3 +19,11 @@ reasoning_effort = "low"
 claim_intervals = 21600
 # low high
 reasoning_effort = "low"
+
+[minimax]
+# 签到间隔(s)
+# minimax 签到端点未知(官方客户端无签到功能), 此项目前无效果
+claim_intervals = 21600
+# none low medium high xhigh max
+# M3 只能开/关: low~max 对 M3 等价于开思考; none 关闭思考
+reasoning_effort = "medium"
