@@ -645,6 +645,8 @@ raw = 原始 usage
 * `prompt_cache_key` 由**对话前缀**派生（`ofm-<sha256>`）：取首条 system + 首条 user
   的内容与模型名做哈希。早期实现每请求随机 `ofm-<uuid>`，前缀缓存永远不可能命中；
   现同会话前缀不变 → key 不变，不同会话首条 user 不同 → key 不同。
+  实测：随机 key 与稳定 key 都能命中（上游还按内容前缀归组），稳定 key 可保证
+  同一会话始终落在同一缓存组。
 * 响应：标准 CC SSE，解析 `content`、`reasoning_content`/`reasoning`、`tool_calls`、
   `finish_reason`、`usage`；错误帧兼容 `error` 与顶层 `error_code/error_msg`。
 * `TM.00001041` 并发会话满：HTTP 400 时每 10s 重试，最多 180 次（30 分钟）。
@@ -653,9 +655,13 @@ raw = 原始 usage
 
 * SM4-GCM 加密链路（§3.2）未实现；当前依赖上游明文回退，实测可用。
 * SSE 流内 `TM.00001041` 等排队错误不会自动重连（HTTP 400 会重试）。
-* **缓存命中恒为 0**：上游 `usage.prompt_tokens_details.cached_tokens` 实测恒为 `0`
-  （固定 `prompt_cache_key` + 2000 token 长前缀连发 4 次仍为 0），说明该网关当前
-  未提供前缀缓存命中统计。server 侧字段解析与透出已完整实现，命中与否取决于上游。
+* **缓存需要足够长的前缀**：上游**确实支持**前缀缓存，会在
+  `usage.prompt_tokens_details.cached_tokens` 返回命中量，但有最小前缀长度：
+  实测 2512 token 前缀 → 命中 0；2812 token 前缀 → 命中 2432；3012 token 前缀
+  → 命中 2944。即**可缓存前缀约需 ≥2560 token**。server 侧字段解析与透出已完整
+  实现（见 §3.8「流式 usage 的特殊处理」）。
+* **偶发不命中**：同一请求连发 10 次，约 1~2 次返回 `cached_tokens: 0`（上游侧
+  抖动，非本项目问题）。
 * 首帧租户冻结/内容安全扫描/客户端断开取消未复刻。
 * ~~`glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型带 `maas_type:benefit` 返回
   `APIG.0101.404`~~ —— **已定位为发送方错误**：`maas_type` 本身导致 404，与模型无关，
