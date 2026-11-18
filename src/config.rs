@@ -27,11 +27,21 @@ pub const PROMPTS_DIR: &str = "prompts";
 /// 代码里不再重复写一份常量。改默认值只改这个文件。
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../config.example.toml");
 
-/// 内嵌的默认系统提示词 = 仓库根的 `default-prompts.md`。
+/// 某个内置供应商的内嵌默认系统提示词 = 仓库 `default-prompts/<供应商id>.md`。
 ///
-/// 同 [`DEFAULT_CONFIG_STR`]：它是**默认提示词的唯一真相**，运行目录下没有
+/// 同 [`DEFAULT_CONFIG_STR`]：文件是**默认提示词的唯一真相**，运行目录下没有
 /// `<root>/prompts/<供应商id>.md` 时用它，代码里不重复写一份常量。
-pub const DEFAULT_PROMPTS_STR: &str = include_str!("../default-prompts.md");
+/// 每个供应商各有一份，互不影响；未列出的供应商没有默认提示词（`None`，即不注入）。
+pub fn default_prompt(provider: &str) -> Option<&'static str> {
+    let text = match provider {
+        crate::providers::trae::ID => include_str!("../default-prompts/trae.md"),
+        crate::providers::raccoon::ID => include_str!("../default-prompts/raccoon.md"),
+        crate::providers::codearts::ID => include_str!("../default-prompts/codearts.md"),
+        crate::providers::minimax::ID => include_str!("../default-prompts/minimax.md"),
+        _ => return None,
+    };
+    Some(text)
+}
 
 /// 未在 `[<provider>]` 表中写出 `claim_intervals` 时的兜底签到间隔（秒）。
 ///
@@ -377,7 +387,7 @@ impl Config {
 
     /// 某供应商的自定义系统提示词 `<root>/prompts/<id>.md`。
     ///
-    /// 文件不存在即不注入，无需预先创建。
+    /// 文件不存在时回退到内嵌默认（`default-prompts/<id>.md`），无需预先创建。
     pub fn prompt_path(root: &Path, provider: &str) -> PathBuf {
         root.join(PROMPTS_DIR).join(format!("{provider}.md"))
     }

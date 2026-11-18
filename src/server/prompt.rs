@@ -6,18 +6,20 @@
 //!
 //! 内容来源两级：
 //! 1. `<root>/prompts/<供应商id>.md`（用户自定义，存在即用它）；
-//! 2. 否则用内嵌的 [`DEFAULT_PROMPTS_STR`]（= 仓库根的 `default-prompts.md`）。
+//! 2. 否则用该供应商的内嵌默认 [`crate::config::default_prompt`]
+//!    （= 仓库 `default-prompts/<供应商id>.md`，每家一份）。
 //!
-//! 默认内容**不硬编码在代码里**，只有那一个 Markdown 文件是真相；
-//! 想完全不注入时，把自定义文件写成空白内容即可（空白视为「不注入」不会生效，
-//! 见下 —— 空白文件回退到默认，故要彻底关闭需用配置项，当前未提供）。
+//! 默认内容**不硬编码在代码里**，只有那些 Markdown 文件是真相；
+//! 没有默认文件的供应商不注入任何内容。
+//! 空白自定义文件同样回退到默认（空白注入无意义），故当前无法用空文件关掉注入；
+//! 要彻底不注入需删掉该供应商的默认文件，当前不提供配置开关。
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-use crate::config::{Config, DEFAULT_PROMPTS_STR};
+use crate::config::{self, Config};
 use crate::core::provider as p;
 
 /// 一个文件条目的缓存值：`(mtime, 内容)`。
@@ -39,13 +41,14 @@ fn cache() -> &'static Cache {
 
 /// 取该供应商要注入的系统提示词。
 ///
-/// 优先级：`<root>/prompts/<provider>.md` → 内嵌默认 [`DEFAULT_PROMPTS_STR`]。
+/// 优先级：`<root>/prompts/<provider>.md` → 该供应商的内嵌默认
+/// [`config::default_prompt`]（`default-prompts/<provider>.md`）。
 ///
 /// * 自定义文件不存在 → 回退默认（不打日志，属正常状态）；
 /// * 自定义文件读取失败 → 回退默认 + `warn`（不阻断请求）；
 /// * 自定义文件为空白 → 回退默认（空白注入无意义，且部分上游会拒）。
 ///
-/// 返回 `None` 仅当**默认内容也为空白**（正常情况下不会发生）。
+/// 返回 `None` 表示该供应商没有自定义也没有默认提示词（不注入）。
 pub fn load(root: &Path, provider: &str) -> Option<String> {
     let path = Config::prompt_path(root, provider);
     let key = path.to_string_lossy().into_owned();
@@ -77,8 +80,13 @@ pub fn load(root: &Path, provider: &str) -> Option<String> {
         guard.insert(key, (mtime, content.clone()));
     }
 
-    // 自定义内容优先；没有（或读失败/空白）则用内嵌默认。
-    content.or_else(|| non_empty(DEFAULT_PROMPTS_STR))
+    // 自定义内容优先；没有（或读失败/空白）则用该供应商的内嵌默认。
+    content.or_else(|| default_for(provider))
+}
+
+/// 该供应商的内嵌默认提示词；没有或内容为空白时返回 `None`。
+fn default_for(provider: &str) -> Option<String> {
+    config::default_prompt(provider).and_then(non_empty)
 }
 
 /// 空白文本视为「无内容」。
@@ -252,21 +260,35 @@ mod tests {
         assert_eq!(r.messages.len(), 1);
     }
 
-    /// 文件不存在 → 回退到内嵌默认，不报错。
+    /// 文件不存在 → 回退到该供应商的内嵌默认，不报错。
     #[test]
     fn 无自定义文件用默认() {
         let dir = std::env::temp_dir().join("ofm-prompt-test-none");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let got = load(&dir, "trae").expect("应回退到内嵌默认");
-        assert_eq!(got, DEFAULT_PROMPTS_STR);
+        let want = default_for("trae").expect("trae 应有内嵌默认");
+        assert_eq!(load(&dir, "trae"), Some(want));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 内嵌默认内容非空白（否则「回退默认」等于没注入）。
+    /// 内嵌默认内容非空白（否则「回退默认」等于没注入），且每个内置供应商都有。
     #[test]
     fn 默认提示词非空白() {
-        assert!(!DEFAULT_PROMPTS_STR.trim().is_empty());
+        for id in ["trae", "raccoon", "codearts", "minimax"] {
+            let text = config::default_prompt(id).unwrap_or_else(|| panic!("{id} 缺默认提示词"));
+            assert!(!text.trim().is_empty(), "{id} 默认提示词为空白");
+        }
+    }
+
+    /// 未知供应商没有内嵌默认 → 不注入。
+    #[test]
+    fn 未知供应商无默认() {
+        assert!(config::default_prompt("unknown-provider").is_none());
+        let dir = std::env::temp_dir().join("ofm-prompt-test-unknown");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(load(&dir, "unknown-provider"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 文件存在 → 读到内容；内容改动后（mtime 变化）下次读到新内容。
@@ -297,7 +319,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("prompts")).unwrap();
         std::fs::write(dir.join("prompts").join("trae.md"), "  \n\t\n").unwrap();
-        assert_eq!(load(&dir, "trae").as_deref(), Some(DEFAULT_PROMPTS_STR));
+        assert_eq!(load(&dir, "trae"), default_for("trae"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -309,8 +331,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("prompts")).unwrap();
         std::fs::write(dir.join("prompts").join("trae.md"), "自定义内容").unwrap();
         assert_eq!(load(&dir, "trae").as_deref(), Some("自定义内容"));
-        // 另一个供应商没有自定义文件 → 仍是默认
-        assert_eq!(load(&dir, "raccoon").as_deref(), Some(DEFAULT_PROMPTS_STR));
+        // 另一个供应商没有自定义文件 → 仍是它自己的默认
+        assert_eq!(load(&dir, "raccoon"), default_for("raccoon"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -324,8 +346,8 @@ mod tests {
         std::fs::write(dir.join("prompts").join("minimax.md"), "minimax 的").unwrap();
         assert_eq!(load(&dir, "trae").as_deref(), Some("trae 的"));
         assert_eq!(load(&dir, "minimax").as_deref(), Some("minimax 的"));
-        // 未写自定义的供应商回退默认，不会串到别人的内容
-        assert_eq!(load(&dir, "raccoon").as_deref(), Some(DEFAULT_PROMPTS_STR));
+        // 未写自定义的供应商回退自己的默认，不会串到别人的内容
+        assert_eq!(load(&dir, "raccoon"), default_for("raccoon"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
