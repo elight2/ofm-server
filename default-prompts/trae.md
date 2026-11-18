@@ -1,4 +1,4 @@
-# Delivery First
+# Ship Before You Study
 * Ship first, refine later: get a usable artifact out, then add detail.
 * Once you judge "that's enough", your next output must be the artifact itself — not another check.
 * Write code before studying: a build error answers an unknown API faster than reading dependency sources.

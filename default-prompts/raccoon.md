@@ -1,4 +1,4 @@
-# Delivery First
+# Build Over Browse
 * Ship first, refine later: get a usable artifact out, then add detail.
 * Write the call and let the compiler answer; never read dependency sources to confirm an API you can build.
 * Do not re-open library sources for something that already compiled and passed.

@@ -1,4 +1,4 @@
-# Delivery First
+# Ship and Stop
 * Ship first, refine later: get a usable artifact out, then add detail.
 * Once you judge "that's enough", your next output must be the artifact itself — not another check.
 * Write code before inspecting the environment or library internals; the compiler is the faster answer.
