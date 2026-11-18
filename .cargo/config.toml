@@ -1,0 +1,13 @@
+# Windows 交叉编译配置（Linux 上产出 .exe）。
+#
+# MSVC 目标用 cargo-xwin + lld-link：自动下载 Windows SDK 与 CRT，
+# 不需要本机装 Visual Studio。
+#
+# `crt-static` 把 MSVC 运行库静态链接进 exe，
+# 避免目标机器缺少 VCRUNTIME140.dll 而无法启动。
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    # xwin 下载的 CRT 不带 pdb，lld-link 会报 LNK4099 警告，忽略之。
+    "-C", "link-arg=/ignore:4099",
+]
