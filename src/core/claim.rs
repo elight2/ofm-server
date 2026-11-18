@@ -161,7 +161,7 @@ impl ClaimOutcome {
     /// 写入 `claim.log` 的英文结果串（含明细）。
     pub fn result_en(&self) -> String {
         join(
-            &self.code.en(),
+            self.code.en(),
             &self.details.iter().map(|d| d.en()).collect::<Vec<_>>(),
         )
     }
@@ -169,7 +169,7 @@ impl ClaimOutcome {
     /// 展示用的中文结果串（含明细）。
     pub fn result_zh(&self) -> String {
         join(
-            &self.code.zh(),
+            self.code.zh(),
             &self.details.iter().map(|d| d.zh()).collect::<Vec<_>>(),
         )
     }
