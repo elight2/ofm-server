@@ -91,7 +91,7 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
     let mut f = std::fs::File::create(&tmp)?;
     f.write_all(text.as_bytes())?;
     f.sync_all()?;
-    std::fs::rename(&tmp, &path)?;
+    crate::core::atomicio::rename(&tmp, &path)?;
     Ok(())
 }
 

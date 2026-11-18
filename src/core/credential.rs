@@ -63,7 +63,7 @@ pub fn store<T: Serialize>(root: &Path, provider: &str, value: &T) -> Result<(),
     let text = toml::to_string_pretty(value).map_err(CredentialError::Serialize)?;
     let tmp = path.with_extension("toml.tmp");
     write_private(&tmp, text.as_bytes())?;
-    std::fs::rename(&tmp, &path).map_err(|e| CredentialError::Write {
+    crate::core::atomicio::rename(&tmp, &path).map_err(|e| CredentialError::Write {
         path: path.clone(),
         source: e,
     })?;
@@ -71,9 +71,9 @@ pub fn store<T: Serialize>(root: &Path, provider: &str, value: &T) -> Result<(),
 }
 
 fn write_private(path: &Path, data: &[u8]) -> Result<(), CredentialError> {
-    use std::io::Write;
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .create(true)

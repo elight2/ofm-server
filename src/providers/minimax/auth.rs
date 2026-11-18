@@ -257,6 +257,10 @@ pub async fn poll_token(
 /// 能被启动但什么都不会打开，于是它会误报成功。这里先自己判一次环境，
 /// 避免用户误以为「已经打开浏览器了」。
 fn open_browser_safely(url: &str) {
+    // Windows 没有 DISPLAY/WAYLAND_DISPLAY，但只要是交互式会话就能开浏览器。
+    #[cfg(windows)]
+    let has_display = true;
+    #[cfg(not(windows))]
     let has_display = std::env::var("WAYLAND_DISPLAY").is_ok_and(|v| !v.is_empty())
         || std::env::var("DISPLAY").is_ok_and(|v| !v.is_empty());
     if !has_display {

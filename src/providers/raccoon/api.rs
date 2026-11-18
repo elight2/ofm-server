@@ -128,6 +128,7 @@ impl From<HttpError> for crate::core::provider::ProviderError {
 }
 
 pub fn client() -> Result<reqwest::Client, reqwest::Error> {
+    crate::tls::init();
     reqwest::Client::builder()
         .user_agent(UA)
         .timeout(std::time::Duration::from_secs(300))

@@ -75,6 +75,7 @@ pub const MODELS_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 
 /// 构建 HTTP 客户端。
 pub fn client() -> Result<reqwest::Client, reqwest::Error> {
+    crate::tls::init();
     reqwest::Client::builder()
         .user_agent(UA)
         .timeout(std::time::Duration::from_secs(60))
@@ -83,6 +84,7 @@ pub fn client() -> Result<reqwest::Client, reqwest::Error> {
 
 /// 构建模型目录用的 HTTP 客户端（UA 不同）。
 pub fn models_client() -> Result<reqwest::Client, reqwest::Error> {
+    crate::tls::init();
     reqwest::Client::builder()
         .user_agent(MODELS_UA)
         .timeout(std::time::Duration::from_secs(60))

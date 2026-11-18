@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs", "process"] }
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "stream", "json", "cookies"] }
+# 使用 rustls 的 no-provider 模式：加密算法实现由下方 rustls-rustcrypto 提供，
+# 全纯 Rust，不引入 ring / aws-lc-rs（避免 C 代码与额外构建工具）。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "http2", "stream", "json", "cookies"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-rustcrypto = "0.1.0-pre.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"

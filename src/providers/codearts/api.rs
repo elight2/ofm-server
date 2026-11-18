@@ -30,6 +30,7 @@ pub const UA_TOKEN: &str = "axios/1.7.9";
 
 /// 换 token 客户端：60s 超时、无 cookie、禁代理（官方 `proxy:!1`）。
 pub fn token_client() -> Result<reqwest::Client, reqwest::Error> {
+    crate::tls::init();
     reqwest::Client::builder()
         .user_agent(UA_TOKEN)
         .timeout(std::time::Duration::from_secs(60))
@@ -39,6 +40,7 @@ pub fn token_client() -> Result<reqwest::Client, reqwest::Error> {
 
 /// 对话客户端：不能设总超时（SSE 可持续数分钟），只限制连接/空闲读取。
 pub fn chat_client() -> Result<reqwest::Client, reqwest::Error> {
+    crate::tls::init();
     reqwest::Client::builder()
         .user_agent("codearts/1.0.0 (ofm-server)")
         .connect_timeout(std::time::Duration::from_secs(30))

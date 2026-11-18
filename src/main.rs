@@ -5,6 +5,7 @@ mod config;
 mod core;
 mod providers;
 mod server;
+mod tls;
 
 use clap::Parser;
 
@@ -12,6 +13,7 @@ use cli::{Cli, Command};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tls::init();
     init_tracing();
 
     let cli = Cli::parse();

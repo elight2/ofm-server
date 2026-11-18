@@ -87,25 +87,79 @@ pub enum DeviceError {
 }
 
 fn machine_seed() -> String {
-    // 优先级：本机 machine-id → 主机名。二者缺失时退化为随机串。
-    for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
-        if let Ok(s) = std::fs::read_to_string(path) {
-            let s = s.trim();
-            if !s.is_empty() {
-                return s.to_string();
+    // Windows：优先读 MachineGuid（系统级稳定标识，不随重装/改名变化）。
+    #[cfg(windows)]
+    {
+        if let Some(guid) = reg_query(r"HKLM\SOFTWARE\Microsoft\Cryptography", "MachineGuid") {
+            return guid;
+        }
+        // 退化为计算机名（改名后会变，但好过随机值）。
+        if let Ok(h) = std::env::var("COMPUTERNAME")
+            && !h.is_empty()
+        {
+            return h;
+        }
+        return random_seed();
+    }
+    #[cfg(not(windows))]
+    {
+        // 优先级：本机 machine-id → 主机名。二者缺失时退化为随机串。
+        for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+            if let Ok(s) = std::fs::read_to_string(path) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return s.to_string();
+                }
             }
         }
+        if let Ok(h) = std::env::var("HOSTNAME")
+            && !h.is_empty()
+        {
+            return h;
+        }
+        random_seed()
     }
-    if let Ok(h) = std::env::var("HOSTNAME")
-        && !h.is_empty()
-    {
-        return h;
-    }
+}
+
+/// 随机退路（仅在拿不到任何稳定标识时使用）。
+fn random_seed() -> String {
     let mut buf = [0u8; 16];
     if getrandom::fill(&mut buf).is_ok() {
         return URL_SAFE_NO_PAD.encode(buf);
     }
     "ofm-server".to_string()
+}
+
+/// 读 Windows 注册表的值（仅 Windows 可用）。
+///
+/// 用系统自带的 `reg.exe` 查询，避免为此引入额外 crate。
+#[cfg(windows)]
+fn reg_query(key: &str, value: &str) -> Option<String> {
+    let out = std::process::Command::new("reg")
+        .args(["query", key, "/v", value])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // 输出形如： `    MachineGuid    REG_SZ    <值>`
+    // 值本身可能含空格（如 `ProductName = Windows 10 Pro`），
+    // 故按空白切分后取类型名之后的部分重新拼接。
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(name), Some(_type)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case(value) {
+            continue;
+        }
+        let v = parts.collect::<Vec<_>>().join(" ");
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    None
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -134,32 +188,60 @@ fn device_name() -> String {
 }
 
 pub fn os_version() -> String {
-    // 优先 PRETTY_NAME，退化为内核版本。
-    if let Ok(s) = std::fs::read_to_string("/etc/os-release") {
-        for line in s.lines() {
-            if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
-                let v = v.trim().trim_matches('"');
-                if !v.is_empty() {
+    #[cfg(windows)]
+    {
+        // 注册表里的 ProductName / DisplayVersion 比 `std::env::consts::OS` 信息量大。
+        if let Some(v) = reg_query(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "ProductName",
+        ) {
+            return v;
+        }
+        return std::env::consts::OS.to_string();
+    }
+    #[cfg(not(windows))]
+    {
+        // 优先 PRETTY_NAME，退化为内核版本。
+        if let Ok(s) = std::fs::read_to_string("/etc/os-release") {
+            for line in s.lines() {
+                if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
+                    let v = v.trim().trim_matches('"');
+                    if !v.is_empty() {
+                        return v.to_string();
+                    }
+                }
+            }
+        }
+        std::env::consts::OS.to_string()
+    }
+}
+
+pub fn cpu_model() -> String {
+    #[cfg(windows)]
+    {
+        // CPU 型号在注册表 HARDWARE 描述里，WMI 在新系统上可能不可用。
+        if let Some(v) = reg_query(
+            r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            "ProcessorNameString",
+        ) {
+            return v;
+        }
+        return String::new();
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") {
+            for line in s.lines() {
+                if let Some(v) = line.strip_prefix("model name")
+                    && let Some(v) = v.split_once(':').map(|(_, v)| v.trim())
+                    && !v.is_empty()
+                {
                     return v.to_string();
                 }
             }
         }
+        String::new()
     }
-    std::env::consts::OS.to_string()
-}
-
-pub fn cpu_model() -> String {
-    if let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") {
-        for line in s.lines() {
-            if let Some(v) = line.strip_prefix("model name")
-                && let Some(v) = v.split_once(':').map(|(_, v)| v.trim())
-                && !v.is_empty()
-            {
-                return v.to_string();
-            }
-        }
-    }
-    String::new()
 }
 
 #[cfg(test)]
