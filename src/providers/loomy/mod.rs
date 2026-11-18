@@ -46,6 +46,14 @@ impl LoomyProvider {
         }
     }
 
+    /// 凭证到期时间。
+    fn credential_expire_at(&self) -> Option<i64> {
+        Credential::load(&self.root)
+            .ok()
+            .flatten()
+            .and_then(|c| c.token_expire_at)
+    }
+
     fn credential(&self) -> Result<Credential, ProviderError> {
         match Credential::load(&self.root) {
             Ok(Some(c)) => Ok(c),
