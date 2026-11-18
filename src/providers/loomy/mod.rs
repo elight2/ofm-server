@@ -29,8 +29,6 @@ pub const ID: &str = "loomy";
 pub struct LoomyProvider {
     root: PathBuf,
     client: reqwest::Client,
-    /// 续期必须串行。
-    refresh_lock: Arc<Mutex<()>>,
     /// 思考强度。
     #[allow(dead_code)]
     effort: LoomyReasoningEffort,
@@ -41,7 +39,6 @@ impl LoomyProvider {
         Self {
             root,
             client: api::client().expect("构建 HTTP 客户端失败"),
-            refresh_lock: Arc::new(Mutex::new(())),
             effort,
         }
     }
@@ -160,22 +157,22 @@ impl Provider for LoomyProvider {
     }
 
     /// 主动刷新令牌。
+    ///
+    /// Loomy 的 API Key 通常长期有效，无需刷新。
+    /// 如 API Key 已过期，用户需重新登录。
     async fn refresh(&self) -> Result<String, ProviderError> {
         let cred = self.credential()?;
         let new = auth::refresh(&self.client, &cred)
             .await
             .map_err(|e| match e {
                 HttpError::Status { status: 401, .. } => {
-                    ProviderError::Unauthorized("refresh_token 已失效，请重新登录".to_string())
+                    ProviderError::Unauthorized("API Key 已失效，请重新登录".to_string())
                 }
                 other => ProviderError::Other(format!("续期失败: {other}")),
             })?;
         new.store(&self.root)
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
-        Ok(match new.token_expire_at {
-            Some(ms) => format!("续期成功，新凭证到期时间 {}", crate::core::fmt_ms(ms)),
-            None => "续期成功".to_string(),
-        })
+        Ok("续期成功（API Key 仍有效）".to_string())
     }
 
     /// 当前余额。
