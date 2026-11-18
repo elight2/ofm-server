@@ -11,8 +11,8 @@
 //!
 //! 默认内容**不硬编码在代码里**，只有那些 Markdown 文件是真相；
 //! 没有默认文件的供应商不注入任何内容。
-//! 空白自定义文件同样回退到默认（空白注入无意义），故当前无法用空文件关掉注入；
-//! 要彻底不注入需删掉该供应商的默认文件，当前不提供配置开关。
+//! 自定义文件存在但内容为空白时，视为「把默认提示词显式覆盖为空」，即**不注入**——
+//! 这是关掉某家默认提示词的开关。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,9 +22,10 @@ use std::time::SystemTime;
 use crate::config::{self, Config};
 use crate::core::provider as p;
 
-/// 一个文件条目的缓存值：`(mtime, 内容)`。
+/// 一文件的最终解析结果，`(mtime, 内容)`。
 ///
-/// `mtime` 为 `None` 表示文件不存在（此时内容恒为 `None`）。
+/// `mtime` 为 `None` 表示文件不存在（内容为内嵌默认）；
+/// 内容为 `None` 表示不注入（空文件覆盖、或该供应商没有默认提示词）。
 type Entry = (Option<SystemTime>, Option<String>);
 
 /// 提示词缓存：路径 → [`Entry`]。
@@ -44,11 +45,11 @@ fn cache() -> &'static Cache {
 /// 优先级：`<root>/prompts/<provider>.md` → 该供应商的内嵌默认
 /// [`config::default_prompt`]（`default-prompts/<provider>.md`）。
 ///
-/// * 自定义文件不存在 → 回退默认（不打日志，属正常状态）；
-/// * 自定义文件读取失败 → 回退默认 + `warn`（不阻断请求）；
-/// * 自定义文件为空白 → 回退默认（空白注入无意义，且部分上游会拒）。
+/// * 自定义文件不存在 → 用内嵌默认（不打日志，属正常状态）；
+/// * 自定义文件存在但内容为空白 → **不注入**（空文件 = 把默认显式覆盖为空）；
+/// * 自定义文件读取失败 → 用内嵌默认 + `warn`（不阻断请求）。
 ///
-/// 返回 `None` 表示该供应商没有自定义也没有默认提示词（不注入）。
+/// 返回 `None` 表示不注入（空文件覆盖，或该供应商没有默认提示词）。
 pub fn load(root: &Path, provider: &str) -> Option<String> {
     let path = Config::prompt_path(root, provider);
     let key = path.to_string_lossy().into_owned();
@@ -63,15 +64,16 @@ pub fn load(root: &Path, provider: &str) -> Option<String> {
     }
 
     let content = if mtime.is_none() {
-        // 没有自定义文件：用内嵌默认。
-        None
+        // 没有自定义文件：用该供应商的内嵌默认。
+        default_for(provider)
     } else {
         match std::fs::read_to_string(&path) {
+            // 空文件 = 用户显式把默认覆盖为空 ⇒ 不注入（关掉默认提示词的开关）。
             Ok(text) if text.trim().is_empty() => None,
             Ok(text) => Some(text),
             Err(e) => {
                 tracing::warn!("[{provider}] 读取自定义提示词失败 {path:?}: {e}");
-                None
+                default_for(provider)
             }
         }
     };
@@ -80,8 +82,7 @@ pub fn load(root: &Path, provider: &str) -> Option<String> {
         guard.insert(key, (mtime, content.clone()));
     }
 
-    // 自定义内容优先；没有（或读失败/空白）则用该供应商的内嵌默认。
-    content.or_else(|| default_for(provider))
+    content
 }
 
 /// 该供应商的内嵌默认提示词；没有或内容为空白时返回 `None`。
@@ -312,13 +313,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 空白自定义文件 → 回退默认（不能变成「不注入」的意外后门）。
+    /// 空白自定义文件 → 不注入（空文件 = 把默认提示词显式覆盖为空）。
     #[test]
-    fn 空白文件回退默认() {
+    fn 空白文件覆盖为空不注入() {
         let dir = std::env::temp_dir().join("ofm-prompt-test-blank");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("prompts")).unwrap();
+        // 真空文件与只有空白的文件同等对待
+        std::fs::write(dir.join("prompts").join("trae.md"), "").unwrap();
+        assert_eq!(load(&dir, "trae"), None, "真空文件应覆盖默认");
         std::fs::write(dir.join("prompts").join("trae.md"), "  \n\t\n").unwrap();
+        assert_eq!(load(&dir, "trae"), None, "空白文件应覆盖默认");
+        // 其他供应商不受影响
+        assert_eq!(load(&dir, "raccoon"), default_for("raccoon"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 删掉空白文件后回到默认（开关可逆）。
+    #[test]
+    fn 删掉空文件恢复默认() {
+        let dir = std::env::temp_dir().join("ofm-prompt-test-blank-revert");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("prompts")).unwrap();
+        let path = dir.join("prompts").join("trae.md");
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(load(&dir, "trae"), None);
+        std::fs::remove_file(&path).unwrap();
         assert_eq!(load(&dir, "trae"), default_for("trae"));
         let _ = std::fs::remove_dir_all(&dir);
     }
