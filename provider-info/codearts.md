@@ -642,6 +642,9 @@ raw = 原始 usage
   `x-security-token`；**不发 `maas_type`**（见 §6.5）；trace/model 头在签名后追加。
 * 请求体：`model`/`messages`/`stream`/`max_tokens:65536`/`tool_stream`/`tools`/
   `tool_choice`/`prompt_cache_key`；assistant 历史恒带 `reasoning_content`。
+* `prompt_cache_key` 由**对话前缀**派生（`ofm-<sha256>`）：取首条 system + 首条 user
+  的内容与模型名做哈希。早期实现每请求随机 `ofm-<uuid>`，前缀缓存永远不可能命中；
+  现同会话前缀不变 → key 不变，不同会话首条 user 不同 → key 不同。
 * 响应：标准 CC SSE，解析 `content`、`reasoning_content`/`reasoning`、`tool_calls`、
   `finish_reason`、`usage`；错误帧兼容 `error` 与顶层 `error_code/error_msg`。
 * `TM.00001041` 并发会话满：HTTP 400 时每 10s 重试，最多 180 次（30 分钟）。
@@ -650,6 +653,9 @@ raw = 原始 usage
 
 * SM4-GCM 加密链路（§3.2）未实现；当前依赖上游明文回退，实测可用。
 * SSE 流内 `TM.00001041` 等排队错误不会自动重连（HTTP 400 会重试）。
+* **缓存命中恒为 0**：上游 `usage.prompt_tokens_details.cached_tokens` 实测恒为 `0`
+  （固定 `prompt_cache_key` + 2000 token 长前缀连发 4 次仍为 0），说明该网关当前
+  未提供前缀缓存命中统计。server 侧字段解析与透出已完整实现，命中与否取决于上游。
 * 首帧租户冻结/内容安全扫描/客户端断开取消未复刻。
 * ~~`glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型带 `maas_type:benefit` 返回
   `APIG.0101.404`~~ —— **已定位为发送方错误**：`maas_type` 本身导致 404，与模型无关，
@@ -657,6 +663,16 @@ raw = 原始 usage
 
 **已实测**：`GLM-5.2` 流式/非流式、工具调用（`get_time`）、工具结果回传均正常；
 `test` 用户的 pi 通过本地 `ofm` provider 完成纯文本对话和工具获取系统信息测试。
+
+**流式 usage 的特殊处理**（2026-11-18 修复）：上游把 usage 帧放在 `finish_reason` 帧
+**之后**，而通用流驱动器在见到终止事件后就停止读流。修复点：
+
+* `src/server/openai/translate.rs`：收到 `Event::Finish` 后仍放行后续 `Event::Usage`；
+* 全 0 的 usage（上游每帧都带 `usage: null`）不下发，避免盖掉后面的真值；
+* 非流式聚合同样忽略全 0 usage。
+
+修复前流式下游收到上百个全 0 usage chunk、真实 usage 丢失；修复后正常返回
+`prompt_tokens`/`completion_tokens`/`reasoning_tokens`。
 
 ---
 

@@ -60,6 +60,14 @@ impl Ctx {
     }
 }
 
+/// usage 是否含有有效信息。
+///
+/// 上游常在每个流式帧里带 `usage: null`（解析后全 0），这种帧不该发给下游：
+/// 先发会把后面真正的 usage 帧盖掉（客户端只认最后一帧）。
+fn has_usage(u: &ev::Usage) -> bool {
+    u.prompt_tokens > 0 || u.completion_tokens > 0 || u.total_tokens > 0
+}
+
 pub fn to_wire_usage(u: &ev::Usage) -> WireUsage {
     WireUsage {
         prompt_tokens: u.prompt_tokens,
@@ -114,12 +122,20 @@ struct State {
     role_sent: bool,
     saw_tool_call: bool,
     done: bool,
+    /// 已发过 usage 帧。
+    ///
+    /// 部分上游（如 codearts）把 usage 帧放在 `finish_reason` **之后**，
+    /// 而 `drive` 在见到终止事件后就停止读流，故 usage 帧会在 `Event::Finish`
+    /// 之后才到达 —— 此时不能整体丢弃，只放行 usage（与 OpenAI 的
+    /// 「usage 帧在 finish 帧之后」一致）。
+    usage_sent: bool,
 }
 
 impl State {
     /// 把一个上游事件翻译成 0..n 个输出项。
     fn map(&mut self, event: Event) -> Vec<Out> {
-        if self.done {
+        // 终止事件之后只放行 usage（见 `usage_sent` 注释）。
+        if self.done && !matches!(event, Event::Usage(_)) {
             return Vec::new();
         }
         let mut out: Vec<Out> = Vec::new();
@@ -184,7 +200,10 @@ impl State {
                 }
             }
             Event::Usage(u) => {
-                if self.ctx.include_usage {
+                // 只发最后一次（有值的）usage：中间帧常带全 0 的 usage
+                // （上游每帧都带 `usage: null`），先发会把真值盖掉。
+                if self.ctx.include_usage && !self.usage_sent && has_usage(&u) {
+                    self.usage_sent = true;
                     out.push(Out::Chunk(Box::new(
                         self.ctx.usage_chunk(to_wire_usage(&u)),
                     )));
@@ -224,6 +243,7 @@ pub fn stream(
         role_sent: false,
         saw_tool_call: false,
         done: false,
+        usage_sent: false,
     };
     let all = rejoin(first, rest);
 
@@ -293,7 +313,12 @@ pub async fn aggregate(
                     entry.function.arguments.push_str(&args);
                 }
             }
-            Event::Usage(u) => usage = Some(to_wire_usage(&u)),
+            // 与流式一致：全 0 的 usage（上游每帧都带 `usage: null`）不覆盖已有真值。
+            Event::Usage(u) => {
+                if has_usage(&u) || usage.is_none() {
+                    usage = Some(to_wire_usage(&u));
+                }
+            }
             Event::Finish(f) => finish = f,
             Event::Error(e) => return Err(error_body(&e)),
         }
@@ -367,5 +392,91 @@ pub fn status_for_error_type(kind: &str) -> axum::http::StatusCode {
         "invalid_request_error" => StatusCode::BAD_REQUEST,
         "rate_limit_error" => StatusCode::TOO_MANY_REQUESTS,
         _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::events::Usage;
+
+    fn ctx(include_usage: bool) -> Ctx {
+        Ctx {
+            id: "chatcmpl-test".into(),
+            created: 0,
+            model: "p/m".into(),
+            include_usage,
+        }
+    }
+
+    fn usage(prompt: u64, completion: u64) -> Usage {
+        Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            cached_tokens: None,
+            reasoning_tokens: None,
+        }
+    }
+
+    /// 终止事件之后到达的 usage 帧必须仍能下发（codearts 把 usage 放在 finish 之后）。
+    #[test]
+    fn finish_之后的_usage_仍下发() {
+        let mut st = State {
+            ctx: ctx(true),
+            role_sent: false,
+            saw_tool_call: false,
+            done: false,
+            usage_sent: false,
+        };
+        // 先收到 Finish，再收到 usage。
+        let out = st.map(Event::Finish(ev::FinishReason::Stop));
+        assert_eq!(out.len(), 1, "finish 帧应照常下发");
+        assert!(st.done);
+
+        let out = st.map(Event::Usage(usage(118, 31)));
+        assert_eq!(out.len(), 1, "finish 之后的 usage 不能被丢弃");
+    }
+
+    /// 中间帧的全 0 usage 不下发（否则会盖掉后面的真值）。
+    #[test]
+    fn 全零_usage_不下发() {
+        let mut st = State {
+            ctx: ctx(true),
+            role_sent: false,
+            saw_tool_call: false,
+            done: false,
+            usage_sent: false,
+        };
+        assert!(st.map(Event::Usage(usage(0, 0))).is_empty());
+        // 真值仍可下发。
+        assert_eq!(st.map(Event::Usage(usage(118, 31))).len(), 1);
+    }
+
+    /// 只发一次 usage（多个真值帧时取第一个）。
+    #[test]
+    fn usage_只发一次() {
+        let mut st = State {
+            ctx: ctx(true),
+            role_sent: false,
+            saw_tool_call: false,
+            done: false,
+            usage_sent: false,
+        };
+        assert_eq!(st.map(Event::Usage(usage(118, 31))).len(), 1);
+        assert!(st.map(Event::Usage(usage(118, 99))).is_empty());
+    }
+
+    /// 未开启 include_usage 时不下发 usage。
+    #[test]
+    fn 不含_usage_时不下发() {
+        let mut st = State {
+            ctx: ctx(false),
+            role_sent: false,
+            saw_tool_call: false,
+            done: false,
+            usage_sent: false,
+        };
+        assert!(st.map(Event::Usage(usage(118, 31))).is_empty());
     }
 }

@@ -41,6 +41,9 @@ struct ChatBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<serde_json::Value>,
     /// 前缀缓存 / 会话标识；缺失时缓存命中恒为 0。
+    ///
+    /// 取值由**对话前缀**派生（见 [`cache_key`】）：同一会话的前缀不变时 key 不变，
+    /// 上游才可能命中前缀缓存。
     prompt_cache_key: String,
     /// 思考档位。仅当模型在上游有档位时发送（见 `variants` 模块）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,10 +77,44 @@ impl ChatBody {
                 })
                 .collect(),
             tool_choice: req.tool_choice.to_json(),
-            prompt_cache_key: format!("ofm-{}", uuid_v4().replace('-', "")),
+            prompt_cache_key: cache_key(req),
             reasoning_effort: effort.map(str::to_string),
         }
     }
+}
+
+/// 前缀缓存 key：由**对话前缀**派生。
+///
+/// 之前每请求随机生成 `ofm-<uuid>`，前缀缓存永远不可能命中（服务端按 key 归组）。
+/// 改为对「首条 system + 首条 user」的内容取哈希：
+///
+/// * 同一会话内前缀不变 → key 不变 → 上游可命中前缀缓存；
+/// * 不同会话首条消息不同 → key 不同 → 不会串味；
+/// * 只取**首条消息**（通常是 system 提示词或首个用户消息）做哈希，
+///   后续追加的消息不进哈希，故会话变长不会改变 key
+///   （前缀缓存本来就是按前缀命中的）。
+fn cache_key(req: &ChatRequest) -> String {
+    let mut h = Sha256::new();
+    h.update(req.model.as_bytes());
+    for m in req.messages.iter().take(1) {
+        h.update([0u8]);
+        h.update(role_str(m.role).as_bytes());
+        for p in &m.parts {
+            match p {
+                Part::Text(t) => h.update(t.as_bytes()),
+                Part::Image { url, .. } => h.update(url.as_bytes()),
+            }
+            h.update([0u8]);
+        }
+    }
+    let digest = h.finalize();
+    format!(
+        "ofm-{}",
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
 }
 
 fn convert_message(m: &Message) -> serde_json::Value {
@@ -359,6 +396,31 @@ mod tests {
         assert_eq!(v["messages"][0]["content"], "你好");
         assert_eq!(v["tools"][0]["function"]["parameters"]["type"], "object");
         assert!(v.get("tool_choice").is_none());
+    }
+
+    /// 前缀缓存 key：同一会话前缀不变 → key 不变；不同前缀 → key 不同。
+    #[test]
+    fn cache_key_随前缀稳定() {
+        let a = ChatRequest {
+            model: "GLM-5.2".into(),
+            messages: vec![user("你好")],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+        };
+        // 同一前缀，后续追加消息不应改变 key。
+        let mut b = a.clone();
+        b.messages.push(user("再问一句"));
+        assert_eq!(cache_key(&a), cache_key(&b));
+
+        // 不同会话（首条 user 不同）→ key 不同。
+        let mut c = a.clone();
+        c.messages = vec![user("别的会话")];
+        assert_ne!(cache_key(&a), cache_key(&c));
+
+        // 不同模型 → key 不同。
+        let mut d = a.clone();
+        d.model = "kimi-k3".into();
+        assert_ne!(cache_key(&a), cache_key(&d));
     }
 
     #[test]
