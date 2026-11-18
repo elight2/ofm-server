@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub mod codearts;
+pub mod loomy;
 pub mod minimax;
 pub mod raccoon;
 pub mod trae;
@@ -22,6 +23,7 @@ use crate::core::provider::Provider;
 use crate::core::registry::Registry;
 
 use codearts::CodeartsProvider;
+use loomy::LoomyProvider;
 use minimax::MinimaxProvider;
 use raccoon::RaccoonProvider;
 use trae::TraeProvider;
@@ -46,6 +48,10 @@ pub fn build_registry(root: &Path, config: &Config) -> Registry {
     registry.register(Arc::new(MinimaxProvider::new(
         root.to_path_buf(),
         config.minimax.reasoning_effort,
+    )) as Arc<dyn Provider>);
+    registry.register(Arc::new(LoomyProvider::new(
+        root.to_path_buf(),
+        config.loomy.reasoning_effort,
     )) as Arc<dyn Provider>);
     registry
 }

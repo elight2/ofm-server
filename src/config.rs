@@ -38,6 +38,7 @@ pub fn default_prompt(provider: &str) -> Option<&'static str> {
         crate::providers::raccoon::ID => include_str!("../default-prompts/raccoon.md"),
         crate::providers::codearts::ID => include_str!("../default-prompts/codearts.md"),
         crate::providers::minimax::ID => include_str!("../default-prompts/minimax.md"),
+        crate::providers::loomy::ID => "",
         _ => return None,
     };
     Some(text)
@@ -80,6 +81,10 @@ fn default_minimax() -> MinimaxConfig {
     example().minimax
 }
 
+fn default_loomy() -> LoomyConfig {
+    example().loomy
+}
+
 /// 解析示例文件。供 `Config::default()` 与字段级默认共用。
 fn example() -> Config {
     toml::from_str(DEFAULT_CONFIG_STR).expect("config.example.toml 必须可解析")
@@ -106,6 +111,9 @@ pub struct Config {
     /// minimax 供应商设置。
     #[serde(default = "default_minimax")]
     pub minimax: MinimaxConfig,
+    /// loomy 供应商设置。
+    #[serde(default = "default_loomy")]
+    pub loomy: LoomyConfig,
 }
 
 /// trae 供应商设置。
@@ -163,6 +171,18 @@ pub struct MinimaxConfig {
     pub reasoning_effort: MinimaxReasoningEffort,
 }
 
+/// loomy 供应商设置。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoomyConfig {
+    /// 自动签到间隔（秒）。
+    #[serde(default = "default_claim_interval_secs")]
+    pub claim_intervals: u64,
+    /// 思考强度。
+    #[serde(default)]
+    pub reasoning_effort: LoomyReasoningEffort,
+}
+
 /// minimax 的思考强度。
 ///
 /// 配置文件只接受 `low`/`medium`/`high`/`xhigh`/`max` 五档，实现按「就近映射」
@@ -189,6 +209,19 @@ pub enum MinimaxReasoningEffort {
     Xhigh,
     /// 最大。
     Max,
+}
+
+/// loomy 的思考强度。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoomyReasoningEffort {
+    /// 低。
+    #[default]
+    Low,
+    /// 中。
+    Medium,
+    /// 高。
+    High,
 }
 
 impl MinimaxReasoningEffort {
@@ -363,6 +396,7 @@ impl Config {
             crate::providers::raccoon::ID => self.raccoon.claim_intervals,
             crate::providers::codearts::ID => self.codearts.claim_intervals,
             crate::providers::minimax::ID => self.minimax.claim_intervals,
+            crate::providers::loomy::ID => self.loomy.claim_intervals,
             _ => FALLBACK_CLAIM_INTERVAL_SECS,
         };
         if secs < MIN_CLAIM_INTERVAL_SECS {

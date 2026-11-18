@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use crate::providers::{codearts, minimax, raccoon, trae};
+use crate::providers::{codearts, loomy, minimax, raccoon, trae};
 
 /// 浏览器 OAuth 登录。
 pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<()> {
@@ -25,12 +25,14 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
         raccoon::ID => raccoon::auth::run(root).await,
         codearts::ID => codearts::auth::run(root).await,
         minimax::ID => minimax::auth::run(root).await,
+        loomy::ID => loomy::auth::login(root).await,
         other => anyhow::bail!(
-            "未知供应商 `{other}`，可用: {}, {}, {}, {}",
+            "未知供应商 `{other}`，可用: {}, {}, {}, {}, {}",
             trae::ID,
             raccoon::ID,
             codearts::ID,
-            minimax::ID
+            minimax::ID,
+            loomy::ID
         ),
     }
 }
