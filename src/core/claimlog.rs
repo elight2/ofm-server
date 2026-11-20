@@ -107,8 +107,10 @@ pub fn last_success(root: &Path, provider: &str) -> Option<(String, Option<f64>)
     }
     let cur = entries[idx].balance;
     let prev = entries[..idx].iter().rev().find_map(|e| e.balance);
+    // 余额差分取整到 2 位：旧记录里可能存了多于 2 位的小数（本功能上线前的
+    // 历史行），浮点相减会留下冗长尾巴，统一与记录/展示口径一致。
     let delta = match (cur, prev) {
-        (Some(a), Some(b)) => Some(a - b),
+        (Some(a), Some(b)) => Some(crate::core::round2(a - b)),
         _ => None,
     };
     Some((entries[idx].time.clone(), delta))

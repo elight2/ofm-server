@@ -71,6 +71,22 @@ pub fn fmt_num(v: f64) -> String {
     }
 }
 
+/// 金额展示：固定小数点后 2 位（四舍五入）。
+///
+/// 与 [`fmt_num`] 不同，这是**金额**口径：整数也显示 `100.00`，避免
+/// 「余额是 100 还是 100.00」的歧义。
+pub fn fmt_amount(v: f64) -> String {
+    format!("{v:.2}")
+}
+
+/// 金额取整到小数点后 2 位（四舍五入）。
+///
+/// 写盘前调用，保证 `claim.log` 里的余额/增量与 [`fmt_amount`] 展示口径一致，
+/// 不残留多余小数。
+pub fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
 /// `YYYY-MM-DD HH:MM:SS`。
 fn fmt_datetime(dt: time::OffsetDateTime) -> String {
     let (y, mo, d) = dt.to_calendar_date();
@@ -85,6 +101,23 @@ mod tests {
         assert_eq!(super::fmt_num(300.0), "300");
         assert_eq!(super::fmt_num(12.5), "12.5");
         assert_eq!(super::fmt_num(-0.0), "0");
+    }
+
+    #[test]
+    fn 金额固定两位小数() {
+        assert_eq!(super::fmt_amount(100.0), "100.00");
+        assert_eq!(super::fmt_amount(8437.456), "8437.46");
+        assert_eq!(super::fmt_amount(8352.91), "8352.91");
+        assert_eq!(super::fmt_amount(-25.5), "-25.50");
+        assert_eq!(super::fmt_amount(0.0), "0.00");
+    }
+
+    #[test]
+    fn 金额取整到两位() {
+        assert_eq!(super::round2(8437.456), 8437.46);
+        assert_eq!(super::round2(100.0), 100.0);
+        assert_eq!(super::round2(0.005), 0.01);
+        assert_eq!(super::round2(-25.555), -25.56);
     }
 
     #[test]

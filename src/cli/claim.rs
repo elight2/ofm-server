@@ -72,12 +72,15 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
 }
 
 /// 追加一条签到记录；写盘失败只记日志，不影响签到本身。
+///
+/// 余额与增量在写盘前经 [`crate::core::round2`] 取整到小数点后 2 位，
+/// 与 `status` 展示口径一致，日志里不残留多余小数。
 fn record(root: &Path, provider: &str, result: String, balance: Option<f64>, delta: Option<f64>) {
     let entry = Entry {
         time: now_rfc3339(),
         result,
-        balance,
-        delta,
+        balance: balance.map(crate::core::round2),
+        delta: delta.map(crate::core::round2),
     };
     if let Err(e) = claimlog::append(root, provider, entry) {
         tracing::warn!("[{provider}] 写签到记录失败: {e}");
