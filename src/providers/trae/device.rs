@@ -165,7 +165,7 @@ fn reg_query(key: &str, value: &str) -> Option<String> {
 fn sha256_hex(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    crate::core::text::hex_lower(&h.finalize())
 }
 
 fn random_digits(n: usize) -> String {

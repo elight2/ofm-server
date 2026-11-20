@@ -169,21 +169,12 @@ pub fn traceparent() -> String {
             .unwrap_or(0))
         .to_be_bytes();
     }
-    let span: String = span.iter().map(|b| format!("{b:02x}")).collect();
+    let span = crate::core::text::hex_lower(&span);
     format!("00-{}-{span}-01", trace_id())
 }
 
 fn uuid4_string() -> String {
-    let mut buf = [0u8; 16];
-    if getrandom::fill(&mut buf).is_err() {
-        // 随机源失败概率极低；退化为时间派生，仍能完成登录。
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        buf = nanos.to_be_bytes();
-    }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    crate::core::text::uuid_v4()
 }
 
 /// 当前时间的 RFC1123 GMT 表示，如 `Fri, 20 Nov 2026 00:44:14 GMT`。

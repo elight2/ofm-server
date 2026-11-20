@@ -38,7 +38,7 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn list_models(State(app): State<AppState>) -> Response {
-    let created = now_secs();
+    let created = crate::core::clock::now_secs() as u64;
     let mut data = Vec::new();
     for (provider_id, models) in app.registry.list_models().await {
         for m in models {
@@ -117,7 +117,7 @@ async fn chat_completions(State(app): State<AppState>, body: String) -> Response
 
     let ctx = translate::Ctx {
         id: gen_id(),
-        created: now_secs(),
+        created: crate::core::clock::now_secs() as u64,
         model: requested_model,
         include_usage,
     };
@@ -191,18 +191,11 @@ fn status_from_u16(code: u16) -> StatusCode {
     StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY)
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// 请求 id：`chatcmpl-` + 12 位十六进制随机串。
 fn gen_id() -> String {
     let mut buf = [0u8; 6];
     let _ = getrandom::fill(&mut buf);
-    let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = crate::core::text::hex_lower(&buf);
     format!("chatcmpl-{hex}")
 }
 

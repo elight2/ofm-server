@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, Message, Part, ProviderError, Role};
+use crate::core::text::truncate_chars;
 
 use super::api::SNAP_GATEWAY;
 use super::credential::Credential;
@@ -98,7 +99,7 @@ fn cache_key(req: &ChatRequest) -> String {
     h.update(req.model.as_bytes());
     for m in req.messages.iter().take(1) {
         h.update([0u8]);
-        h.update(role_str(m.role).as_bytes());
+        h.update(m.role.as_str().as_bytes());
         for p in &m.parts {
             match p {
                 Part::Text(t) => h.update(t.as_bytes()),
@@ -108,13 +109,7 @@ fn cache_key(req: &ChatRequest) -> String {
         }
     }
     let digest = h.finalize();
-    format!(
-        "ofm-{}",
-        digest
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    )
+    format!("ofm-{}", crate::core::text::hex_lower(&digest))
 }
 
 fn convert_message(m: &Message) -> serde_json::Value {
@@ -146,7 +141,7 @@ fn convert_message(m: &Message) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert(
         "role".into(),
-        serde_json::Value::String(role_str(m.role).into()),
+        serde_json::Value::String(m.role.as_str().into()),
     );
     obj.insert("content".into(), content);
 
@@ -187,15 +182,6 @@ fn convert_message(m: &Message) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-    }
-}
-
 /// **不要给 chat 请求加 `maas_type: benefit`。**
 ///
 /// 实测（2026-11-16）：本账号带 `maas_type:benefit` 的 chat 请求对**任何模型**都返回
@@ -209,10 +195,7 @@ fn role_str(role: Role) -> &'static str {
 /// 早期实现按模型名前缀猜测（`glm-5.3-flash`/`deepseek-v4.1-flash`）属误判，已删除。
 /// 见 `provider-info/codearts.md` §5.2。
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::core::text::hex_lower(&Sha256::digest(bytes))
 }
 
 fn header_map(
@@ -321,7 +304,7 @@ pub async fn stream(
         if is_queue_error(status.as_u16(), &text) && attempt < QUEUE_MAX_ATTEMPTS {
             continue;
         }
-        let snippet = truncate(&text, 500);
+        let snippet = truncate_chars(&text, 500);
         return Err(match status.as_u16() {
             401 | 403 => {
                 ProviderError::Unauthorized(format!("codearts chat HTTP {status}: {snippet}"))
@@ -351,17 +334,6 @@ fn timestamp_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0)
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]

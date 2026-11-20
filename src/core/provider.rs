@@ -1,6 +1,6 @@
 //! 供应商抽象。
 //!
-//! 新增供应商只需实现 [`Provider`]，并在 [`crate::providers::builtin`] 中注册。
+//! 新增供应商只需实现 [`Provider`]，并在 [`crate::providers::build_registry`] 中注册。
 
 use async_trait::async_trait;
 
@@ -75,6 +75,21 @@ pub enum Role {
     User,
     Assistant,
     Tool,
+}
+
+impl Role {
+    /// 上游 `messages[].role` 的取值。
+    ///
+    /// 只覆盖「标准 OpenAI 取值」——MiniMax 把 `tool` 折成 `user`（工具结果按
+    /// 文本消息送出），故它不用这个函数。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

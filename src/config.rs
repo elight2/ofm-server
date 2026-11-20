@@ -13,13 +13,6 @@ use serde::{Deserialize, Serialize};
 
 /// 配置文件名（相对运行目录）。
 pub const CONFIG_FILE: &str = "config.toml";
-/// 供应商数据目录名（相对运行目录）。
-pub const PROVIDERS_DIR: &str = "providers";
-/// 凭证文件名（位于 `providers/<id>/` 下）。
-pub const CREDENTIAL_FILE: &str = "credential.toml";
-
-/// 自定义系统提示词目录。`<root>/prompts/<供应商id>.md` 追加到系统提示词之后。
-pub const PROMPTS_DIR: &str = "prompts";
 
 /// 内嵌的默认配置 = 仓库根的 `config.example.toml`。
 ///
@@ -38,7 +31,7 @@ pub fn default_prompt(provider: &str) -> Option<&'static str> {
         crate::providers::raccoon::ID => include_str!("../default-prompts/raccoon.md"),
         crate::providers::codearts::ID => include_str!("../default-prompts/codearts.md"),
         crate::providers::minimax::ID => include_str!("../default-prompts/minimax.md"),
-        crate::providers::loomy::ID => "",
+        crate::providers::loomy::ID => include_str!("../default-prompts/loomy.md"),
         _ => return None,
     };
     Some(text)
@@ -407,23 +400,6 @@ impl Config {
             });
         }
         Ok(secs)
-    }
-
-    /// 某供应商的数据目录 `<root>/providers/<id>`。
-    pub fn provider_dir(root: &Path, provider: &str) -> PathBuf {
-        root.join(PROVIDERS_DIR).join(provider)
-    }
-
-    /// 某供应商的凭证文件 `<root>/providers/<id>/credential.toml`。
-    pub fn credential_path(root: &Path, provider: &str) -> PathBuf {
-        Self::provider_dir(root, provider).join(CREDENTIAL_FILE)
-    }
-
-    /// 某供应商的自定义系统提示词 `<root>/prompts/<id>.md`。
-    ///
-    /// 文件不存在时回退到内嵌默认（`default-prompts/<id>.md`），无需预先创建。
-    pub fn prompt_path(root: &Path, provider: &str) -> PathBuf {
-        root.join(PROMPTS_DIR).join(format!("{provider}.md"))
     }
 }
 

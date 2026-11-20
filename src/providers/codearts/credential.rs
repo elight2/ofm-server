@@ -73,9 +73,4 @@ impl Credential {
     }
 }
 
-pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+pub use crate::core::clock::now_millis;

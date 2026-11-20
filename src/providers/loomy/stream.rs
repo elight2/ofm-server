@@ -15,7 +15,7 @@
 
 use serde_json::Value;
 
-use crate::core::events::{ErrorKind, Event, FinishReason, ToolCallDelta, UpstreamError, Usage};
+use crate::core::events::{ErrorKind, Event, ToolCallDelta, UpstreamError, Usage};
 
 /// 解析单帧，可能产出 0..n 个事件。
 pub struct FrameParser;
@@ -87,7 +87,7 @@ impl FrameParser {
                     }
                 }
                 if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
-                    out.push(Event::Finish(map_finish(fr)));
+                    out.push(Event::Finish(crate::core::stream::map_finish(fr)));
                 }
             }
         }
@@ -152,16 +152,6 @@ fn parse_usage(u: &Value) -> Usage {
     }
 }
 
-fn map_finish(s: &str) -> FinishReason {
-    match s {
-        "stop" => FinishReason::Stop,
-        "length" => FinishReason::Length,
-        "content_filter" => FinishReason::ContentFilter,
-        "tool_calls" | "function_call" => FinishReason::ToolCalls,
-        _ => FinishReason::Other,
-    }
-}
-
 /// 业务码分类。码表来自实测（`provider-info/loomy.md` §8）。
 fn classify_code(code: &str) -> ErrorKind {
     match code {
@@ -196,6 +186,7 @@ fn classify_error(err: &Value) -> ErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::events::FinishReason;
 
     fn parse(s: &str) -> Vec<Event> {
         let ev = crate::core::sse::SseEvent {

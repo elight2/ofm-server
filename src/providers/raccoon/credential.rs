@@ -73,21 +73,8 @@ pub fn jwt_exp(token: &str) -> Option<i64> {
     v.get("exp")?.as_i64()
 }
 
-/// 当前 Unix 秒。
-pub fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// 当前 Unix 毫秒。
-pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+/// 当前 Unix 秒 / 毫秒（同 crate 便利转出）。
+pub use crate::core::clock::{now_millis, now_secs};
 
 /// token 是否已进入刷新窗口。无 `exp` 时返回 `false`（交给上游 401 兜底）。
 pub fn needs_refresh(token: &str) -> bool {

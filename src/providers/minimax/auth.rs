@@ -12,6 +12,7 @@
 //!    或 `expires_in` 超时；
 //! 4. 写入 `providers/minimax/credential.toml`。
 
+use crate::core::text::truncate_chars;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -177,7 +178,7 @@ pub fn classify(status: u16, body: &str) -> PollOutcome {
         Some("access_denied") => PollOutcome::Denied,
         Some("expired_token") => PollOutcome::Expired,
         other => {
-            tracing::warn!(?other, body = api::truncate(body, 200), "未识别的轮询响应");
+            tracing::warn!(?other, body = truncate_chars(body, 200), "未识别的轮询响应");
             PollOutcome::Expired
         }
     }
@@ -252,7 +253,7 @@ pub async fn poll_token(
 
 /// 尝试打开浏览器，失败只提示不中断。
 ///
-/// `cli::login::open_browser` 只检查 `spawn()` 是否成功，在**无图形会话**
+/// `login_util::open_browser` 只检查 `spawn()` 是否成功，在**无图形会话**
 /// （`XDG_SESSION_TYPE=tty`、无 `DISPLAY`/`WAYLAND_DISPLAY`）下 `xdg-open`
 /// 能被启动但什么都不会打开，于是它会误报成功。这里先自己判一次环境，
 /// 避免用户误以为「已经打开浏览器了」。
@@ -267,7 +268,7 @@ fn open_browser_safely(url: &str) {
         println!("[minimax] 当前会话没有图形环境，未尝试打开浏览器，请手动复制上面的链接");
         return;
     }
-    if let Err(e) = crate::cli::login::open_browser(url) {
+    if let Err(e) = crate::login_util::open_browser(url) {
         eprintln!("[minimax] 打开浏览器失败（{e}），请手动访问上面的链接");
     }
 }
@@ -311,7 +312,7 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
 
     println!(
         "[minimax] 登录成功，凭证已保存到 {}",
-        crate::config::Config::credential_path(&root, credential::PROVIDER).display()
+        crate::core::paths::credential_path(&root, credential::PROVIDER).display()
     );
     println!(
         "[minimax] 访问令牌有效期至 {}",

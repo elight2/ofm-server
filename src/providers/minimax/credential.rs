@@ -45,13 +45,8 @@ impl Credential {
     }
 }
 
-/// 当前 Unix 毫秒。
-pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+/// 当前 Unix 毫秒（同 crate 便利转出）。
+pub use crate::core::clock::now_millis;
 
 #[cfg(test)]
 mod tests {

@@ -11,7 +11,7 @@
 
 use serde_json::Value;
 
-use crate::core::events::{ErrorKind, Event, FinishReason, ToolCallDelta, UpstreamError, Usage};
+use crate::core::events::{ErrorKind, Event, ToolCallDelta, UpstreamError, Usage};
 
 /// 解析单帧 `data`，可能产出 0..n 个事件。
 pub struct FrameParser;
@@ -79,7 +79,7 @@ impl FrameParser {
                     }
                 }
                 if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
-                    out.push(Event::Finish(map_finish(fr)));
+                    out.push(Event::Finish(crate::core::stream::map_finish(fr)));
                 }
             }
         }
@@ -143,16 +143,6 @@ fn parse_usage(u: &Value) -> Usage {
     }
 }
 
-fn map_finish(s: &str) -> FinishReason {
-    match s {
-        "stop" => FinishReason::Stop,
-        "length" => FinishReason::Length,
-        "content_filter" => FinishReason::ContentFilter,
-        "tool_calls" | "function_call" => FinishReason::ToolCalls,
-        _ => FinishReason::Other,
-    }
-}
-
 /// 错误分类。上游错误码见 `provider-info/raccoon.md` §6。
 fn classify_error(err: &Value) -> ErrorKind {
     // 码可能是数字或字符串。
@@ -181,6 +171,7 @@ fn classify_error(err: &Value) -> ErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::events::FinishReason;
 
     /// 测试辅助：只关心 `data`，事件名对 raccoon 恒为空。
     fn parse(s: &str) -> Vec<Event> {

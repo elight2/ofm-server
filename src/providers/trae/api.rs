@@ -3,6 +3,7 @@
 //! 分两套 UA（`provider-info/trae.md` §0）：对话用 `TraeClient/TTNet`，
 //! 控制面（登录/续期）用 Electron 桌面壳 UA，签到用 VSCode UA。
 
+use crate::core::text::truncate_chars;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -120,7 +121,7 @@ where
     }
 
     let env: ControlEnvelope<R> = serde_json::from_str(&text)
-        .map_err(|e| HttpError::Decode(format!("{e}; 原文={}", snippet(&text))))?;
+        .map_err(|e| HttpError::Decode(format!("{e}; 原文={}", truncate_chars(&text, 300))))?;
     if let Some(err) = env.metadata.error {
         return Err(HttpError::Control(err.describe()));
     }
@@ -128,21 +129,8 @@ where
         Some(r) => Ok(r),
         None => Err(HttpError::Decode(format!(
             "信封缺少 Result; 原文={}",
-            snippet(&text)
+            truncate_chars(&text, 300)
         ))),
-    }
-}
-
-fn snippet(s: &str) -> String {
-    const MAX: usize = 300;
-    if s.len() <= MAX {
-        s.to_string()
-    } else {
-        let mut end = MAX;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}…", &s[..end])
     }
 }
 

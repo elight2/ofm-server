@@ -14,6 +14,7 @@
 use serde::Deserialize;
 
 use crate::core::provider::{ModelInfo, ProviderError};
+use crate::core::text::truncate_chars;
 use crate::providers::codearts::api::SNAP_GATEWAY;
 use crate::providers::codearts::credential::Credential;
 use crate::providers::codearts::sign;
@@ -117,14 +118,14 @@ pub async fn fetch_models(
     if !(200..300).contains(&status) {
         return Err(ProviderError::Protocol(format!(
             "builtin models: HTTP {status}: {}",
-            truncate(&body)
+            truncate_chars(&body, 300)
         )));
     }
 
     let catalog: BuiltinCatalog = serde_json::from_str(&body).map_err(|e| {
         ProviderError::Protocol(format!(
             "builtin models: 解析失败: {e}: {}",
-            truncate(&body)
+            truncate_chars(&body, 300)
         ))
     })?;
     let models = to_models(&catalog);
@@ -160,17 +161,6 @@ pub fn to_models(catalog: &BuiltinCatalog) -> Vec<ModelInfo> {
         });
     }
     out
-}
-
-fn truncate(s: &str) -> String {
-    if s.len() <= 300 {
-        return s.to_string();
-    }
-    let mut end = 300;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]

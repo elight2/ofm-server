@@ -19,7 +19,8 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-use crate::config::{self, Config};
+use crate::config;
+use crate::core::paths::prompt_path;
 use crate::core::provider as p;
 
 /// 一文件的最终解析结果，`(mtime, 内容)`。
@@ -51,7 +52,7 @@ fn cache() -> &'static Cache {
 ///
 /// 返回 `None` 表示不注入（空文件覆盖，或该供应商没有默认提示词）。
 pub fn load(root: &Path, provider: &str) -> Option<String> {
-    let path = Config::prompt_path(root, provider);
+    let path = prompt_path(root, provider);
     let key = path.to_string_lossy().into_owned();
 
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();

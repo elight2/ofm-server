@@ -10,17 +10,14 @@
 //! 校验规则照抄官方 `webLoginLoopback.js`：`state` 必须为 64 位小写 hex 且
 //! 与本地值相等，query 只允许 `code`/`state`，只接受 `127.0.0.1` 来源。
 
-use std::time::Duration;
-
 use serde::Deserialize;
 
 use super::api::{self, HttpError};
 use super::credential::{self, Credential};
-use crate::cli::login;
+use crate::login_util;
 
 /// 回调路径（官方 `parseCallback` 硬编码）。
 pub const CALLBACK_PATH: &str = "/auth/callback";
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// `login_with_authorization_code` 响应 `data`。
 #[derive(Debug, Deserialize)]
@@ -39,19 +36,45 @@ pub struct LoginData {
 /// 登录入口。
 pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
     let state = random_state();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let port = listener.local_addr()?.port();
+    // 先 bind 再开浏览器：否则回调会撞上 CONNECTION_REFUSED（见 `CallbackServer`）。
+    let server = login_util::CallbackServer::bind(0).await?;
+    let port = server.port();
     let redirect = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
     let authority = format!("127.0.0.1:{port}");
 
     let url = authorize_url(&redirect, &state);
     println!("[raccoon] 已生成授权链接，正在打开浏览器：\n{url}\n");
-    if let Err(e) = login::open_browser(&url) {
+    if let Err(e) = login_util::open_browser(&url) {
         eprintln!("[raccoon] 打开浏览器失败（{e}），请手动访问上面的链接");
     }
     println!("[raccoon] 等待浏览器回调 {redirect}");
 
-    let code = wait_callback(listener, &authority, &state).await?;
+    // 只接受本机来源、`Host` 必须等于本地 authority（防 DNS rebinding），
+    // 这两条校验由闭包给出；命中后由这里回完成页。
+    let check_authority = authority.clone();
+    let (query, mut sock) = server
+        .wait_with(
+            CALLBACK_PATH,
+            login_util::CALLBACK_TIMEOUT,
+            move |req, peer| {
+                peer.ip().is_loopback() && req.method == "GET" && req.host == check_authority
+            },
+        )
+        .await?;
+    let code = match parse_callback(&query, &state) {
+        Ok(code) => code,
+        Err(why) => {
+            login_util::respond_status(
+                &mut sock,
+                400,
+                "Bad Request",
+                "无效的登录回调，请从客户端重新发起登录。",
+            )
+            .await;
+            anyhow::bail!("回调校验失败: {why}");
+        }
+    };
+    login_util::respond_ok(&mut sock, "登录完成，可以关闭此页面。").await;
     println!("[raccoon] 已获得授权码，正在换取令牌…");
 
     let client = api::client()?;
@@ -69,7 +92,7 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
     let path = credential::PROVIDER;
     println!(
         "[raccoon] 登录成功，凭证已保存到 {}",
-        crate::config::Config::credential_path(&root, path).display()
+        crate::core::paths::credential_path(&root, path).display()
     );
     match credential::jwt_exp(&cred.access_token) {
         Some(exp) => println!("[raccoon] 访问令牌有效期至 {}", fmt_unix(exp)),
@@ -127,78 +150,7 @@ pub fn authorize_url(redirect: &str, state: &str) -> String {
 
 /// 32 字节随机数的 hex（64 位小写），与官方 `randomBytes(32).toString('hex')` 一致。
 fn random_state() -> String {
-    let mut buf = [0u8; 32];
-    getrandom::fill(&mut buf).expect("获取随机数失败");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// 等待浏览器回调并取授权码。校验规则见模块注释。
-async fn wait_callback(
-    listener: tokio::net::TcpListener,
-    authority: &str,
-    state: &str,
-) -> anyhow::Result<String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let deadline = tokio::time::Instant::now() + CALLBACK_TIMEOUT;
-
-    loop {
-        let (mut sock, peer) = tokio::time::timeout_at(deadline, listener.accept())
-            .await
-            .map_err(|_| anyhow::anyhow!("等待回调超时（{}s）", CALLBACK_TIMEOUT.as_secs()))??;
-
-        // 只接受本机来源（官方同样校验 remoteAddress === '127.0.0.1'）。
-        if !peer.ip().is_loopback() {
-            let _ = sock.shutdown().await;
-            continue;
-        }
-
-        let mut buf = vec![0u8; 8192];
-        let n = match tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await {
-            Ok(Ok(n)) => n,
-            _ => continue,
-        };
-        let request = String::from_utf8_lossy(&buf[..n]).to_string();
-        let mut lines = request.lines();
-        let first_line = lines.next().unwrap_or_default();
-        let mut parts = first_line.split_whitespace();
-        let method = parts.next().unwrap_or_default();
-        let target = parts.next().unwrap_or_default();
-
-        // Host 必须等于本地 authority，防 DNS rebinding。
-        let host = request
-            .lines()
-            .find_map(|l| {
-                let (k, v) = l.split_once(':')?;
-                k.eq_ignore_ascii_case("host").then(|| v.trim().to_string())
-            })
-            .unwrap_or_default();
-        if method != "GET" || host != authority {
-            respond(&mut sock, 403, "无效的登录回调").await;
-            continue;
-        }
-
-        let (route, query) = match target.split_once('?') {
-            Some((r, q)) => (r, q),
-            None => (target, ""),
-        };
-        if route != CALLBACK_PATH {
-            respond(&mut sock, 404, "404").await;
-            continue;
-        }
-
-        match parse_callback(query, state) {
-            Ok(code) => {
-                respond(&mut sock, 200, "登录完成，可以关闭此页面。").await;
-                return Ok(code);
-            }
-            Err(why) => {
-                tracing::debug!(why, query, "回调校验失败");
-                respond(&mut sock, 400, "无效的登录回调，请从客户端重新发起登录。").await;
-                continue;
-            }
-        }
-    }
+    crate::core::text::random_hex(32)
 }
 
 /// 解析并校验回调查询串，返回授权码。
@@ -246,25 +198,6 @@ fn parse_callback(query: &str, state: &str) -> Result<String, String> {
         return Err("code 含控制字符".into());
     }
     Ok(code)
-}
-
-async fn respond(sock: &mut tokio::net::TcpStream, status: u16, message: &str) {
-    use tokio::io::AsyncWriteExt;
-    let body = format!(
-        "<!doctype html><html lang=\"zh\"><meta charset=\"utf-8\"><title>商汤小浣熊登录</title><h1>{message}</h1></html>"
-    );
-    let head = match status {
-        200 => "200 OK",
-        400 => "400 Bad Request",
-        403 => "403 Forbidden",
-        _ => "404 Not Found",
-    };
-    let resp = format!(
-        "HTTP/1.1 {head}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let _ = sock.write_all(resp.as_bytes()).await;
-    let _ = sock.shutdown().await;
 }
 
 fn fmt_unix(secs: i64) -> String {

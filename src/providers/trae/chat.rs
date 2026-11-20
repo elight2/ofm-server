@@ -122,7 +122,7 @@ impl ChatBody {
 
 fn convert_message(m: &Message) -> UpMessage {
     let mut out = UpMessage {
-        role: role_str(m.role),
+        role: m.role.as_str(),
         content: Vec::new(),
         tool_calls: Vec::new(),
         tool_call_id: None,
@@ -155,15 +155,6 @@ fn convert_message(m: &Message) -> UpMessage {
     }
 
     out
-}
-
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-    }
 }
 
 #[cfg(test)]

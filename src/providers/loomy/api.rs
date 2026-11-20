@@ -15,6 +15,7 @@
 //!   `{"code":"100002","desc":"登录已失效，请重新登录"}`（非 SSE 帧）；
 //!   参数错误是 HTTP 400 + `{"error":{"message":...}}`。
 
+use crate::core::text::truncate_chars;
 use reqwest::Client;
 
 /// 构建 HTTP 客户端。
@@ -107,25 +108,19 @@ pub fn parse_envelope_text<T>(status: u16, text: &str) -> Result<T, EnvelopeErr>
 where
     T: serde::de::DeserializeOwned,
 {
-    let env: Envelope<T> = serde_json::from_str(text)
-        .map_err(|e| format!("解析响应失败(HTTP {status}): {e}: {}", truncate(text, 200)))?;
+    let env: Envelope<T> = serde_json::from_str(text).map_err(|e| {
+        format!(
+            "解析响应失败(HTTP {status}): {e}: {}",
+            truncate_chars(text, 200)
+        )
+    })?;
     if status >= 400 && env.code.is_empty() {
-        return Err(format!("上游 HTTP {status}: {}", truncate(text, 200)));
+        return Err(format!("上游 HTTP {status}: {}", truncate_chars(text, 200)));
     }
     env.into_data()
 }
 
 /// 截断到 `max` 字节（按字符边界），便于放进错误信息。
-pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
-}
 
 #[cfg(test)]
 mod tests {
@@ -168,8 +163,8 @@ mod tests {
 
     #[test]
     fn 截断按字符边界() {
-        assert_eq!(truncate("你好世界", 0), "…");
-        assert_eq!(truncate("你好世界", 6), "你好…");
-        assert_eq!(truncate("abc", 10), "abc");
+        assert_eq!(truncate_chars("你好世界", 0), "…");
+        assert_eq!(truncate_chars("你好世界", 6), "你好…");
+        assert_eq!(truncate_chars("abc", 10), "abc");
     }
 }

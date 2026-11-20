@@ -64,7 +64,7 @@ impl KeyPair {
         let claims = serde_json::json!({
             "htm": htm,
             "htu": htu,
-            "iat": now_secs(),
+            "iat": crate::core::clock::now_secs(),
             "jti": jti(),
         });
         let b64 = |v: &serde_json::Value| {
@@ -98,18 +98,11 @@ fn public_key_jwk(public: &p256::PublicKey) -> Result<Jwk, DpopError> {
     })
 }
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// 32 随机字节的 hex（64 字符），对齐官方 `WordArray.random(32).toString(Hex)`。
 fn jti() -> String {
     let mut buf = [0u8; 32];
     getrandom::fill(&mut buf).expect("获取随机数失败");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    crate::core::text::hex_lower(&buf)
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -4,6 +4,7 @@
 //! `{code: <int>, message: <str>, data: ...}`，**HTTP 200 也可能是错误**，
 //! 因此一律先解析业务码再看 HTTP 状态。
 
+use crate::core::text::truncate_chars;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -215,27 +216,17 @@ fn parse_envelope<R: DeserializeOwned>(status: u16, text: &str) -> Result<R, Htt
     if !(200..300).contains(&status) {
         return Err(HttpError::Status {
             status,
-            body: truncate(text, 300),
+            body: truncate_chars(text, 300),
         });
     }
     let env: Envelope<R> = serde_json::from_str(text)
-        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate(text, 300))))?;
+        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate_chars(text, 300))))?;
     // 2xx 但缺 data：换 token 这类端点 data 必有，缺失即异常。
     env.data
         .ok_or_else(|| HttpError::Decode("响应缺少 data".to_string()))
 }
 
 /// 字符串截断到 `max` 字节（保持 UTF-8 边界）。
-pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
-}
 
 #[cfg(test)]
 mod tests {

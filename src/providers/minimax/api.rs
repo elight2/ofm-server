@@ -4,6 +4,7 @@
 //! 认证域（`account.minimax.cn`）与 API 域（`agent.minimax.cn`）分离，
 //! 且域名**写死预设**，不读模型目录下发的旧 `baseURL`（§0 出入 1）。
 
+use crate::core::text::truncate_chars;
 use serde::de::DeserializeOwned;
 
 /// 账号中心（OAuth 设备码、令牌、撤销）。
@@ -112,11 +113,11 @@ pub async fn get_json<T: DeserializeOwned>(
         // 目录接口无业务码信封，HTTP 非 200 即失败（§8.3）。
         return Err(HttpError::Status {
             status: status.as_u16(),
-            body: truncate(&text, 300),
+            body: truncate_chars(&text, 300),
         });
     }
     serde_json::from_str(&text)
-        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate(&text, 300))))
+        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate_chars(&text, 300))))
 }
 
 /// 生成 PKCE `(code_verifier, code_challenge)`。
@@ -124,14 +125,13 @@ pub async fn get_json<T: DeserializeOwned>(
 /// 32 字节随机 → base64url 无 padding（43 字符）作 verifier，
 /// challenge = base64url(sha256(verifier))（同样 43 字符），见 §1.1。
 pub fn pkce_pair() -> (String, String) {
-    use base64::Engine;
-    use sha2::{Digest, Sha256};
+    use base64::Engine as _;
 
     let mut buf = [0u8; 32];
     getrandom::fill(&mut buf).expect("获取随机数失败");
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let verifier = engine.encode(buf);
-    let challenge = engine.encode(Sha256::digest(verifier.as_bytes()));
+    let challenge = crate::core::text::s256_challenge(&verifier);
     (verifier, challenge)
 }
 
@@ -168,7 +168,7 @@ pub async fn post_form(
     }
     Err(HttpError::Status {
         status: status.as_u16(),
-        body: truncate(&text, 300),
+        body: truncate_chars(&text, 300),
     })
 }
 
@@ -180,7 +180,7 @@ pub async fn post_form_json<T: DeserializeOwned>(
 ) -> Result<T, HttpError> {
     let text = post_form(client, url, form).await?;
     serde_json::from_str(&text)
-        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate(&text, 300))))
+        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate_chars(&text, 300))))
 }
 
 /// OAuth 错误响应体（两种键名变体都要兼容，见 §8.1），仅用于解出错误码。
@@ -193,16 +193,6 @@ struct OAuthErrorBody {
 }
 
 /// 字符串截断到 `max` 字节（保持 UTF-8 边界）。
-pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
-}
 
 #[cfg(test)]
 mod tests {
@@ -236,9 +226,9 @@ mod tests {
 
     #[test]
     fn 截断保持_utf8_边界() {
-        assert_eq!(truncate("abc", 10), "abc");
+        assert_eq!(truncate_chars("abc", 10), "abc");
         let s = "汉字";
         assert!(s.len() == 6);
-        assert_eq!(truncate(s, 4), "汉…");
+        assert_eq!(truncate_chars(s, 4), "汉…");
     }
 }

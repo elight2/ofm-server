@@ -19,6 +19,8 @@
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
+use crate::core::text::hex_lower;
+
 /// 空请求体的 SHA256（官方常量原文）。
 pub const EMPTY_BODY_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -256,10 +258,6 @@ fn normalize_sdk_date(v: &str) -> String {
         );
     }
     v.to_string()
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

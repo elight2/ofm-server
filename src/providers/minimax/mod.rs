@@ -30,6 +30,7 @@ use tokio::sync::Mutex;
 use crate::config::MinimaxReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
+use crate::core::text::truncate_chars;
 
 use credential::Credential;
 
@@ -60,14 +61,7 @@ impl MinimaxProvider {
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
-        match Credential::load(&self.root) {
-            Ok(Some(c)) => Ok(c),
-            Ok(None) => Err(ProviderError::NotLoggedIn(format!(
-                "{}（请先运行 `ofm-server login {ID}`）",
-                crate::config::Config::credential_path(&self.root, ID).display()
-            ))),
-            Err(e) => Err(ProviderError::Other(e.to_string())),
-        }
+        crate::core::credential::require(&self.root, ID)
     }
 
     /// 取可用 token；进入刷新窗口则先续期（§2）。
@@ -263,7 +257,7 @@ impl Provider for MinimaxProvider {
             let text = resp.text().await.unwrap_or_default();
             return Err(ProviderError::from(api::HttpError::Status {
                 status: status.as_u16(),
-                body: api::truncate(&text, 300),
+                body: truncate_chars(&text, 300),
             }));
         }
 

@@ -26,6 +26,7 @@ use crate::config::TraeReasoningEffort;
 use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
+use crate::core::text::truncate_chars;
 
 use api::{
     APP_VERSION, APP_VERSION_CODE, HOST_API5, HttpError, IDE_VERSION_CODE, UA_TTNET, UA_VSCODE,
@@ -56,47 +57,37 @@ impl TraeProvider {
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
-        match Credential::load(&self.root) {
-            Ok(Some(c)) => Ok(c),
-            Ok(None) => Err(ProviderError::NotLoggedIn(format!(
-                "{}（请先运行 `ofm-server login {ID}`）",
-                crate::config::Config::credential_path(&self.root, ID).display()
-            ))),
-            Err(e) => Err(ProviderError::Other(e.to_string())),
-        }
+        crate::core::credential::require(&self.root, ID)
     }
 
     /// 取可用 token；JWT 已过期则先续期。
     async fn access_token(&self) -> Result<String, ProviderError> {
-        let cred = self.credential()?;
-        if !token_expired(&cred) {
-            return Ok(cred.token.clone());
-        }
-
-        let _guard = self.refresh_lock.lock().await;
-        // 加锁后重读：可能已被其它任务刷新。
-        let cred = self.credential()?;
-        if !token_expired(&cred) {
-            return Ok(cred.token);
-        }
-
-        tracing::info!("[{ID}] token 已过期，正在续期");
-        let new = self.do_refresh(&cred).await?;
-        tracing::info!("[{ID}] 续期成功");
-        Ok(new.token)
+        let client = &self.client;
+        let root = &self.root;
+        let cred = crate::core::credential::renew_if_expired(
+            root,
+            ID,
+            &self.refresh_lock,
+            |c: &Credential| token_expired(c),
+            |c: Credential| async move { Self::renew(client, root, c).await },
+        )
+        .await?;
+        Ok(cred.token)
     }
 
-    /// 续期并落盘，返回新凭证。401 翻译为「refresh_token 已失效」。
-    async fn do_refresh(&self, cred: &Credential) -> Result<Credential, ProviderError> {
-        let new = refresh::refresh(&self.client, cred)
-            .await
-            .map_err(|e| match e {
-                HttpError::Status { status: 401, .. } => {
-                    ProviderError::Unauthorized("refresh_token 已失效，请重新登录".to_string())
-                }
-                other => ProviderError::Other(format!("续期失败: {other}")),
-            })?;
-        new.store(&self.root)
+    /// 换令牌并落盘。401 翻译为「refresh_token 已失效」。
+    async fn renew(
+        client: &reqwest::Client,
+        root: &std::path::Path,
+        cred: Credential,
+    ) -> Result<Credential, ProviderError> {
+        let new = refresh::refresh(client, &cred).await.map_err(|e| match e {
+            HttpError::Status { status: 401, .. } => {
+                ProviderError::Unauthorized("refresh_token 已失效，请重新登录".to_string())
+            }
+            other => ProviderError::Other(format!("续期失败: {other}")),
+        })?;
+        new.store(root)
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
         Ok(new)
     }
@@ -264,8 +255,11 @@ fn token_expired(cred: &Credential) -> bool {
 fn flow_traceparent() -> String {
     let mut buf = [0u8; 24];
     let _ = getrandom::fill(&mut buf);
-    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
-    format!("04-{}-{}-01", hex(&buf[..16]), hex(&buf[16..24]))
+    format!(
+        "04-{}-{}-01",
+        crate::core::text::hex_lower(&buf[..16]),
+        crate::core::text::hex_lower(&buf[16..24])
+    )
 }
 
 #[async_trait]
@@ -333,7 +327,7 @@ impl Provider for TraeProvider {
     /// 主动刷新令牌（`ofm-server refresh trae`）。
     async fn refresh(&self) -> Result<String, ProviderError> {
         let cred = self.credential()?;
-        let new = self.do_refresh(&cred).await?;
+        let new = Self::renew(&self.client, &self.root, cred).await?;
         Ok(match new.token_expire_at {
             Some(ms) => format!("续期成功，新凭证到期时间 {}", crate::core::fmt_ms(ms)),
             None => "续期成功".to_string(),
@@ -407,22 +401,11 @@ impl Provider for TraeProvider {
 
 /// HTTP 层错误映射（§5.1）。
 fn map_http_error(status: u16, body: &str) -> ProviderError {
-    let snippet = truncate(body, 300);
+    let snippet = truncate_chars(body, 300);
     match status {
         401 | 403 => ProviderError::Unauthorized(snippet),
         _ => ProviderError::Other(format!("上游 HTTP {status}: {snippet}")),
     }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]

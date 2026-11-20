@@ -25,6 +25,7 @@ use crate::config::LoomyReasoningEffort;
 use crate::core::claim::SkipReason;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
+use crate::core::text::truncate_chars;
 
 use api::VERSION;
 use credential::Credential;
@@ -48,14 +49,7 @@ impl LoomyProvider {
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
-        match Credential::load(&self.root) {
-            Ok(Some(c)) => Ok(c),
-            Ok(None) => Err(ProviderError::NotLoggedIn(format!(
-                "{}（请先运行 `ofm-server login {ID}`）",
-                crate::config::Config::credential_path(&self.root, ID).display()
-            ))),
-            Err(e) => Err(ProviderError::Other(e.to_string())),
-        }
+        crate::core::credential::require(&self.root, ID)
     }
 
     /// 取可用 session。
@@ -184,7 +178,7 @@ impl Provider for LoomyProvider {
                 },
                 None => ProviderError::Protocol(format!(
                     "上游返回预期外响应: {}",
-                    api::truncate(&text, 200)
+                    truncate_chars(&text, 200)
                 )),
             });
         }
@@ -249,7 +243,7 @@ fn map_http_error(status: u16, body: &str) -> ProviderError {
                         .map(|s| s.to_string())
                 })
         })
-        .unwrap_or_else(|| api::truncate(body, 300));
+        .unwrap_or_else(|| truncate_chars(body, 300));
 
     match status {
         401 | 403 => ProviderError::Unauthorized(msg),

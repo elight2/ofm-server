@@ -1,14 +1,13 @@
 //! CodeArts（华为云 CodeArts Snap / Agent）供应商。
 //!
 //! 已实现：登录（`auth`，PKCE + DPoP + 本地回调）、续期（`refresh`）、
-//! 模型列表（`catalog`，PromptCenter builtin）、签到/余额（`benefit`，
+//! 模型列表（`catalog`，PromptCenter builtin）、签到/余额（`ops`，
 //! SDK-HMAC-SHA256 签名见 `sign`）、对话（`chat`，明文 CC SSE）。
 //!
 //! 协议实况见 `provider-info/codearts.md`。
 
 pub mod api;
 pub mod auth;
-pub mod benefit;
 pub mod catalog;
 pub mod chat;
 pub mod credential;
@@ -20,7 +19,7 @@ pub mod sign;
 pub mod stream;
 pub mod variants;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -58,36 +57,29 @@ impl CodeartsProvider {
     }
 
     fn credential(&self) -> Result<credential::Credential, ProviderError> {
-        match credential::Credential::load(&self.root) {
-            Ok(Some(c)) => Ok(c),
-            Ok(None) => Err(ProviderError::NotLoggedIn(format!(
-                "{}（请先运行 `ofm-server login {ID}`）",
-                crate::config::Config::credential_path(&self.root, ID).display()
-            ))),
-            Err(e) => Err(ProviderError::Other(e.to_string())),
-        }
+        crate::core::credential::require(&self.root, ID)
     }
 
     /// 取可用凭证：AKSK 已过期则先续期（上游 STS 有效期约 1h，模型/对话请求都依赖它）。
     async fn valid_credential(&self) -> Result<credential::Credential, ProviderError> {
-        let cred = self.credential()?;
-        if !cred.aks_expired() {
-            return Ok(cred);
-        }
-
-        let _guard = self.refresh_lock.lock().await;
-        // 加锁后重读：可能已被其它任务刷新。
-        let cred = self.credential()?;
-        if !cred.aks_expired() {
-            return Ok(cred);
-        }
-        self.refresh_locked(&cred).await
+        let client = &self.client;
+        let root = &self.root;
+        crate::core::credential::renew_if_expired(
+            root,
+            ID,
+            &self.refresh_lock,
+            |c: &credential::Credential| c.aks_expired(),
+            |c: credential::Credential| async move { self.renew(client, root, c).await },
+        )
+        .await
     }
 
-    /// 续期并落盘（调用方必须已持 `refresh_lock`）。
-    async fn refresh_locked(
+    /// 续期并落盘。
+    async fn renew(
         &self,
-        cred: &credential::Credential,
+        client: &reqwest::Client,
+        root: &Path,
+        cred: credential::Credential,
     ) -> Result<credential::Credential, ProviderError> {
         if cred.refresh_token.is_empty() {
             return Err(ProviderError::Unauthorized(
@@ -96,13 +88,11 @@ impl CodeartsProvider {
             ));
         }
 
-        tracing::info!("[{ID}] AKSK 已过期，正在续期");
-        let new = refresh::refresh(&self.client, cred)
+        let new = refresh::refresh(client, &cred)
             .await
             .map_err(refresh_error)?;
-        new.store(&self.root)
+        new.store(root)
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
-        tracing::info!("[{ID}] AKSK 续期成功");
         Ok(new)
     }
 
@@ -184,7 +174,7 @@ impl Provider for CodeartsProvider {
     async fn refresh(&self) -> Result<String, ProviderError> {
         let _guard = self.refresh_lock.lock().await;
         let cred = self.credential()?;
-        let new = self.refresh_locked(&cred).await?;
+        let new = self.renew(&self.client, &self.root, cred).await?;
         Ok(match new.expire_at_millis {
             Some(ms) => format!("续期成功，新凭证到期时间 {}", crate::core::fmt_ms(ms)),
             None => "续期成功（上游未返回有效期）".to_string(),

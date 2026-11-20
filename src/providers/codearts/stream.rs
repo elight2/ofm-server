@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::core::events::{ErrorKind, Event, FinishReason, ToolCallDelta, UpstreamError, Usage};
+use crate::core::events::{ErrorKind, Event, ToolCallDelta, UpstreamError, Usage};
 use crate::core::sse::SseEvent;
 
 pub struct FrameParser;
@@ -86,7 +86,7 @@ impl FrameParser {
                     }
                 }
                 if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
-                    out.push(Event::Finish(map_finish(fr)));
+                    out.push(Event::Finish(crate::core::stream::map_finish(fr)));
                 }
             }
         }
@@ -148,16 +148,6 @@ fn parse_usage(u: &Value) -> Usage {
     }
 }
 
-fn map_finish(s: &str) -> FinishReason {
-    match s {
-        "stop" => FinishReason::Stop,
-        "length" => FinishReason::Length,
-        "content_filter" | "content-filter" => FinishReason::ContentFilter,
-        "tool_calls" | "function_call" | "tool-calls" => FinishReason::ToolCalls,
-        _ => FinishReason::Other,
-    }
-}
-
 fn classify(code: &str) -> ErrorKind {
     let c = code.to_ascii_lowercase();
     if c.contains("4291") || c.contains("429") || c.contains("quota") || c.contains("limit") {
@@ -174,6 +164,7 @@ fn classify(code: &str) -> ErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::events::FinishReason;
 
     fn parse(s: &str) -> Vec<Event> {
         FrameParser::new().parse(&SseEvent {

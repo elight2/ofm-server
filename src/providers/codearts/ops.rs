@@ -57,6 +57,7 @@ use serde::Deserialize;
 
 use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::provider::{ClaimReport, ProviderError};
+use crate::core::text::truncate_chars;
 use crate::providers::codearts::credential::Credential;
 use crate::providers::codearts::pkce;
 use crate::providers::codearts::sign;
@@ -218,11 +219,15 @@ async fn send_raw(
     if !(200..300).contains(&status) {
         return Err(ProviderError::Protocol(format!(
             "ops: HTTP {status}: {}",
-            truncate(&text)
+            truncate_chars(&text, 300)
         )));
     }
-    serde_json::from_str(&text)
-        .map_err(|e| ProviderError::Protocol(format!("ops: 解析失败: {e}: {}", truncate(&text))))
+    serde_json::from_str(&text).map_err(|e| {
+        ProviderError::Protocol(format!(
+            "ops: 解析失败: {e}: {}",
+            truncate_chars(&text, 300)
+        ))
+    })
 }
 
 /// 带 `{code,message,data}` 壳的端点（`/v1/ops/*`）。
@@ -269,7 +274,10 @@ pub async fn claim_campaign(
     cred: &Credential,
     campaign_id: i64,
 ) -> Result<serde_json::Value, ProviderError> {
-    let key = format!("claim_{campaign_id}_all_{}", now_millis());
+    let key = format!(
+        "claim_{campaign_id}_all_{}",
+        crate::core::clock::now_millis()
+    );
     let body = serde_json::json!({
         "campaignId": campaign_id,
         "channel": CHANNEL,
@@ -467,24 +475,6 @@ fn skip_outcome(items: &[Campaign]) -> ClaimOutcome {
         })
         .collect();
     ClaimOutcome::skipped(SkipReason::NoBenefit, units)
-}
-
-/// 截断长文本（错误信息用）。
-fn truncate(s: &str) -> String {
-    const MAX: usize = 300;
-    if s.chars().count() <= MAX {
-        return s.to_string();
-    }
-    let cut: String = s.chars().take(MAX).collect();
-    format!("{cut}…")
-}
-
-/// 当前毫秒时间戳（`idempotentKey` 用）。
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -40,7 +40,7 @@ pub fn sign(
     let key =
         SigningKey::from_pkcs8_pem(private_key_pem).map_err(|e| ProofError::Key(e.to_string()))?;
 
-    let timestamp = now_secs();
+    let timestamp = crate::core::clock::now_secs();
     let nonce = hex16();
 
     let message = [
@@ -66,17 +66,10 @@ pub fn sign(
     })
 }
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 fn hex16() -> String {
     let mut b = [0u8; 16];
     let _ = getrandom::fill(&mut b);
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    crate::core::text::hex_lower(&b)
 }
 
 #[derive(Debug, thiserror::Error)]

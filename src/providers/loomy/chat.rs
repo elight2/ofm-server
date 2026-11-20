@@ -91,7 +91,7 @@ fn convert_message(m: &Message) -> Value {
         )
     };
 
-    let mut obj = serde_json::json!({ "role": role_str(m.role), "content": content });
+    let mut obj = serde_json::json!({ "role": m.role.as_str(), "content": content });
 
     if !m.tool_calls.is_empty() {
         obj["tool_calls"] = Value::Array(
@@ -115,15 +115,6 @@ fn convert_message(m: &Message) -> Value {
     }
 
     obj
-}
-
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-    }
 }
 
 #[cfg(test)]

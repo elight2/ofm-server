@@ -7,6 +7,7 @@
 use serde::Deserialize;
 
 use crate::core::events::{ErrorKind, Event, FinishReason, ToolCallDelta, UpstreamError, Usage};
+use crate::core::text::truncate_chars;
 
 /// `output` 帧：`response` 与 `reasoning_content` 同帧互斥，均为增量。
 #[derive(Debug, Default, Deserialize)]
@@ -152,7 +153,7 @@ impl FrameParser {
                 Ok(e) => vec![e.to_event()],
                 Err(_) => vec![Event::Error(UpstreamError {
                     code: None,
-                    message: format!("上游错误帧无法解析: {}", truncate(data, 200)),
+                    message: format!("上游错误帧无法解析: {}", truncate_chars(data, 200)),
                     kind: ErrorKind::Api,
                 })],
             },
@@ -208,17 +209,6 @@ impl FrameParser {
             Some(_) => FinishReason::Other,
         }
     }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]

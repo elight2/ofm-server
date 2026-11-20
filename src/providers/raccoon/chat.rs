@@ -152,7 +152,7 @@ fn convert_message(m: &Message) -> UpMessage {
     };
 
     UpMessage {
-        role: role_str(m.role),
+        role: m.role.as_str(),
         content,
         tool_calls: m
             .tool_calls
@@ -171,15 +171,6 @@ fn convert_message(m: &Message) -> UpMessage {
         } else {
             None
         },
-    }
-}
-
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
     }
 }
 

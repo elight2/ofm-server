@@ -57,7 +57,7 @@ pub async fn login(root: std::path::PathBuf) -> Result<()> {
     println!("  到期时间: {expire}（14 天，无自动续期）");
     println!(
         "  凭证已保存到: {}",
-        crate::config::Config::credential_path(&root, super::ID).display()
+        crate::core::paths::credential_path(&root, super::ID).display()
     );
     Ok(())
 }

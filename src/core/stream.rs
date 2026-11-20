@@ -13,6 +13,20 @@ use futures_util::Stream;
 use super::events::{ErrorKind, Event, EventStream, FinishReason, UpstreamError};
 use super::sse::{SseDecoder, SseEvent};
 
+/// 上游 `finish_reason` → [`FinishReason`]。
+///
+/// 三家 OpenAI 兼容上游（raccoon/codearts/loomy）取值一致，故只此一份；
+/// 多接受连字符写法（`tool-calls`/`content-filter`），少数网关会这样给。
+pub fn map_finish(s: &str) -> FinishReason {
+    match s {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        "content_filter" | "content-filter" => FinishReason::ContentFilter,
+        "tool_calls" | "function_call" | "tool-calls" => FinishReason::ToolCalls,
+        _ => FinishReason::Other,
+    }
+}
+
 /// 驱动一个 SSE 字节流，产出 [`EventStream`]。
 ///
 /// `parse` 把单帧翻译成 0..n 个事件；解析器自身状态（如累积中的 tool_calls）

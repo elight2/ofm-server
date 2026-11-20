@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use crate::config::RaccoonReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
+use crate::core::text::truncate_chars;
 
 use credential::Credential;
 
@@ -49,38 +50,29 @@ impl RaccoonProvider {
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
-        match Credential::load(&self.root) {
-            Ok(Some(c)) => Ok(c),
-            Ok(None) => Err(ProviderError::NotLoggedIn(format!(
-                "{}（请先运行 `ofm-server login {ID}`）",
-                crate::config::Config::credential_path(&self.root, ID).display()
-            ))),
-            Err(e) => Err(ProviderError::Other(e.to_string())),
-        }
+        crate::core::credential::require(&self.root, ID)
     }
 
     /// 取可用 token；JWT 已进入刷新窗口则先续期。
     async fn access_token(&self) -> Result<String, ProviderError> {
-        let cred = self.credential()?;
-        if !credential::needs_refresh(&cred.access_token) {
-            return Ok(cred.access_token);
-        }
-
-        let _guard = self.refresh_lock.lock().await;
-        // 加锁后重读：可能已被其它任务刷新。
-        let cred = self.credential()?;
-        if !credential::needs_refresh(&cred.access_token) {
-            return Ok(cred.access_token);
-        }
-
-        tracing::info!("[{ID}] token 即将过期，正在续期");
-        let new = refresh::refresh(&self.client, &cred)
-            .await
-            .map_err(ProviderError::from)?;
-        new.store(&self.root)
-            .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
-        tracing::info!("[{ID}] 续期成功");
-        Ok(new.access_token)
+        let client = &self.client;
+        let root = &self.root;
+        let cred = crate::core::credential::renew_if_expired(
+            root,
+            ID,
+            &self.refresh_lock,
+            |c: &Credential| credential::needs_refresh(&c.access_token),
+            |c: Credential| async move {
+                let new = refresh::refresh(client, &c)
+                    .await
+                    .map_err(ProviderError::from)?;
+                new.store(root)
+                    .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
+                Ok(new)
+            },
+        )
+        .await?;
+        Ok(cred.access_token)
     }
 
     /// 业务请求头。身份靠 Bearer + 这几个头；非 personal 才带 `X-Org-Code`。
@@ -169,12 +161,12 @@ impl Provider for RaccoonProvider {
             if status.as_u16() == 413 {
                 return Err(ProviderError::Protocol(format!(
                     "请求体超过 10MB 上限: {}",
-                    api::truncate(&text, 200)
+                    truncate_chars(&text, 200)
                 )));
             }
             return Err(ProviderError::from(api::HttpError::Status {
                 status: status.as_u16(),
-                body: api::truncate(&text, 300),
+                body: truncate_chars(&text, 300),
             }));
         }
 

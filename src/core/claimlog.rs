@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::core::paths::provider_dir;
 
 /// 记录文件名（位于 `providers/<id>/` 下）。
 pub const FILE: &str = "claim.log";
@@ -44,7 +44,7 @@ impl Entry {
 }
 
 fn path(root: &Path, provider: &str) -> PathBuf {
-    Config::provider_dir(root, provider).join(FILE)
+    provider_dir(root, provider).join(FILE)
 }
 
 /// 读取全部记录（按写入顺序）。文件不存在或无有效行时返回空表。

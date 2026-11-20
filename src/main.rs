@@ -3,6 +3,7 @@
 mod cli;
 mod config;
 mod core;
+mod login_util;
 mod providers;
 mod server;
 mod tls;

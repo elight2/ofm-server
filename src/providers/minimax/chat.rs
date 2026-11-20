@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::config::MinimaxReasoningEffort;
 use crate::core::provider::{ChatRequest, Message, Part, Role, ToolChoice};
+use crate::core::text::truncate_chars;
 
 /// 对话路径（相对 [`super::api::AGENT_HOST`]）。
 ///
@@ -339,7 +340,7 @@ fn content_blocks(parts: &[Part]) -> Vec<UpBlock> {
 fn image_block(url: &str) -> Option<UpBlock> {
     let Some(rest) = url.strip_prefix("data:") else {
         tracing::warn!(
-            url = super::api::truncate(url, 80),
+            url = truncate_chars(url, 80),
             "上游只接受 base64 图片，已丢弃外链图片"
         );
         return None;

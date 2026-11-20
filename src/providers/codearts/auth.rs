@@ -21,12 +21,12 @@ use super::api::{self, HttpError};
 use super::credential::Credential;
 use super::dpop::KeyPair;
 use super::pkce;
-use crate::cli::login;
+use crate::core::text::truncate_chars;
+use crate::login_util;
 
 /// 回调路径（官方 `CALLBACK_PATH`）。
 pub const CALLBACK_PATH: &str = "/oauth/callback";
 /// 等待回调超时（官方 kernel 为 5min）。
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 /// 旧版 secret 换票端点（`snap-manager`）。
 const TICKET_PATH: &str = "/snap-manager/v1/login/ticket";
 /// secret 换票最大尝试次数（官方 kernel 为 10 次）。
@@ -95,18 +95,31 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     let challenge = pkce::challenge(&verifier);
     let dpop_keys = KeyPair::generate()?;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let port = listener.local_addr()?.port();
+    // 先 bind 再开浏览器，避免回调抢在监听之前（见 `CallbackServer`）。
+    let server = login_util::CallbackServer::bind(0).await?;
+    let port = server.port();
     let callback_url = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
 
     let (url, ticket_id) = authorize_url(port, &callback_url, &challenge);
     println!("[codearts] 已生成授权链接，正在打开浏览器：\n{url}\n");
-    if let Err(e) = login::open_browser(&url) {
+    if let Err(e) = login_util::open_browser(&url) {
         eprintln!("[codearts] 打开浏览器失败（{e}），请手动访问上面的链接");
     }
     println!("[codearts] 等待浏览器回调 {callback_url}");
 
-    let (callback, mut sock) = wait_callback(listener).await?;
+    // 命中后不立即响应：换 token 期间浏览器停在等待状态，失败时门户才能显示
+    // 失败页（而不是先回 307 报成功、再在终端报错）。
+    let (query, mut sock) = server
+        .wait_with(CALLBACK_PATH, login_util::CALLBACK_TIMEOUT, |_, _| true)
+        .await?;
+    let callback = match parse_callback(&query) {
+        Ok(cb) => cb,
+        Err(why) => {
+            tracing::debug!(why, query, "回调校验失败");
+            respond_400(&mut sock).await;
+            anyhow::bail!("回调校验失败: {why}");
+        }
+    };
     let client = api::token_client()?;
 
     let (cred, redirect) = match callback {
@@ -149,7 +162,7 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
 
     println!(
         "[codearts] 登录成功，凭证已保存到 {}",
-        crate::config::Config::credential_path(&root, super::ID).display()
+        crate::core::paths::credential_path(&root, super::ID).display()
     );
     match cred.expire_at_millis {
         Some(ms) => println!("[codearts] 凭证有效期至 {}", crate::core::fmt_ms(ms)),
@@ -222,65 +235,16 @@ enum Callback {
     },
 }
 
-/// 等待浏览器回调。拿到凭据后**不立即响应**，由调用方在换取令牌后回 307，
-/// 这样换 token 失败时门户能显示失败页，而不是先报成功再在终端报错。
-async fn wait_callback(
-    listener: tokio::net::TcpListener,
-) -> anyhow::Result<(Callback, tokio::net::TcpStream)> {
-    use tokio::io::AsyncReadExt;
-
-    let deadline = tokio::time::Instant::now() + CALLBACK_TIMEOUT;
-
-    loop {
-        let (mut sock, _) = tokio::time::timeout_at(deadline, listener.accept())
-            .await
-            .map_err(|_| anyhow::anyhow!("等待回调超时（{}s）", CALLBACK_TIMEOUT.as_secs()))??;
-
-        let mut buf = vec![0u8; 8192];
-        let n = match tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await {
-            Ok(Ok(n)) => n,
-            _ => continue,
-        };
-        let request = String::from_utf8_lossy(&buf[..n]).to_string();
-        let first_line = request.lines().next().unwrap_or_default();
-        let mut parts = first_line.split_whitespace();
-        let method = parts.next().unwrap_or_default();
-        let target = parts.next().unwrap_or_default();
-
-        let (route, query) = match target.split_once('?') {
-            Some((r, q)) => (r, q),
-            None => (target, ""),
-        };
-        if method == "OPTIONS" {
-            respond_204(&mut sock).await;
-            continue;
-        }
-        if method != "GET" || route != CALLBACK_PATH {
-            respond_404(&mut sock).await;
-            continue;
-        }
-
-        match parse_callback(query) {
-            Ok(cb) => return Ok((cb, sock)),
-            Err(why) => {
-                tracing::debug!(why, query, "回调校验失败");
-                respond_400(&mut sock).await;
-                continue;
-            }
-        }
-    }
-}
-
 /// 解析回调查询串。官方优先 `code`，旧版回调只有 `secret`。
 fn parse_callback(query: &str) -> Result<Callback, String> {
     // 官方按 truthiness 判断：空串视为没有，继续看 secret。
-    if let Some(code) = login::query_param(query, "code").filter(|s| !s.is_empty()) {
+    if let Some(code) = login_util::query_param(query, "code").filter(|s| !s.is_empty()) {
         validate_callback_value("code", &code)?;
         return Ok(Callback::Code { code });
     }
-    if let Some(secret) = login::query_param(query, "secret").filter(|s| !s.is_empty()) {
+    if let Some(secret) = login_util::query_param(query, "secret").filter(|s| !s.is_empty()) {
         validate_callback_value("secret", &secret)?;
-        let redirect = login::query_param(query, "redirect").filter(|s| !s.trim().is_empty());
+        let redirect = login_util::query_param(query, "redirect").filter(|s| !s.trim().is_empty());
         return Ok(Callback::Secret { secret, redirect });
     }
     Err("缺少 code/secret".into())
@@ -311,16 +275,6 @@ async fn respond_redirect(sock: &mut tokio::net::TcpStream, success: bool, custo
     let _ = sock.shutdown().await;
 }
 
-async fn respond_204(sock: &mut tokio::net::TcpStream) {
-    use tokio::io::AsyncWriteExt;
-    let _ = sock
-        .write_all(
-            b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )
-        .await;
-    let _ = sock.shutdown().await;
-}
-
 async fn respond_400(sock: &mut tokio::net::TcpStream) {
     use tokio::io::AsyncWriteExt;
     let body = "Missing code/secret";
@@ -329,16 +283,6 @@ async fn respond_400(sock: &mut tokio::net::TcpStream) {
         body.len()
     );
     let _ = sock.write_all(resp.as_bytes()).await;
-    let _ = sock.shutdown().await;
-}
-
-async fn respond_404(sock: &mut tokio::net::TcpStream) {
-    use tokio::io::AsyncWriteExt;
-    let _ = sock
-        .write_all(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 8\r\nConnection: close\r\n\r\nNot found",
-        )
-        .await;
     let _ = sock.shutdown().await;
 }
 
@@ -403,14 +347,14 @@ fn parse_ticket_body(body: &str) -> Result<TokenResponse, HttpError> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|e| {
         HttpError::Protocol(format!(
             "解析 ticket 响应失败: {e}；响应片段: {}",
-            truncate(body, 400)
+            truncate_chars(body, 400)
         ))
     })?;
     let value = value.get("data").cloned().unwrap_or(value);
     serde_json::from_value(value).map_err(|e| {
         HttpError::Protocol(format!(
             "解析 ticket 响应字段失败: {e}；响应片段: {}",
-            truncate(body, 400)
+            truncate_chars(body, 400)
         ))
     })
 }
@@ -441,20 +385,9 @@ pub(crate) async fn request_token(
     serde_json::from_str(&body).map_err(|e| {
         HttpError::Protocol(format!(
             "解析 token 响应失败: {e}；响应片段: {}",
-            truncate(&body, 400)
+            truncate_chars(&body, 400)
         ))
     })
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 /// `application/x-www-form-urlencoded` 编码。

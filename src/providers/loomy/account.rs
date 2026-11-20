@@ -6,6 +6,7 @@
 //! 业务信封统一为 `{"code":"000000","desc":"成功","data":{...}}`，
 //! `code != 000000` 即失败（`desc` 为可直接展示的中文原因）。
 
+use crate::core::text::truncate_trimmed;
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -126,8 +127,12 @@ impl AccountClient {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
 
-        let envelope: Value = serde_json::from_str(&text)
-            .with_context(|| format!("账号网关返回非 JSON（HTTP {status}）: {}", snippet(&text)))?;
+        let envelope: Value = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "账号网关返回非 JSON（HTTP {status}）: {}",
+                truncate_trimmed(&text, 200)
+            )
+        })?;
 
         let code = envelope.get("code").and_then(Value::as_str).unwrap_or("");
         if code != "000000" {
@@ -161,14 +166,6 @@ fn base() -> Value {
         "ua": UA,
         "traceid": sign::trace_id(),
     })
-}
-
-fn snippet(s: &str) -> String {
-    let t = s.trim();
-    if t.chars().count() <= 200 {
-        return t.to_string();
-    }
-    t.chars().take(200).collect::<String>() + "…"
 }
 
 #[cfg(test)]

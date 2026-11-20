@@ -37,6 +37,7 @@ use super::api::{AGENT_HOST, HttpError, UA};
 use super::credential::Credential;
 use crate::core::claim::{ClaimCode, ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::provider::{ClaimReport, ProviderError};
+use crate::core::text::truncate_chars;
 
 /// 签到状态端点。
 pub const STATUS_PATH: &str = "/minimax-cloud/api/v1/signin/status";
@@ -274,12 +275,12 @@ where
     if !(200..300).contains(&status.as_u16()) {
         return Err(HttpError::Status {
             status: status.as_u16(),
-            body: truncate(&text, 300),
+            body: truncate_chars(&text, 300),
         }
         .into());
     }
     let env: Envelope<T> = serde_json::from_str(&text)
-        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate(&text, 300))))?;
+        .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate_chars(&text, 300))))?;
     if let Some(base) = &env.base_resp
         && base.status_code != 0
     {
@@ -324,13 +325,6 @@ fn fmt_points(v: f64) -> String {
     } else {
         format!("{v}")
     }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    s.chars().take(max).collect::<String>() + "…"
 }
 
 #[cfg(test)]

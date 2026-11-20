@@ -46,6 +46,7 @@ use serde::Deserialize;
 use super::api::{AGENT_HOST, UA};
 use super::credential::Credential;
 use crate::core::provider::ProviderError;
+use crate::core::text::truncate_chars;
 
 /// 会员/额度信息端点（响应内含 `op_credit_summary`）。
 pub const MEMBERSHIP_PATH: &str = "/matrix/api/v1/commerce/get_membership_info";
@@ -104,7 +105,7 @@ pub async fn fetch(
         return Err(ProviderError::Unauthorized(format!(
             "上游 HTTP {}: {}",
             status.as_u16(),
-            truncate(&text, 200)
+            truncate_chars(&text, 200)
         )));
     }
     let env: Envelope = serde_json::from_str(&text)
@@ -145,13 +146,6 @@ fn parse_value(v: &serde_json::Value) -> Option<f64> {
         serde_json::Value::Number(n) => n.as_f64(),
         _ => None,
     }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    s.chars().take(max).collect::<String>() + "…"
 }
 
 #[cfg(test)]
