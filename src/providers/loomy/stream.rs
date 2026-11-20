@@ -7,7 +7,7 @@
 //! data: {"choices":[{"finish_reason":"stop"}],"usage":{...}}
 //! data: [DONE]
 //! ```
-//! 纯 `data:` 帧，无 `event:` 行。
+//! 纯 `data:` 帧，无 `event:` 行。通用骨架见 [`crate::core::chunk`]。
 //!
 //! 但有个**非标准点**：认证失效不是 HTTP 401，而是 HTTP 200 + 顶层
 //! `{"code":"100002","desc":"登录已失效，请重新登录"}` 的非 SSE 响应体。
@@ -15,7 +15,9 @@
 
 use serde_json::Value;
 
-use crate::core::events::{ErrorKind, Event, ToolCallDelta, UpstreamError, Usage};
+use crate::core::chunk;
+use crate::core::events::{ErrorKind, Event, UpstreamError};
+use crate::core::sse::SseEvent;
 
 /// 解析单帧，可能产出 0..n 个事件。
 pub struct FrameParser;
@@ -25,78 +27,8 @@ impl FrameParser {
         Self
     }
 
-    pub fn parse(&mut self, ev: &crate::core::sse::SseEvent) -> Vec<Event> {
-        let data = ev.data.trim();
-        if data.is_empty() || data == "[DONE]" {
-            // 终止由 `core::stream::drive` 统一收尾。
-            return Vec::new();
-        }
-        let v: Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(e) => {
-                return vec![Event::Error(UpstreamError {
-                    code: None,
-                    message: format!("上游返回非 JSON 帧: {e}"),
-                    kind: ErrorKind::Api,
-                })];
-            }
-        };
-
-        // 业务错误信封（认证失效即此形态，HTTP 仍是 200）。
-        if let Some((code, desc)) = super::api::biz_error(&v) {
-            return vec![Event::Error(UpstreamError {
-                message: desc,
-                kind: classify_code(&code),
-                code: Some(code),
-            })];
-        }
-
-        if let Some(err) = v.get("error") {
-            return vec![Event::Error(UpstreamError {
-                code: err
-                    .get("code")
-                    .map(|c| c.to_string().trim_matches('"').to_string()),
-                message: err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("上游返回错误")
-                    .to_string(),
-                kind: classify_error(err),
-            })];
-        }
-
-        let mut out = Vec::new();
-
-        if let Some(choices) = v.get("choices").and_then(|c| c.as_array()) {
-            for ch in choices {
-                if let Some(delta) = ch.get("delta") {
-                    if let Some(r) = delta.get("reasoning_content").and_then(|x| x.as_str())
-                        && !r.is_empty()
-                    {
-                        out.push(Event::Reasoning(r.to_string()));
-                    }
-                    if let Some(c) = delta.get("content").and_then(|x| x.as_str())
-                        && !c.is_empty()
-                    {
-                        out.push(Event::Text(c.to_string()));
-                    }
-                    if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
-                        for tc in tcs {
-                            out.push(Event::ToolCall(parse_tool_call(tc)));
-                        }
-                    }
-                }
-                if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
-                    out.push(Event::Finish(crate::core::stream::map_finish(fr)));
-                }
-            }
-        }
-
-        if let Some(u) = v.get("usage") {
-            out.push(Event::Usage(parse_usage(u)));
-        }
-
-        out
+    pub fn parse(&mut self, ev: &SseEvent) -> Vec<Event> {
+        chunk::parse(ev, false, error_of)
     }
 }
 
@@ -106,53 +38,18 @@ impl Default for FrameParser {
     }
 }
 
-fn parse_tool_call(tc: &Value) -> ToolCallDelta {
-    let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-    let f = tc.get("function");
-    // 上游后续分片给 `"id":""`、`"name":""`，空串等同缺失，否则会覆盖已累积的值。
-    let id = tc
-        .get("id")
-        .or_else(|| f.and_then(|x| x.get("id")))
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let name = f
-        .and_then(|x| x.get("name"))
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let arguments = f
-        .and_then(|x| x.get("arguments"))
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    ToolCallDelta {
-        index,
-        id,
-        name,
-        arguments,
+/// 业务错误信封优先（认证失效即此形态，HTTP 仍是 200），然后才是 `error` 对象。
+fn error_of(v: &Value) -> Option<UpstreamError> {
+    if let Some((code, desc)) = super::api::biz_error(v) {
+        return Some(UpstreamError {
+            message: desc,
+            kind: classify_code(&code),
+            code: Some(code),
+        });
     }
+    chunk::error_object(v, classify_error)
 }
 
-/// `usage` 里还带 `points_consumed`（本次扣分），不属 OpenAI 标准，忽略。
-fn parse_usage(u: &Value) -> Usage {
-    let n = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    Usage {
-        prompt_tokens: n("prompt_tokens"),
-        completion_tokens: n("completion_tokens"),
-        total_tokens: n("total_tokens"),
-        cached_tokens: u
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|x| x.as_u64()),
-        reasoning_tokens: u
-            .get("completion_tokens_details")
-            .and_then(|d| d.get("reasoning_tokens"))
-            .and_then(|x| x.as_u64()),
-    }
-}
-
-/// 业务码分类。码表来自实测（`provider-info/loomy.md` §8）。
 fn classify_code(code: &str) -> ErrorKind {
     match code {
         // 登录态失效 / 无权限。
@@ -165,21 +62,20 @@ fn classify_code(code: &str) -> ErrorKind {
     }
 }
 
-/// `error` 框分类。
 fn classify_error(err: &Value) -> ErrorKind {
-    let code = err
-        .get("code")
-        .map(|c| c.to_string().trim_matches('"').to_string())
-        .unwrap_or_default();
-    let by_code = classify_code(&code);
-    if by_code != ErrorKind::Api {
-        return by_code;
-    }
-    match err.get("type").and_then(|t| t.as_str()) {
-        Some("invalid_request_error") => ErrorKind::InvalidRequest,
-        Some("authentication_error") => ErrorKind::Authentication,
-        Some("rate_limit_error") | Some("insufficient_quota") => ErrorKind::RateLimit,
-        _ => ErrorKind::Api,
+    let code = err.get("code").map(chunk::code_text).unwrap_or_default();
+    match code.as_str() {
+        // 点数不足 / 限流。
+        "1000007" => ErrorKind::RateLimit,
+        // 授权/身份失效。
+        "200003" | "200009" | "200022" | "200201" => ErrorKind::Authentication,
+        "400" | "invalid_request_error" => ErrorKind::InvalidRequest,
+        _ => match err.get("type").and_then(|t| t.as_str()) {
+            Some("invalid_request_error") => ErrorKind::InvalidRequest,
+            Some("authentication_error") => ErrorKind::Authentication,
+            Some("rate_limit_error") => ErrorKind::RateLimit,
+            _ => ErrorKind::Api,
+        },
     }
 }
 

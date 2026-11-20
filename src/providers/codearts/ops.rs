@@ -395,7 +395,7 @@ pub async fn claim(
             max_balance = Some(max_balance.map_or(r, |b: f64| b.max(r)));
         }
         details.push(ClaimDetail::Label {
-            en: format!("{} +{}", campaign_name_en(c), fmt_num(amount)),
+            en: format!("{} +{}", campaign_name_en(c), crate::core::fmt_num(amount)),
             zh: format!("{} +{amount} {}", campaign_name_zh(c), c.benefit_unit),
         });
     }
@@ -426,15 +426,6 @@ fn campaign_name_zh(c: &Campaign) -> String {
         }
     } else {
         c.title.clone()
-    }
-}
-
-/// 积分为整数时不显示 `.0`。
-fn fmt_num(v: f64) -> String {
-    if v.fract().abs() < f64::EPSILON {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
     }
 }
 

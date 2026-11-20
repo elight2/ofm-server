@@ -24,7 +24,6 @@ use tokio::sync::Mutex;
 use crate::config::RaccoonReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
-use crate::core::text::truncate_chars;
 
 use credential::Credential;
 
@@ -40,13 +39,13 @@ pub struct RaccoonProvider {
 }
 
 impl RaccoonProvider {
-    pub fn new(root: PathBuf, effort: RaccoonReasoningEffort) -> Self {
-        Self {
+    pub fn new(root: PathBuf, effort: RaccoonReasoningEffort) -> anyhow::Result<Self> {
+        Ok(Self {
             root,
-            client: api::client().expect("构建 HTTP 客户端失败"),
+            client: api::client()?,
             refresh_lock: Arc::new(Mutex::new(())),
             effort,
-        }
+        })
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
@@ -88,15 +87,6 @@ impl RaccoonProvider {
         }
         h
     }
-
-    /// 拉取模型目录（保留错误）。
-    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let cred = self.credential()?;
-        let token = self.access_token().await?;
-        models::fetch(&self.client, &self.headers(&token, &cred))
-            .await
-            .map_err(ProviderError::from)
-    }
 }
 
 #[async_trait]
@@ -105,20 +95,13 @@ impl Provider for RaccoonProvider {
         ID
     }
 
-    /// 拉取模型目录。错误保留给 `models_checked`，这里只记日志。
-    async fn models(&self) -> Vec<ModelInfo> {
-        match self.fetch_models().await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    /// 带错误的目录拉取：`status` 用它真实探测接入是否可用。
-    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        self.fetch_models().await
+    /// 拉取模型目录（保留错误）。
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        models::fetch(&self.client, &self.headers(&token, &cred))
+            .await
+            .map_err(ProviderError::from)
     }
 
     /// 读当前余额（主数字取 `available_points`）。
@@ -154,19 +137,17 @@ impl Provider for RaccoonProvider {
         }
 
         let resp = http.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+        if !resp.status().is_success() {
+            let (status, text) = crate::core::http::error_body(resp, 300).await;
             // 413 = 请求体超 10MB（图片）。属于请求过大，不是凭证问题。
-            if status.as_u16() == 413 {
+            if status == 413 {
                 return Err(ProviderError::Protocol(format!(
-                    "请求体超过 10MB 上限: {}",
-                    truncate_chars(&text, 200)
+                    "请求体超过 10MB 上限: {text}"
                 )));
             }
             return Err(ProviderError::from(api::HttpError::Status {
-                status: status.as_u16(),
-                body: truncate_chars(&text, 300),
+                status,
+                body: text,
             }));
         }
 

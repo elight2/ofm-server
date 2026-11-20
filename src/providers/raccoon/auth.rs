@@ -95,7 +95,7 @@ pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
         crate::core::paths::credential_path(&root, path).display()
     );
     match credential::jwt_exp(&cred.access_token) {
-        Some(exp) => println!("[raccoon] 访问令牌有效期至 {}", fmt_unix(exp)),
+        Some(exp) => println!("[raccoon] 访问令牌有效期至 {}", crate::core::fmt_secs(exp)),
         None => println!("[raccoon] 访问令牌非 JWT，无法读取有效期"),
     }
     if cred.is_org() {
@@ -198,22 +198,6 @@ fn parse_callback(query: &str, state: &str) -> Result<String, String> {
         return Err("code 含控制字符".into());
     }
     Ok(code)
-}
-
-fn fmt_unix(secs: i64) -> String {
-    match time::OffsetDateTime::from_unix_timestamp(secs) {
-        Ok(dt) => {
-            let (y, mo, d) = dt.to_calendar_date();
-            format!(
-                "{y:04}-{:02}-{d:02} {:02}:{:02}:{:02}",
-                mo as u8,
-                dt.hour(),
-                dt.minute(),
-                dt.second()
-            )
-        }
-        Err(_) => secs.to_string(),
-    }
 }
 
 #[cfg(test)]

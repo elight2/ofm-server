@@ -40,12 +40,12 @@ pub struct LoomyProvider {
 }
 
 impl LoomyProvider {
-    pub fn new(root: PathBuf, effort: LoomyReasoningEffort) -> Self {
-        Self {
+    pub fn new(root: PathBuf, effort: LoomyReasoningEffort) -> anyhow::Result<Self> {
+        Ok(Self {
             root,
-            client: api::client().expect("构建 HTTP 客户端失败"),
+            client: api::client()?,
             effort,
-        }
+        })
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
@@ -91,6 +91,13 @@ impl LoomyProvider {
         headers.push(("loomy-version", VERSION.to_string()));
         headers
     }
+}
+
+#[async_trait]
+impl Provider for LoomyProvider {
+    fn id(&self) -> &'static str {
+        ID
+    }
 
     /// 请求模型目录。
     async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
@@ -110,13 +117,6 @@ impl LoomyProvider {
         tracing::debug!("[{ID}] 模型目录共 {} 个可对话模型", models.len());
         Ok(models)
     }
-}
-
-#[async_trait]
-impl Provider for LoomyProvider {
-    fn id(&self) -> &'static str {
-        ID
-    }
 
     /// 登录态到期时间。
     fn credential_expire_at(&self) -> Option<i64> {
@@ -124,22 +124,6 @@ impl Provider for LoomyProvider {
             .ok()
             .flatten()
             .and_then(|c| c.expire_at)
-    }
-
-    /// 拉取上游模型目录。
-    async fn models(&self) -> Vec<ModelInfo> {
-        match self.fetch_models().await {
-            Ok(models) => models,
-            Err(e) => {
-                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    /// 带错误的目录拉取。
-    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        self.fetch_models().await
     }
 
     /// 对话（上游恒回 SSE，非流式由下游聚合）。
@@ -157,10 +141,9 @@ impl Provider for LoomyProvider {
         }
 
         let resp = http.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(map_http_error(status.as_u16(), &text));
+        if !resp.status().is_success() {
+            let (status, text) = crate::core::http::error_body(resp, 300).await;
+            return Err(map_http_error(status, &text));
         }
 
         // 认证失效是 HTTP 200 + 业务信封（非 SSE）。此时 `content-type` 是

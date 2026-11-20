@@ -179,8 +179,8 @@ pub async fn claim(
         // 一档一标签，用服务端回传的档位名（通常只含刚申请的这档）。
         for id in &grant.granted_tier_ids {
             details.push(ClaimDetail::Label {
-                en: format!("{id} +{}", fmt_num(grant.granted_points)),
-                zh: format!("{id} +{}", fmt_num(grant.granted_points)),
+                en: format!("{id} +{}", crate::core::fmt_num(grant.granted_points)),
+                zh: format!("{id} +{}", crate::core::fmt_num(grant.granted_points)),
             });
         }
         // 用发放后的状态覆盖本地快照，避免重复申请同一档位。
@@ -195,8 +195,14 @@ pub async fn claim(
         // 已领过时把今日已发分数带进明细，便于对照日志。
         let details = if snap.status.earned_points_today > 0.0 {
             vec![ClaimDetail::Label {
-                en: format!("earned today {}", fmt_num(snap.status.earned_points_today)),
-                zh: format!("今日已发 {}", fmt_num(snap.status.earned_points_today)),
+                en: format!(
+                    "earned today {}",
+                    crate::core::fmt_num(snap.status.earned_points_today)
+                ),
+                zh: format!(
+                    "今日已发 {}",
+                    crate::core::fmt_num(snap.status.earned_points_today)
+                ),
             }]
         } else {
             vec![]
@@ -222,14 +228,6 @@ fn with_headers(
         http = http.header(*k, v);
     }
     http
-}
-
-fn fmt_num(v: f64) -> String {
-    if v.fract().abs() < f64::EPSILON {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
-    }
 }
 
 #[cfg(test)]

@@ -7,11 +7,14 @@
 //! data: {"choices":[{"finish_reason":"stop"}],"usage":{...}}
 //! data: [DONE]
 //! ```
-//! 无 `event:` 行，纯 `data:` 帧。
+//! 无 `event:` 行，纯 `data:` 帧。骨架在 [`crate::core::chunk`]，
+//! 这里只保留 raccoon 的错误码分类与 `function.id` 优先的取舍。
 
 use serde_json::Value;
 
-use crate::core::events::{ErrorKind, Event, ToolCallDelta, UpstreamError, Usage};
+use crate::core::chunk;
+use crate::core::events::{ErrorKind, Event};
+use crate::core::sse::SseEvent;
 
 /// 解析单帧 `data`，可能产出 0..n 个事件。
 pub struct FrameParser;
@@ -21,74 +24,8 @@ impl FrameParser {
         Self
     }
 
-    pub fn parse(&mut self, ev: &crate::core::sse::SseEvent) -> Vec<Event> {
-        let data = ev.data.as_str();
-        let data = data.trim();
-        if data.is_empty() {
-            return Vec::new();
-        }
-        if data == "[DONE]" {
-            // 终止由下游统一处理；这里不额外发事件。
-            return Vec::new();
-        }
-        let v: Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(e) => {
-                return vec![Event::Error(UpstreamError {
-                    code: None,
-                    message: format!("上游返回非 JSON 帧: {e}"),
-                    kind: ErrorKind::Api,
-                })];
-            }
-        };
-
-        // 业务错误可能以帧内 error 字段出现。
-        if let Some(err) = v.get("error") {
-            return vec![Event::Error(UpstreamError {
-                code: err
-                    .get("code")
-                    .map(|c| c.to_string().trim_matches('"').to_string()),
-                message: err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("上游返回错误")
-                    .to_string(),
-                kind: classify_error(err),
-            })];
-        }
-
-        let mut out = Vec::new();
-
-        if let Some(choices) = v.get("choices").and_then(|c| c.as_array()) {
-            for ch in choices {
-                if let Some(delta) = ch.get("delta") {
-                    if let Some(r) = delta.get("reasoning_content").and_then(|x| x.as_str())
-                        && !r.is_empty()
-                    {
-                        out.push(Event::Reasoning(r.to_string()));
-                    }
-                    if let Some(c) = delta.get("content").and_then(|x| x.as_str())
-                        && !c.is_empty()
-                    {
-                        out.push(Event::Text(c.to_string()));
-                    }
-                    if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
-                        for tc in tcs {
-                            out.push(Event::ToolCall(parse_tool_call(tc)));
-                        }
-                    }
-                }
-                if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
-                    out.push(Event::Finish(crate::core::stream::map_finish(fr)));
-                }
-            }
-        }
-
-        if let Some(u) = v.get("usage") {
-            out.push(Event::Usage(parse_usage(u)));
-        }
-
-        out
+    pub fn parse(&mut self, ev: &SseEvent) -> Vec<Event> {
+        chunk::parse(ev, true, |v| chunk::error_object(v, classify_error))
     }
 }
 
@@ -98,58 +35,9 @@ impl Default for FrameParser {
     }
 }
 
-fn parse_tool_call(tc: &Value) -> ToolCallDelta {
-    let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-    let f = tc.get("function");
-    // 上游在后续分片里会给出 `"id":""`、`"name":""`，空串等同缺失。
-    let id = f
-        .and_then(|x| x.get("id"))
-        .or_else(|| tc.get("id"))
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let name = f
-        .and_then(|x| x.get("name"))
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let arguments = f
-        .and_then(|x| x.get("arguments"))
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    ToolCallDelta {
-        index,
-        id,
-        name,
-        arguments,
-    }
-}
-
-fn parse_usage(u: &Value) -> Usage {
-    let n = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    Usage {
-        prompt_tokens: n("prompt_tokens"),
-        completion_tokens: n("completion_tokens"),
-        total_tokens: n("total_tokens"),
-        cached_tokens: u
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|x| x.as_u64()),
-        reasoning_tokens: u
-            .get("completion_tokens_details")
-            .and_then(|d| d.get("reasoning_tokens"))
-            .and_then(|x| x.as_u64()),
-    }
-}
-
-/// 错误分类。上游错误码见 `provider-info/raccoon.md` §6。
 fn classify_error(err: &Value) -> ErrorKind {
     // 码可能是数字或字符串。
-    let code = err
-        .get("code")
-        .map(|c| c.to_string().trim_matches('"').to_string())
-        .unwrap_or_default();
+    let code = err.get("code").map(chunk::code_text).unwrap_or_default();
     match code.as_str() {
         // 点数不足
         "1000007" => ErrorKind::RateLimit,

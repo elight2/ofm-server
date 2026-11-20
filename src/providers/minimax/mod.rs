@@ -30,7 +30,6 @@ use tokio::sync::Mutex;
 use crate::config::MinimaxReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
-use crate::core::text::truncate_chars;
 
 use credential::Credential;
 
@@ -50,14 +49,14 @@ pub struct MinimaxProvider {
 }
 
 impl MinimaxProvider {
-    pub fn new(root: PathBuf, effort: MinimaxReasoningEffort) -> Self {
-        Self {
+    pub fn new(root: PathBuf, effort: MinimaxReasoningEffort) -> anyhow::Result<Self> {
+        Ok(Self {
             root,
-            client: api::client().expect("构建 HTTP 客户端失败"),
-            models_client: api::models_client().expect("构建 HTTP 客户端失败"),
+            client: api::client()?,
+            models_client: api::models_client()?,
             refresh_lock: Arc::new(Mutex::new(())),
             effort,
-        }
+        })
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
@@ -134,13 +133,6 @@ impl MinimaxProvider {
             .await?)
     }
 
-    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let token = self.access_token().await?;
-        models::fetch(&self.models_client, &token)
-            .await
-            .map_err(ProviderError::from)
-    }
-
     /// 查该模型在目录里的思考形态（§5.1/§5.2）。
     ///
     /// 目录拉不到或模型不在目录时返回默认形态（按 `switchable` 处理）——
@@ -184,19 +176,11 @@ impl Provider for MinimaxProvider {
         ID
     }
 
-    /// 拉取模型目录。错误保留给 `models_checked`，这里只记日志。
-    async fn models(&self) -> Vec<ModelInfo> {
-        match self.fetch_models().await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        self.fetch_models().await
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let token = self.access_token().await?;
+        models::fetch(&self.models_client, &token)
+            .await
+            .map_err(ProviderError::from)
     }
 
     fn credential_expire_at(&self) -> Option<i64> {
@@ -252,12 +236,11 @@ impl Provider for MinimaxProvider {
             resp = self.post_chat(&fresh.access_token, &payload).await?;
         }
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+        if !resp.status().is_success() {
+            let (status, text) = crate::core::http::error_body(resp, 300).await;
             return Err(ProviderError::from(api::HttpError::Status {
-                status: status.as_u16(),
-                body: truncate_chars(&text, 300),
+                status,
+                body: text,
             }));
         }
 

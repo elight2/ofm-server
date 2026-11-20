@@ -19,7 +19,7 @@ use crate::core::provider::Provider;
 use crate::core::registry::Registry;
 
 pub async fn run(root: std::path::PathBuf, provider_id: Option<&str>) -> anyhow::Result<()> {
-    let registry = crate::providers::build_registry(&root, &crate::config::Config::load(&root)?);
+    let registry = crate::providers::build_registry(&root, &crate::config::Config::load(&root)?)?;
     match provider_id {
         Some(id) => {
             let provider = registry

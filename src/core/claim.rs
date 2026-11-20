@@ -93,13 +93,13 @@ impl ClaimDetail {
     pub fn en(&self) -> String {
         match self {
             ClaimDetail::Label { en, .. } => en.clone(),
-            ClaimDetail::Points(v) => format!("{} points", fmt_num(*v)),
+            ClaimDetail::Points(v) => format!("{} points", super::fmt_num(*v)),
             ClaimDetail::Day(v) => format!("day {v}"),
             ClaimDetail::Streak(v) => format!("streak {v} days"),
             ClaimDetail::Cycle { claimed, total } => format!("cycle {claimed}/{total}"),
-            ClaimDetail::Credits(v) => format!("{} credits", fmt_num(*v)),
+            ClaimDetail::Credits(v) => format!("{} credits", super::fmt_num(*v)),
             ClaimDetail::Delta(v) => format!("balance change {v:+.2}"),
-            ClaimDetail::PendingPoints(v) => format!("{} points pending", fmt_num(*v)),
+            ClaimDetail::PendingPoints(v) => format!("{} points pending", super::fmt_num(*v)),
             ClaimDetail::PendingItem { en, count, .. } => format!("{en} pending {count}"),
         }
     }
@@ -188,15 +188,6 @@ fn join(code: &str, details: &[String]) -> String {
         return code.to_string();
     }
     format!("{code}: {}", details.join(", "))
-}
-
-/// 积分为整数时不显示 `.0`。
-fn fmt_num(v: f64) -> String {
-    if v.fract().abs() < f64::EPSILON {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
-    }
 }
 
 /// 签到失败原因（英文，写 `claim.log`）。

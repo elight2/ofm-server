@@ -20,7 +20,7 @@ const BACKOFF_MS: u64 = 50;
 ///
 /// `src` 的文件句柄必须已关闭（调用方负责）。
 pub fn rename(src: &Path, dst: &Path) -> io::Result<()> {
-    let mut last = io::Error::new(io::ErrorKind::Other, "rename 失败");
+    let mut last = io::Error::other("rename 失败");
     for attempt in 0..=RETRIES {
         match std::fs::rename(src, dst) {
             Ok(()) => return Ok(()),

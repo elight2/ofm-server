@@ -317,16 +317,6 @@ fn progress_details(panel: &Panel) -> Vec<ClaimDetail> {
     out
 }
 
-/// 积分为整数时不显示 `.0`。
-#[allow(dead_code)]
-fn fmt_points(v: f64) -> String {
-    if (v.fract()).abs() < f64::EPSILON {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,7 +447,7 @@ mod tests {
 
     #[test]
     fn 整数积分不带小数() {
-        assert_eq!(fmt_points(400.0), "400");
-        assert_eq!(fmt_points(400.5), "400.5");
+        assert_eq!(crate::core::fmt_num(400.0), "400");
+        assert_eq!(crate::core::fmt_num(400.5), "400.5");
     }
 }

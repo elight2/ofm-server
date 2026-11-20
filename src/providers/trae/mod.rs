@@ -26,7 +26,6 @@ use crate::config::TraeReasoningEffort;
 use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
-use crate::core::text::truncate_chars;
 
 use api::{
     APP_VERSION, APP_VERSION_CODE, HOST_API5, HttpError, IDE_VERSION_CODE, UA_TTNET, UA_VSCODE,
@@ -47,13 +46,13 @@ pub struct TraeProvider {
 }
 
 impl TraeProvider {
-    pub fn new(root: PathBuf, effort: TraeReasoningEffort) -> Self {
-        Self {
+    pub fn new(root: PathBuf, effort: TraeReasoningEffort) -> anyhow::Result<Self> {
+        Ok(Self {
             root,
-            client: api::client().expect("构建 HTTP 客户端失败"),
+            client: api::client()?,
             refresh_lock: Arc::new(Mutex::new(())),
             effort,
-        }
+        })
     }
 
     fn credential(&self) -> Result<Credential, ProviderError> {
@@ -114,39 +113,6 @@ impl TraeProvider {
             ("content-type", "application/json".to_string()),
             ("accept", "*/*".to_string()),
         ]
-    }
-
-    /// 请求模型目录并解析（独立方法便于单测与错误传播）。
-    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let cred = self.credential()?;
-        let token = self.access_token().await?;
-        let url = format!("{HOST_API5}{}", catalog::ENDPOINT_PATH);
-
-        let payload = serde_json::to_vec(&catalog::CatalogBody::build())
-            .map_err(|e| ProviderError::Other(format!("序列化目录请求体失败: {e}")))?;
-        let mut http = self.client.post(&url).body(payload);
-        for (k, v) in self.chat_headers(&token, &cred) {
-            http = http.header(k, v);
-        }
-
-        let resp = http.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(map_http_error(status.as_u16(), &body));
-        }
-
-        let catalog: catalog::Catalog = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::Other(format!("解析模型目录失败: {e}")))?;
-        // 准入失败也是 200，不检查就会静默返回空列表。
-        if let Some(msg) = catalog.first_error() {
-            return Err(ProviderError::Other(format!("模型目录不可用: {msg}")));
-        }
-        let models = catalog::to_models(&catalog);
-        tracing::debug!("[{ID}] 模型目录共 {} 个可对话模型", models.len());
-        Ok(models)
     }
 
     // ------------------------------------------------------------ 签到（§6）
@@ -228,10 +194,9 @@ impl TraeProvider {
         }
 
         let resp = http.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(map_http_error(status.as_u16(), &body));
+        if !resp.status().is_success() {
+            let (status, body) = crate::core::http::error_body(resp, 300).await;
+            return Err(map_http_error(status, &body));
         }
         resp.json()
             .await
@@ -268,23 +233,36 @@ impl Provider for TraeProvider {
         ID
     }
 
-    /// 拉取上游模型目录（`provider-info/trae.md` §4）。
-    ///
-    /// 失败时记日志并返回空列表：`/v1/models` 是聚合端点，
-    /// 单个供应商不可用不应让整体失败。
-    async fn models(&self) -> Vec<ModelInfo> {
-        match self.fetch_models().await {
-            Ok(models) => models,
-            Err(e) => {
-                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
-                Vec::new()
-            }
-        }
-    }
+    /// 请求模型目录并解析（独立方法便于单测与错误传播）。
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let cred = self.credential()?;
+        let token = self.access_token().await?;
+        let url = format!("{HOST_API5}{}", catalog::ENDPOINT_PATH);
 
-    /// 带错误的目录拉取：`status` 用它真实探测接入是否可用。
-    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        self.fetch_models().await
+        let payload = serde_json::to_vec(&catalog::CatalogBody::build())
+            .map_err(|e| ProviderError::Other(format!("序列化目录请求体失败: {e}")))?;
+        let mut http = self.client.post(&url).body(payload);
+        for (k, v) in self.chat_headers(&token, &cred) {
+            http = http.header(k, v);
+        }
+
+        let resp = http.send().await?;
+        if !resp.status().is_success() {
+            let (status, body) = crate::core::http::error_body(resp, 300).await;
+            return Err(map_http_error(status, &body));
+        }
+
+        let catalog: catalog::Catalog = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Other(format!("解析模型目录失败: {e}")))?;
+        // 准入失败也是 200，不检查就会静默返回空列表。
+        if let Some(msg) = catalog.first_error() {
+            return Err(ProviderError::Other(format!("模型目录不可用: {msg}")));
+        }
+        let models = catalog::to_models(&catalog);
+        tracing::debug!("[{ID}] 模型目录共 {} 个可对话模型", models.len());
+        Ok(models)
     }
 
     /// JWT 到期时间（毫秒）。
@@ -311,10 +289,9 @@ impl Provider for TraeProvider {
         }
 
         let resp = http.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(map_http_error(status.as_u16(), &body));
+        if !resp.status().is_success() {
+            let (status, body) = crate::core::http::error_body(resp, 300).await;
+            return Err(map_http_error(status, &body));
         }
 
         // 上游恒回 SSE；分帧后逐帧转成中间事件。
@@ -399,12 +376,11 @@ impl Provider for TraeProvider {
     }
 }
 
-/// HTTP 层错误映射（§5.1）。
+/// HTTP 层错误映射（§5.1）。`body` 已由 [`crate::core::http::error_body`] 截断。
 fn map_http_error(status: u16, body: &str) -> ProviderError {
-    let snippet = truncate_chars(body, 300);
     match status {
-        401 | 403 => ProviderError::Unauthorized(snippet),
-        _ => ProviderError::Other(format!("上游 HTTP {status}: {snippet}")),
+        401 | 403 => ProviderError::Unauthorized(body.to_string()),
+        _ => ProviderError::Other(format!("上游 HTTP {status}: {body}")),
     }
 }
 

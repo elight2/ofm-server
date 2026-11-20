@@ -44,16 +44,16 @@ pub struct CodeartsProvider {
 }
 
 impl CodeartsProvider {
-    pub fn new(root: PathBuf, effort: CodeartsReasoningEffort) -> Self {
-        let chat_client = api::chat_client().expect("构建对话 HTTP 客户端失败");
-        Self {
+    pub fn new(root: PathBuf, effort: CodeartsReasoningEffort) -> anyhow::Result<Self> {
+        let chat_client = api::chat_client()?;
+        Ok(Self {
             root,
-            client: api::token_client().expect("构建 HTTP 客户端失败"),
+            client: api::token_client()?,
             variants: variants::VariantsCache::new(chat_client.clone()),
             chat_client,
             refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             effort,
-        }
+        })
     }
 
     fn credential(&self) -> Result<credential::Credential, ProviderError> {
@@ -95,18 +95,18 @@ impl CodeartsProvider {
             .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
         Ok(new)
     }
-
-    /// 拉取模型目录（保留错误，独立方法便于单测与错误传播）。
-    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let cred = self.valid_credential().await?;
-        catalog::fetch_models(&self.client, &cred).await
-    }
 }
 
 #[async_trait]
 impl Provider for CodeartsProvider {
     fn id(&self) -> &'static str {
         ID
+    }
+
+    /// 拉取模型目录（保留错误，独立方法便于单测与错误传播）。
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let cred = self.valid_credential().await?;
+        catalog::fetch_models(&self.client, &cred).await
     }
 
     /// 登录后凭证包含 AKSK 三元组（`access_key_id`/`secret_access_key`/
@@ -116,22 +116,6 @@ impl Provider for CodeartsProvider {
             .ok()
             .flatten()
             .and_then(|c| c.expire_at_millis)
-    }
-
-    /// 拉取模型目录。错误保留给 `models_checked`，这里只记日志。
-    async fn models(&self) -> Vec<ModelInfo> {
-        match self.fetch_models().await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("[{ID}] 获取模型目录失败: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    /// 带错误的目录拉取：`status` 用它真实探测接入是否可用。
-    async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        self.fetch_models().await
     }
 
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {

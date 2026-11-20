@@ -23,9 +23,7 @@ use reqwest::Client;
 /// 对话最长可能挂很久（上游推理模型首帧可达几十秒），故不设总超时，
 /// 只设连接超时避免挂死。
 pub fn client() -> Result<Client, reqwest::Error> {
-    Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(20))
-        .build()
+    crate::core::http::client(crate::core::http::Spec::default().connect_timeout(20))
 }
 
 /// 客户端版本（`loomy-version` 请求头）。
@@ -119,8 +117,6 @@ where
     }
     env.into_data()
 }
-
-/// 截断到 `max` 字节（按字符边界），便于放进错误信息。
 
 #[cfg(test)]
 mod tests {

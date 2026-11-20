@@ -62,7 +62,7 @@ pub async fn login(root: PathBuf) -> anyhow::Result<()> {
     let info = callback_auth_code(&query)?;
     println!(
         "[trae] 已获得授权码（{} 内有效），正在换取令牌…",
-        fmt_ms(info.expire_at)
+        crate::core::fmt_ms_opt(info.expire_at)
     );
 
     let client = api::client()?;
@@ -77,7 +77,10 @@ pub async fn login(root: PathBuf) -> anyhow::Result<()> {
         "[trae] 登录成功，凭证已保存到 {}",
         root.join("providers/trae/credential.toml").display()
     );
-    println!("[trae] 令牌有效期至 {}", fmt_ms(cred.token_expire_at));
+    println!(
+        "[trae] 令牌有效期至 {}",
+        crate::core::fmt_ms_opt(cred.token_expire_at)
+    );
     Ok(())
 }
 
@@ -183,21 +186,4 @@ async fn exchange_token(
         ide_version: api::APP_VERSION,
     };
     api::post_control::<_, ExchangeResult>(client, &url, api::UA_ELECTRON, None, &body).await
-}
-
-fn fmt_ms(ms: Option<i64>) -> String {
-    match ms {
-        Some(ms) => {
-            let secs = ms / 1000;
-            match time::OffsetDateTime::from_unix_timestamp(secs) {
-                Ok(dt) => {
-                    let (y, mo, d) = dt.to_calendar_date();
-                    let (h, mi, s) = (dt.hour(), dt.minute(), dt.second());
-                    format!("{y:04}-{:02}-{d:02} {h:02}:{mi:02}:{s:02}", mo as u8)
-                }
-                Err(_) => ms.to_string(),
-            }
-        }
-        None => "未知".to_string(),
-    }
 }

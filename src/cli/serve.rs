@@ -10,7 +10,7 @@ use crate::server::{self, AppState};
 
 pub async fn run(root: std::path::PathBuf) -> anyhow::Result<()> {
     let config = Config::load(&root)?;
-    let registry = Arc::new(providers::build_registry(&root, &config));
+    let registry = Arc::new(providers::build_registry(&root, &config)?);
 
     spawn_claim_loops(registry.clone(), &config, root.clone())?;
 

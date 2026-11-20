@@ -129,11 +129,7 @@ impl From<HttpError> for crate::core::provider::ProviderError {
 }
 
 pub fn client() -> Result<reqwest::Client, reqwest::Error> {
-    crate::tls::init();
-    reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
+    crate::core::http::client(crate::core::http::Spec::ua(UA).timeout(300))
 }
 
 /// 发 POST 并解信封。`bearer` 为 `None` 时不带 `Authorization`。
@@ -225,8 +221,6 @@ fn parse_envelope<R: DeserializeOwned>(status: u16, text: &str) -> Result<R, Htt
     env.data
         .ok_or_else(|| HttpError::Decode("响应缺少 data".to_string()))
 }
-
-/// 字符串截断到 `max` 字节（保持 UTF-8 边界）。
 
 #[cfg(test)]
 mod tests {

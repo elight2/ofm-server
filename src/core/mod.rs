@@ -1,11 +1,13 @@
 //! 供应商无关的核心层：事件模型、供应商 trait、注册表、凭证存储、SSE 解析。
 
 pub mod atomicio;
+pub mod chunk;
 pub mod claim;
 pub mod claimlog;
 pub mod clock;
 pub mod credential;
 pub mod events;
+pub mod http;
 pub mod paths;
 pub mod provider;
 pub mod registry;
@@ -39,6 +41,36 @@ pub fn fmt_rfc3339(s: &str) -> String {
     }
 }
 
+/// 秒时间戳 → 与 [`fmt_ms`] 同格式（UTC）。
+///
+/// raccoon 的到期时间以秒给出，格式化结果需与毫秒口径完全一致。
+pub fn fmt_secs(secs: i64) -> String {
+    use time::OffsetDateTime;
+    match OffsetDateTime::from_unix_timestamp(secs) {
+        Ok(dt) => fmt_datetime(dt),
+        Err(_) => secs.to_string(),
+    }
+}
+
+/// 毫秒时间戳 → [`fmt_ms`]；`None` 显示「未知」。
+///
+/// 登录/状态输出里到期时间是可选的（上游不一定会给），单独包一层免得各家重复。
+pub fn fmt_ms_opt(ms: Option<i64>) -> String {
+    match ms {
+        Some(ms) => fmt_ms(ms),
+        None => "未知".to_string(),
+    }
+}
+
+/// 数值展示：整数不带小数点，其余原样（与各家的签到明细一致）。
+pub fn fmt_num(v: f64) -> String {
+    if v.fract().abs() < f64::EPSILON {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
 /// `YYYY-MM-DD HH:MM:SS`。
 fn fmt_datetime(dt: time::OffsetDateTime) -> String {
     let (y, mo, d) = dt.to_calendar_date();
@@ -48,6 +80,27 @@ fn fmt_datetime(dt: time::OffsetDateTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn 整数的浮点显示() {
+        assert_eq!(super::fmt_num(300.0), "300");
+        assert_eq!(super::fmt_num(12.5), "12.5");
+        assert_eq!(super::fmt_num(-0.0), "0");
+    }
+
+    #[test]
+    fn 秒与毫秒口径一致() {
+        // 同一个时刻：1794790800 秒 == 1794790800000 毫秒。
+        assert_eq!(
+            super::fmt_secs(1_794_790_800),
+            super::fmt_ms(1_794_790_800_000)
+        );
+        assert_eq!(super::fmt_ms_opt(None), "未知");
+        assert_eq!(
+            super::fmt_ms_opt(Some(1_794_790_800_000)),
+            "2026-11-16 01:00:00"
+        );
+    }
+
     #[test]
     fn 时间戳格式化() {
         // 2026-11-16T01:00:00Z

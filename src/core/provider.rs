@@ -191,15 +191,26 @@ pub trait Provider: Send + Sync {
     /// 供应商 id，同时是模型名前缀与数据目录名。
     fn id(&self) -> &'static str;
 
-    /// 模型目录。失败应返回空表而非硬错误（`/v1/models` 要能容错聚合）。
-    async fn models(&self) -> Vec<ModelInfo>;
+    /// 拉取模型目录并保留错误。供应商只需实现这一个。
+    ///
+    /// 五家原本各自写一对完全相同的 `models`/`models_checked`，故把「失败只记
+    /// 警告、返回空表」的策略上收到 trait：新增供应商不会再漏掉那条日志。
+    async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
+
+    /// 模型目录。失败返回空表而非硬错误（`/v1/models` 要能容错聚合）。
+    async fn models(&self) -> Vec<ModelInfo> {
+        match self.fetch_models().await {
+            Ok(models) => models,
+            Err(e) => {
+                tracing::warn!("[{}] 获取模型目录失败: {e}", self.id());
+                Vec::new()
+            }
+        }
+    }
 
     /// 拉取模型目录并保留错误（供 `status` 真实探测接入状态）。
-    ///
-    /// 默认实现回退到 [`Provider::models`]（永远 `Ok`）。需要区分
-    /// 「拉取失败」与「真的没有模型」的供应商应覆盖此方法。
     async fn models_checked(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(self.models().await)
+        self.fetch_models().await
     }
 
     /// 凭证到期时间（毫秒时间戳）。不适用或未知时返回 `None`。
