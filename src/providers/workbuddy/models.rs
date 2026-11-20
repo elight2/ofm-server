@@ -50,9 +50,12 @@ pub struct CatalogModel {
     /// 展示名。
     #[serde(default)]
     pub name: Option<String>,
-    /// 计费权重文案，如 `x0.51 credits`。非倍率，仅记录。
+    /// 计费倍率文案，如 `x0.51 credits` / `x0.00`。
+    ///
+    /// 它就是计费倍率（与 trae 的 `consumption_rate`、raccoon 的
+    /// `billing_effective_multiplier` 同义），只是格式带 `x` 前缀、单位后缀可选。
+    /// 部分模型（如 `auto`）没有该字段，此时倍率未知。
     #[serde(default)]
-    #[allow(dead_code)]
     pub credits: Option<String>,
     /// 上下文窗口。
     #[serde(default)]
@@ -79,6 +82,24 @@ pub struct CatalogModel {
 }
 
 impl CatalogModel {
+    /// 计费倍率（`0.51` 这样的数值）。
+    ///
+    /// 上游 `credits` 形如 `x0.51 credits`、`x0.00`：去掉前缀 `x` 与可选的
+    /// ` credits` 单位后缀后解析。缺失或无法解析时返回 `None`（对外不出现
+    /// ` (x…)` 后缀）。
+    pub fn rate(&self) -> Option<f64> {
+        let raw = self.credits.as_deref()?.trim();
+        let rest = raw.strip_prefix('x').unwrap_or(raw);
+        // 单位后缀可有可无：`0.51 credits` / `0.51`。
+        let num = match rest.split_once(' ') {
+            Some((head, tail)) if tail.trim().eq_ignore_ascii_case("credits") => head,
+            // 空格后不是已知单位时，整段交给 `parse`（不猜、不静默吞掉）。
+            Some(_) => rest,
+            None => rest,
+        };
+        num.trim().parse().ok()
+    }
+
     /// 是否可作为 chat 模型暴露。
     ///
     /// 判定依据（§4.2）：没有 `maxInputTokens` 的条目不是对话模型
@@ -147,8 +168,8 @@ pub async fn fetch_catalog(
 /// 1. 必须是 `cli` agent 可选的模型（否则对话端点回 `code=11102`）；
 /// 2. 必须是对话模型（有 `maxInputTokens`，且输出上限 > 256）。
 ///
-/// 倍率：上游 `credits` 是 `x0.51 credits` 这类**计费权重文案**，不是倍率，
-/// 故 `rate` 恒为 `None`（对外不出现 ` (x…)` 后缀）。
+/// 倍率：上游 `credits`（如 `x0.51 credits`）即计费倍率，经
+/// [`CatalogModel::rate`] 解析为数值；上游未给出的模型为 `None`（无后缀）。
 pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
     let cli = catalog.cli_model_ids();
     catalog
@@ -162,7 +183,7 @@ pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
         .map(|m| ModelInfo {
             model: m.id.clone(),
             display_name: m.name.clone(),
-            rate: None,
+            rate: m.rate(),
         })
         .collect()
 }
@@ -219,11 +240,43 @@ mod tests {
         assert_eq!(got[0].model, "a");
     }
 
-    /// 倍率恒为空：上游 `credits` 是计费权重文案，不是倍率。
+    /// `credits` 即计费倍率：去掉 `x` 前缀与 ` credits` 后缀。
     #[test]
-    fn 倍率恒为空() {
+    fn 倍率取自credits() {
         let got = to_models(&parse(REAL));
-        assert!(got.iter().all(|m| m.rate.is_none()));
+        assert_eq!(got[0].rate, Some(0.51));
+        // 缺 `credits` 字段 → 倍率未知。
+        assert_eq!(got[1].rate, None);
+    }
+
+    /// `credits` 各种写法都要能解析；未知形态返回 `None` 而不是猜一个值。
+    #[test]
+    fn credits_解析容错() {
+        let m = |credits: Option<&str>| CatalogModel {
+            id: "m".into(),
+            name: None,
+            credits: credits.map(str::to_string),
+            max_input_tokens: Some(1000),
+            max_output_tokens: Some(1000),
+            supports_images: false,
+            supports_tool_call: false,
+            supports_reasoning: false,
+            reasoning: None,
+        };
+        assert_eq!(m(Some("x0.51 credits")).rate(), Some(0.51));
+        assert_eq!(m(Some("x0.00")).rate(), Some(0.0));
+        assert_eq!(m(Some("x1.62 credits")).rate(), Some(1.62));
+        assert_eq!(m(Some("x2.20")).rate(), Some(2.2));
+        // 无前缀也认（上游格式若变，不至于整列倍率全丢）。
+        assert_eq!(m(Some("0.29 credits")).rate(), Some(0.29));
+        // 首尾空白。
+        assert_eq!(m(Some("  x0.08 ")).rate(), Some(0.08));
+        // 缺失 / 空串 / 非数字 → None。
+        assert_eq!(m(None).rate(), None);
+        assert_eq!(m(Some("")).rate(), None);
+        assert_eq!(m(Some("x")).rate(), None);
+        assert_eq!(m(Some("免费")).rate(), None);
+        assert_eq!(m(Some("0.51 dollars")).rate(), None);
     }
 
     /// 展示名取 `name`。

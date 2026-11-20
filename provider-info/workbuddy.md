@@ -360,7 +360,11 @@ GET https://www.workbuddy.cn/v3/config
 * `supportsImages` → `input_modalities` 含 `image`。
 * `reasoning.supportedEfforts` → `reasoning_efforts`；`reasoning.defaultEffort` → `default_reasoning_effort`；
   `reasoning.canDisableThinking=false` 时不暴露 `none`。
-* `credits`（如 `x0.51 credits`）是**额度描述而非倍率**，不映射为 `rate`。
+* `credits`（如 `x0.51 credits`、`x0.00`）**就是计费倍率**：去掉前缀 `x` 与可选的
+  ` credits` 单位后解析为数值，映射为 `rate`。实测取值（`fast-model`=`x0.15`、
+  `balanced-model`=`x0.50`、`deep-model`=`x1.00`、`default`=`x2.20`）与倍率语义一致。
+  部分条目（如 `auto`，其描述为「积分倍率随之浮动」）**无** `credits` 字段，倍率记未知、
+  对外不输出 ` (x…)` 后缀。
 
 ### 4.3 旧目录（仅作备源）
 
