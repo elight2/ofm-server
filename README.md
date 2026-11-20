@@ -5,9 +5,9 @@
 * 自动签到: 定时检查签到, 领取每日积分
 * [资讯获取1](https://freeegg.top/)
 * [资讯获取2](https://jidan.si/)
-* 供应商信息参考: PROVIDERS.md
+* 供应商信息: PROVIDERS.md
 
-## 使用方式
+## 命令行参数
 * `ofm-server`: 启动服务
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
@@ -15,7 +15,7 @@
 * `ofm-server config`: 打印[默认配置文件](./config.example.toml)
 * `ofm-server refresh 供应商id`: 刷新供应商登录令牌
 
-## 配置信息
+## 配置说明
 * 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
 * 转发出的模型名称: `供应商id/模型名 (x供应商标的倍率)`
 * 配置文件: `运行目录/config.toml`, [默认配置](./config.example.toml)
