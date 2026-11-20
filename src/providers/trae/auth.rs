@@ -39,13 +39,19 @@ pub async fn login(root: PathBuf) -> anyhow::Result<()> {
     let trace_id = pkce::uuid_v4();
 
     let url = authorize_url(&device, &challenge, &trace_id);
+
+    // 先绑定端口再开浏览器：`cmd /C start` 几十毫秒就能拉起浏览器，
+    // 若先开浏览器后 bind，快开的标签页会先拿到 `ERR_CONNECTION_REFUSED`。
+    let server = login::CallbackServer::bind(CALLBACK_PORT).await?;
+    debug_assert_eq!(server.port(), CALLBACK_PORT);
+
     println!("[trae] 已生成授权链接，正在打开浏览器：\n{url}\n");
     if let Err(e) = login::open_browser(&url) {
         eprintln!("[trae] 打开浏览器失败（{e}），请手动访问上面的链接");
     }
 
     println!("[trae] 等待浏览器回调 http://127.0.0.1:{CALLBACK_PORT}{CALLBACK_PATH}");
-    let query = login::wait_callback_on(CALLBACK_PORT, CALLBACK_PATH, CALLBACK_TIMEOUT).await?;
+    let query = server.wait(CALLBACK_PATH, CALLBACK_TIMEOUT).await?;
 
     if let Some(err) = login::query_param(&query, "error") {
         anyhow::bail!("授权页返回错误: {err}");
