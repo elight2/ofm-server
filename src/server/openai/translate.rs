@@ -364,6 +364,7 @@ pub async fn aggregate(
 pub fn provider_err_body(e: ProviderError) -> wire::ErrorBody {
     let kind = match &e {
         ProviderError::NotLoggedIn(_) | ProviderError::Unauthorized(_) => "authentication_error",
+        ProviderError::RateLimit(_) => "rate_limit_error",
         _ => "api_error",
     };
     wire::ErrorBody {
@@ -380,6 +381,7 @@ pub fn provider_err_body(e: ProviderError) -> wire::ErrorBody {
 pub fn provider_err_status(e: &ProviderError) -> u16 {
     match e {
         ProviderError::NotLoggedIn(_) | ProviderError::Unauthorized(_) => 401,
+        ProviderError::RateLimit(_) => 429,
         _ => 502,
     }
 }
@@ -478,5 +480,15 @@ mod tests {
             usage_sent: false,
         };
         assert!(st.map(Event::Usage(usage(118, 31))).is_empty());
+    }
+
+    /// 供应商层限流 → 下游 429 + `rate_limit_error`。
+    #[test]
+    fn 限流错误映射为_429() {
+        let e = ProviderError::RateLimit("登录已失效（疑似限流）".into());
+        assert_eq!(provider_err_status(&e), 429);
+        let body = provider_err_body(e);
+        assert_eq!(body.error.kind, "rate_limit_error");
+        assert!(body.error.message.contains("疑似限流"));
     }
 }

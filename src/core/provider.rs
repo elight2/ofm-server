@@ -176,6 +176,8 @@ pub enum ProviderError {
     NotLoggedIn(String),
     #[error("凭证无效或已过期: {0}")]
     Unauthorized(String),
+    #[error("上游限流: {0}")]
+    RateLimit(String),
     #[error("上游请求失败: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("上游响应异常: {0}")]

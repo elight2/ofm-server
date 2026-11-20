@@ -57,7 +57,7 @@ fn classify_code(code: &str) -> ErrorKind {
         // 请求参数错误。
         "100001" | "400" => ErrorKind::InvalidRequest,
         // 积分不足 / 限流。
-        "100003" | "429" => ErrorKind::RateLimit,
+        "100003" | "100005" | "429" => ErrorKind::RateLimit,
         _ => ErrorKind::Api,
     }
 }

@@ -198,6 +198,7 @@ pub fn failure_reason(e: &crate::core::provider::ProviderError) -> &'static str 
     match e {
         ProviderError::NotLoggedIn(_) => "not logged in",
         ProviderError::Unauthorized(_) => "credential invalid or expired",
+        ProviderError::RateLimit(_) => "upstream rate limited",
         ProviderError::Transport(_) => "network request failed",
         ProviderError::Protocol(_) => "unexpected upstream response",
         ProviderError::Unsupported(_) => "not supported by provider",

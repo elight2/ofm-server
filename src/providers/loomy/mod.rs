@@ -91,6 +91,55 @@ impl LoomyProvider {
         headers.push(("loomy-version", VERSION.to_string()));
         headers
     }
+
+    /// 校验登录态是否仍被上游接受：`GET /models`。
+    ///
+    /// 业务端点（`/models`、`/points/*`）只认小写 `token` 头，故这里**只发
+    /// `token`**；它与对话接口共用同一会话，但不受对话限流影响。
+    ///
+    /// 返回 `Some(true)` 有效、`Some(false)` 明确失效、`None` 无法判断
+    /// （网络失败、限流码、非信封响应等）。
+    async fn session_alive(&self, token: &str) -> Option<bool> {
+        let url = format!("{}/models", api::MODEL_BASE_URL);
+        let resp = self
+            .client
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("token", token)
+            .send()
+            .await
+            .ok()?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await.ok()?;
+        probe_result(status, &text)
+    }
+
+    /// 对话接口的业务信封 → [`ProviderError`]。
+    ///
+    /// 上游对**限流 / 风控**也回 `100002`（文案固定「登录已失效，请重新登录」），
+    /// 与真正的登录态失效无法从响应体区分。此类错误先探一次 `/models`：
+    /// 登录态仍有效即按限流处理（下游 429），否则才是真的需要重新登录。
+    async fn chat_biz_error(&self, token: &str, code: &str, desc: &str) -> ProviderError {
+        use ProviderError::*;
+        match code {
+            "100002" | "020002" | "200003" => {
+                // 「缺少 token」是请求头没带上，不是登录态问题，别拿 /models 的
+                // 成功结果把它洗成限流。
+                if desc.contains("缺少") {
+                    return Protocol(format!("{code}: {desc}"));
+                }
+                let alive = self.session_alive(token).await;
+                if alive == Some(true) {
+                    tracing::warn!(
+                        "[{ID}] 对话被上游以 {code} 拒绝（{desc}），但 /models 校验登录态有效，按限流处理"
+                    );
+                }
+                classify_auth_error(code, desc, alive)
+            }
+            "100003" | "100005" | "429" => RateLimit(format!("{code}: {desc}")),
+            _ => Protocol(format!("{code}: {desc}")),
+        }
+    }
 }
 
 #[async_trait]
@@ -155,10 +204,7 @@ impl Provider for LoomyProvider {
             let v: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| ProviderError::Protocol(format!("上游返回未知响应: {e}")))?;
             return Err(match api::biz_error(&v) {
-                Some((code, desc)) => match code.as_str() {
-                    "100002" | "020002" | "200003" => ProviderError::Unauthorized(desc),
-                    _ => ProviderError::Protocol(format!("{code}: {desc}")),
-                },
+                Some((code, desc)) => self.chat_biz_error(&token, &code, &desc).await,
                 None => ProviderError::Protocol(format!(
                     "上游返回预期外响应: {}",
                     truncate_chars(&text, 200)
@@ -230,8 +276,38 @@ fn map_http_error(status: u16, body: &str) -> ProviderError {
 
     match status {
         401 | 403 => ProviderError::Unauthorized(msg),
+        429 => ProviderError::RateLimit(msg),
         404 => ProviderError::Protocol(format!("模型不可用: {msg}")),
         _ => ProviderError::Protocol(format!("上游 HTTP {status}: {msg}")),
+    }
+}
+
+/// 解析 `/models` 探测结果。
+///
+/// `Some(true)`：信封成功且带 `data`；`Some(false)`：明确回登录态失效码；
+/// 其它（含 504 HTML、限流码）一律 `None`——不能据此判断登录态。
+fn probe_result(status: u16, text: &str) -> Option<bool> {
+    let env: api::Envelope<serde_json::Value> = serde_json::from_str(text).ok()?;
+    if status == 200 && (env.code.is_empty() || env.code == api::OK_CODE) {
+        return env.data.map(|_| true);
+    }
+    match env.code.as_str() {
+        "100002" | "020002" | "200003" => Some(false),
+        _ => None,
+    }
+}
+
+/// 登录态类业务码的最终归类。
+///
+/// `alive == Some(true)` 表示 `/models` 证明凭证本身没问题，此时上游的
+/// 「登录已失效」只能是限流 / 风控，不能把下游引去重新登录。
+fn classify_auth_error(code: &str, desc: &str, alive: Option<bool>) -> ProviderError {
+    if alive == Some(true) {
+        ProviderError::RateLimit(format!(
+            "{desc}（上游返回 {code}，但 /models 校验登录态仍有效：疑似限流，请稍后重试）"
+        ))
+    } else {
+        ProviderError::Unauthorized(desc.to_string())
     }
 }
 
@@ -279,5 +355,52 @@ mod tests {
             matches!(&e, ProviderError::Protocol(m) if m.contains("HTTP 502")),
             "{e:?}"
         );
+    }
+
+    /// 上游 HTTP 429 必须原样落成限流，而不是「上游响应异常」。
+    #[test]
+    fn http_429_映射为限流() {
+        let e = map_http_error(429, r#"{"error":{"message":"请求过于频繁"}}"#);
+        assert!(
+            matches!(&e, ProviderError::RateLimit(m) if m.contains("请求过于频繁")),
+            "{e:?}"
+        );
+    }
+
+    /// `/models` 探测结果：成功信封 → true，登录态失效码 → false，其余不可判断。
+    #[test]
+    fn 登录态探测结果() {
+        assert_eq!(
+            probe_result(200, r#"{"code":"000000","desc":"成功","data":[]}"#),
+            Some(true)
+        );
+        assert_eq!(
+            probe_result(200, r#"{"code":"100002","desc":"登录已失效"}"#),
+            Some(false)
+        );
+        assert_eq!(probe_result(504, "<html>504 Gateway Time-out</html>"), None);
+        // 限流码不能证明登录态好坏。
+        assert_eq!(
+            probe_result(200, r#"{"code":"100005","desc":"请求过于频繁"}"#),
+            None
+        );
+    }
+
+    /// 登录态仍有效时，100002 按限流处理；无法判断时保持原来的认证失败。
+    #[test]
+    fn 登录态有效则_100002_归为限流() {
+        let e = classify_auth_error("100002", "登录已失效，请重新登录", Some(true));
+        assert!(
+            matches!(&e, ProviderError::RateLimit(m) if m.contains("疑似限流")),
+            "{e:?}"
+        );
+
+        for alive in [Some(false), None] {
+            let e = classify_auth_error("100002", "登录已失效，请重新登录", alive);
+            assert!(
+                matches!(&e, ProviderError::Unauthorized(m) if m == "登录已失效，请重新登录"),
+                "{alive:?} → {e:?}"
+            );
+        }
     }
 }
