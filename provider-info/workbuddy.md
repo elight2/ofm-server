@@ -152,6 +152,10 @@ Content-Type: application/json
 Accept: text/event-stream
 ```
 
+**上游只支持流式**：`stream:false` 会返回 `code=11101`
+（`Non-stream chat request is currently not supported`）。因此非流式的下游请求
+应统一在上游用 `stream:true`，再在本地聚合。
+
 ### 3.2 官方客户端额外请求头 `[打包JS]`
 
 | 头 | 值 | 必需性 |
@@ -285,12 +289,12 @@ GET https://www.workbuddy.cn/v3/config
 请求层合法值 `minimal, low, medium, high, xhigh, max`（**不含 `off`/`none`**）；
 内部思考等级集合 `off, minimal, low, medium, high, xhigh, max` `[打包JS]`。
 
-每个模型实际支持的档位来自 `/v3/config` 的 `reasoning.supportedEfforts`；
+每个模型实际支持的档位来自目录的 `reasoning.supportedEfforts`；
 若模型未声明 `supportedEfforts` 但声明了 `thinkingLevelMap`，则按 map 推导：
 取 map 中出现 `max` → 最高 `max`；出现 `xhigh` → 最高 `xhigh`；否则最高 `high`，
 再取不高于该档位的全部等级 `[打包JS]`。两者都没有时视为不支持 reasoning。
 
-内置产品目录里的典型声明 `[打包JS]`：
+内置产品目录（`product.json`）里的典型声明 `[打包JS]`：
 
 | 模型 | reasoning 声明 |
 |-|-|
@@ -300,6 +304,21 @@ GET https://www.workbuddy.cn/v3/config
 | `hy4-preview` / `hy4-preview-x` | `supportedEfforts: [high]`, `canDisableThinking: false` |
 | `glm-5.2` / `glm-5.1` / `minimax-*` / `kimi-k2.6/2.7` / `hy3*` | `effort: medium` |
 | `default` / `auto` / `hunyuan-chat` / `glm-4.6` | 无 reasoning |
+
+**实测的线上目录声明**（`/v2/enterprises/personal/models`，2026-11）与内置目录**并不完全一致**，
+应以后者（线上目录）为准：
+
+| 模型 | 线上 reasoning 声明 |
+|-|-|
+| `glm-5.3` / `glm-5.3-flash` / `kimi-k3.1-pro` | `defaultEffort: high`, `supportedEfforts: [low, high, max]`, **`canDisableThinking: false`** |
+| `glm-5.2` / `deepseek-v4-pro` | `defaultEffort: high`, `supportedEfforts: [high, xhigh]`, `canDisableThinking: true` |
+| `kimi-k3-1` / `kimi-k2.8-preview` / `deepseek-v4.1-flash` | `defaultEffort: high`, `supportedEfforts: [low, high, max]`, `canDisableThinking: true` |
+| `hy4std` / `hy4flash` / `hy4flash-free` | `defaultEffort: high`, `supportedEfforts: [high]`, `canDisableThinking: false` |
+| `space-bunny` / `minimax-m3.1-flash` | `defaultEffort: max`, `supportedEfforts: [low, medium, high, xhigh, max]`, `canDisableThinking: false` |
+| `step-5-preview` | `defaultEffort: high`, `supportedEfforts: [low, medium, high]`, `canDisableThinking: false` |
+| `auto` / `mimo-v2.6-pro` | 仅 `effort`（无 `supportedEfforts`）→ 支持集合未知 |
+| `glm-5.0` / `glm-4.7` / `glm-4.6` / `hunyuan-chat` | `reasoning: null` → 不支持 reasoning |
+
 
 映射规则：
 
@@ -316,6 +335,27 @@ GET https://www.workbuddy.cn/v3/config
 
 **deepseek 系特殊要求**：必须显式带 `reasoning_effort`（或 `thinking:{type:"enabled"}` + 档位），
 否则上游按不思考应答；此结论来自旧插件对官方客户端的三站点实测 `[未验证]`。
+
+### 5.1 实测结论（2026-11，模型 `glm-5.3-flash`）
+
+| 请求字段 | 思考长度（字符） | 结论 |
+|-|-|-|
+| 不带 `reasoning_effort` | 317 | 默认即思考 |
+| `reasoning_effort: "none"` | 1063 | **不关闭思考**，与 `low` 量级相当 |
+| `reasoning_effort: "low"` | 1203 | 生效 |
+| `reasoning_effort: "high"` | 1750 | 生效 |
+| `reasoning_effort: "max"` | 69473 | 生效（差距极大） |
+| `thinking: {type:"disabled"}` | 1018 | **不关闭思考** |
+| `enable_thinking: false` | 1148 | 上游忽略该字段 |
+
+* `none` 与 `thinking:{type:"disabled"}` 都不能真正关闭思考（上游仍输出 `reasoning_content`），
+  只能作为「不指定更高档位」的效果。因此 `none` 的实际价值有限。
+* `reasoning_effort: "off"` **不会被上游报错**（返回 200 + 正常 SSE），但同样不关闭思考。
+* 上游**只支持流式**：`stream:false` 返回 `code=11101`
+  （`Non-stream chat request is currently not supported`）。
+* `max` 档位的思考量级远大于 `high`，实际使用时需注意超时与额度消耗。
+* `glm-5.3-flash` 线上目录声明 `canDisableThinking: false`，故按目录钳制后
+  `none` 会被丢弃（不发 `reasoning_effort`），与实测「发了也不关闭」一致。
 
 ## 6. 余额获取
 
