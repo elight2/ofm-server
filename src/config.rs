@@ -8,6 +8,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -37,14 +38,16 @@ pub fn default_prompt(provider: &str) -> Option<&'static str> {
     Some(text)
 }
 
-/// 未在 `[<provider>]` 表中写出 `claim_intervals` 时的兜底签到间隔（秒）。
+/// 间隔类配置允许的下限（小时）。低于此值视为配置错误。
 ///
-/// 取值为 6 小时，与 `config.example.toml` 的兜底说明保持一致。
-/// 该常量**不重复**定义已知供应商的间隔——那些写在示例文件里。
-pub const FALLBACK_CLAIM_INTERVAL_SECS: u64 = 6 * 3600;
+/// 单位是小时，故最小为 1h（不支持小数：签到/刷新都没有分钟级需求）。
+pub const MIN_INTERVAL_HOURS: u64 = 1;
 
-/// 签到间隔下限（秒）。低于此值视为配置错误。
-pub const MIN_CLAIM_INTERVAL_SECS: u64 = 60;
+/// 间隔类配置允许的上限（小时，一年）。
+///
+/// 上限只为挡住溢出与明显的笔误（如把秒当小时写进 21600）；
+/// 真要一年以上不签到，改代码比改配置更合适。
+pub const MAX_INTERVAL_HOURS: u64 = 24 * 365;
 
 /// 字段级默认：分别从示例文件读取，**不走** `Config::default()`。
 ///
@@ -58,40 +61,13 @@ fn default_port() -> u16 {
     example().port
 }
 
-fn default_trae() -> ProviderConfig {
-    example().trae
+fn default_claim_interval() -> u64 {
+    example().claim_interval
 }
 
-fn default_raccoon() -> ProviderConfig {
-    example().raccoon
+fn default_refresh_interval() -> u64 {
+    example().refresh_interval
 }
-
-fn default_codearts() -> ProviderConfig {
-    example().codearts
-}
-
-fn default_minimax() -> ProviderConfig {
-    example().minimax
-}
-
-fn default_loomy() -> ProviderConfig {
-    example().loomy
-}
-
-fn default_workbuddy() -> ProviderConfig {
-    // workbuddy 段尚未进 `config.example.toml`（该文件不在本阶段的可改范围内），
-    // 故这里直接给默认值，**不能**走 `example()`：
-    // `example()` 会解析整份配置并触发各字段的默认值函数，
-    // 而本函数正是其中之一，会造成无限递归。
-    ProviderConfig {
-        claim_intervals: DEFAULT_CLAIM_INTERVAL_SECS,
-    }
-}
-
-/// 自动签到默认间隔（秒）。
-///
-/// 供不能走 `example()` 的默认值函数使用（见 [`default_workbuddy`]）。
-const DEFAULT_CLAIM_INTERVAL_SECS: u64 = 21600;
 
 /// 用户配置模板 = 内嵌示例文件去掉遗留键后的文本。
 ///
@@ -105,27 +81,39 @@ fn example() -> Config {
     parse_toml(DEFAULT_CONFIG_STR).expect("config.example.toml 必须可解析")
 }
 
-/// 去掉配置文本里的**遗留键** `reasoning_effort` 及其配套注释。
+/// 旧版配置里的「供应商设置」表名（每家的签到间隔曾写在各自表里）。
+const LEGACY_PROVIDER_TABLES: &[&str] = &[
+    crate::providers::trae::ID,
+    crate::providers::raccoon::ID,
+    crate::providers::codearts::ID,
+    crate::providers::minimax::ID,
+    crate::providers::loomy::ID,
+    crate::providers::workbuddy::ID,
+];
+
+/// 去掉配置文本里的**遗留键**及其配套注释，让存量 `config.toml` 继续可用。
 ///
-/// 思考强度已从所有供应商移除（不再向下游发送任何相关字段，
-/// 一律保持上游默认状态），但旧版 `config.example.toml` 与用户
-/// 存量 `config.toml` 里仍写着该键。为让这些文件继续可用，
-/// 解析前把它们删掉。
+/// 两批遗留内容：
+/// * `[<provider>]` 表及其中的 `claim_intervals`（秒）：签到间隔已改为全局
+///   `claim_interval`（小时），旧写法不再有意义；
+/// * `reasoning_effort`：思考强度已从所有供应商移除（不再向下游发送任何相关
+///   字段，一律保持上游默认状态）。
 ///
-/// 只删除**整行**形如 `reasoning_effort = ...` 的键；同时删掉它**紧邻上方**
-/// 的档位注释行（否则会留下 `# low high` 这种悬空注释）。
+/// 只删除**整行**，同时删掉**紧邻上方**的说明注释（否则会留下 `# 签到间隔(s)`、
+/// `# low high` 这种悬空注释）。新配置里的全局 `claim_interval` **不**受影响
+/// （键名不同，且精确匹配到 `=`）。
 pub fn strip_legacy_keys(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<&str> = Vec::with_capacity(lines.len());
     for line in lines {
-        let trimmed = line.trim_start();
-        let is_legacy = trimmed
-            .strip_prefix("reasoning_effort")
-            .is_some_and(|rest| rest.trim_start().starts_with('='));
+        if is_legacy_provider_table(line) {
+            continue;
+        }
+        let is_legacy = is_key(line, "claim_intervals") || is_key(line, "reasoning_effort");
         if is_legacy {
-            // 上一行若是「档位注释」则一并删掉。
+            // 上一行若是「遗留键的说明注释」则一并删掉。
             if let Some(last) = out.last()
-                && is_effort_comment(last)
+                && is_legacy_comment(last)
             {
                 out.pop();
             }
@@ -138,10 +126,26 @@ pub fn strip_legacy_keys(text: &str) -> String {
     s
 }
 
-/// 该注释行是否是「思考档位」的说明。
+/// 该行是否是旧版的 `[<provider>]` 表头。
+fn is_legacy_provider_table(line: &str) -> bool {
+    let t = line.trim();
+    let Some(inner) = t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) else {
+        return false;
+    };
+    LEGACY_PROVIDER_TABLES.contains(&inner.trim())
+}
+
+/// 该行是否是 `键 = 值`（键名精确匹配，避免把 `claim_interval` 当成 `claim_intervals`）。
+fn is_key(line: &str, key: &str) -> bool {
+    line.trim_start()
+        .strip_prefix(key)
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
+/// 该注释行是否是遗留键的说明。
 ///
-/// 形如 `# low high`、`# 模型思考强度(trae的这个设置不生效)`。
-fn is_effort_comment(line: &str) -> bool {
+/// 形如 `# low high`、`# 模型思考强度(trae的这个设置不生效)`、`# 签到间隔(s)`。
+fn is_legacy_comment(line: &str) -> bool {
     let t = line.trim();
     let Some(body) = t.strip_prefix('#') else {
         return false;
@@ -150,8 +154,8 @@ fn is_effort_comment(line: &str) -> bool {
     if body.is_empty() {
         return false;
     }
-    // 出现「思考 / 强度 / 档位 / effort」等字样即认为是档位注释。
-    if ["思考", "强度", "档位", "effort", "Effort"]
+    // 出现「思考 / 强度 / 档位 / effort / 签到」等字样即认为是遗留键的注释。
+    if ["思考", "强度", "档位", "effort", "Effort", "签到"]
         .iter()
         .any(|k| body.contains(k))
     {
@@ -180,42 +184,12 @@ pub struct Config {
     /// 监听端口。
     #[serde(default = "default_port")]
     pub port: u16,
-    /// trae 供应商设置。
-    #[serde(default = "default_trae")]
-    pub trae: ProviderConfig,
-    /// raccoon 供应商设置。
-    #[serde(default = "default_raccoon")]
-    pub raccoon: ProviderConfig,
-    /// codearts 供应商设置。
-    #[serde(default = "default_codearts")]
-    pub codearts: ProviderConfig,
-    /// minimax 供应商设置。
-    #[serde(default = "default_minimax")]
-    pub minimax: ProviderConfig,
-    /// loomy 供应商设置。
-    #[serde(default = "default_loomy")]
-    pub loomy: ProviderConfig,
-    /// workbuddy 供应商设置。
-    #[serde(default = "default_workbuddy")]
-    pub workbuddy: ProviderConfig,
-}
-
-/// 字段级默认：签到间隔（秒）。
-///
-/// 取兜底值，不走 `Config::default()`（会递归）。
-fn default_claim_interval_secs() -> u64 {
-    FALLBACK_CLAIM_INTERVAL_SECS
-}
-
-/// 供应商设置。
-///
-/// 每家只有一个字段（签到间隔），故共用一个类型。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderConfig {
-    /// 自动签到间隔（秒）。
-    #[serde(default = "default_claim_interval_secs")]
-    pub claim_intervals: u64,
+    /// 自动签到间隔（小时）。所有供应商共用这一份。
+    #[serde(default = "default_claim_interval")]
+    pub claim_interval: u64,
+    /// 登录令牌自动刷新间隔（小时）。所有供应商共用这一份。
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval: u64,
 }
 
 impl Default for Config {
@@ -244,32 +218,35 @@ impl Config {
         SocketAddr::new(self.host, self.port)
     }
 
-    /// 某供应商的签到间隔（秒）。
+    /// 自动签到间隔。全局一份，所有供应商共用。
     ///
-    /// 三家的设置类型不同（档位各异），但都有 `claim_intervals`，故在此处
-    /// 分支取值。未知供应商用兜底值。
-    ///
-    /// 值小于 `MIN_CLAIM_INTERVAL_SECS` 视为配置错误——不静默纠正，
-    /// 避免用户写了 `10` 却被默默改成 60 而不自知。
-    pub fn claim_interval_for(&self, provider: &str) -> Result<u64, ConfigError> {
-        let secs = match provider {
-            crate::providers::trae::ID => self.trae.claim_intervals,
-            crate::providers::raccoon::ID => self.raccoon.claim_intervals,
-            crate::providers::codearts::ID => self.codearts.claim_intervals,
-            crate::providers::minimax::ID => self.minimax.claim_intervals,
-            crate::providers::loomy::ID => self.loomy.claim_intervals,
-            crate::providers::workbuddy::ID => self.workbuddy.claim_intervals,
-            _ => FALLBACK_CLAIM_INTERVAL_SECS,
-        };
-        if secs < MIN_CLAIM_INTERVAL_SECS {
-            return Err(ConfigError::IntervalTooSmall {
-                provider: provider.to_string(),
-                secs,
-                min: MIN_CLAIM_INTERVAL_SECS,
-            });
-        }
-        Ok(secs)
+    /// 单位小时；超出范围视为配置错误——不静默纠正，避免用户写了 `0`
+    /// 却被默默改成下限而不自知。
+    pub fn claim_interval(&self) -> Result<Duration, ConfigError> {
+        interval("claim_interval", self.claim_interval)
     }
+
+    /// 登录令牌自动刷新间隔。全局一份，所有供应商共用。
+    ///
+    /// 不支持自动刷新的供应商由 `serve` 自行跳过。
+    pub fn refresh_interval(&self) -> Result<Duration, ConfigError> {
+        interval("refresh_interval", self.refresh_interval)
+    }
+}
+
+/// 小时 → 时长的统一校验。
+///
+/// 两个间隔共用一套上下限，避免各写一份判断。
+fn interval(key: &'static str, hours: u64) -> Result<Duration, ConfigError> {
+    if !(MIN_INTERVAL_HOURS..=MAX_INTERVAL_HOURS).contains(&hours) {
+        return Err(ConfigError::IntervalOutOfRange {
+            key,
+            hours,
+            min: MIN_INTERVAL_HOURS,
+            max: MAX_INTERVAL_HOURS,
+        });
+    }
+    Ok(Duration::from_secs(hours * 3600))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -284,11 +261,12 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
-    #[error("供应商 `{provider}` 的签到间隔 {secs}s 过小（最小 {min}s）")]
-    IntervalTooSmall {
-        provider: String,
-        secs: u64,
+    #[error("配置项 `{key}` 的间隔 {hours}h 超出范围（允许 {min}h ~ {max}h）")]
+    IntervalOutOfRange {
+        key: &'static str,
+        hours: u64,
         min: u64,
+        max: u64,
     },
 }
 
@@ -309,6 +287,8 @@ mod tests {
         let c: Config = parse_toml(DEFAULT_CONFIG_STR).expect("示例文件损坏");
         assert_eq!(c.port, 3060);
         assert_eq!(c.host.to_string(), "127.0.0.1");
+        assert_eq!(c.claim_interval, 6);
+        assert_eq!(c.refresh_interval, 36);
     }
 
     /// `Config::default()` 就是解析示例文件的结果，二者不得有分歧。
@@ -318,20 +298,23 @@ mod tests {
         let from_default = Config::default();
         assert_eq!(from_default.host, from_str.host);
         assert_eq!(from_default.port, from_str.port);
-        assert_eq!(from_default.trae, from_str.trae);
-        assert_eq!(from_default.raccoon, from_str.raccoon);
-        assert_eq!(from_default.codearts, from_str.codearts);
-        assert_eq!(from_default.minimax, from_str.minimax);
+        assert_eq!(from_default.claim_interval, from_str.claim_interval);
+        assert_eq!(from_default.refresh_interval, from_str.refresh_interval);
     }
 
-    /// 遗留键 `reasoning_effort` 必须被忽略（思考强度已移除）。
+    /// 旧版配置（每家一张表、秒为单位、带思考强度）必须继续可用。
     #[test]
-    fn 遗留思考强度键被忽略() {
-        let c = parse("[trae]\nreasoning_effort = \"low\"\n").unwrap();
-        assert_eq!(c.claim_interval_for("trae").unwrap(), 6 * 3600);
-        // 旧配置里的各种取值都能被静默丢弃
+    fn 旧版供应商表被忽略() {
+        let c = parse(
+            "[trae]\n# 签到间隔(s)\nclaim_intervals = 21600\n# low high\nreasoning_effort = \"low\"\n\n[raccoon]\nclaim_intervals = 43200\n",
+        )
+        .unwrap();
+        // 间隔改由全局键决定，旧表里的值不再生效。
+        assert_eq!(c.claim_interval, 6);
+        assert_eq!(c.claim_interval().unwrap(), Duration::from_secs(6 * 3600));
+        // 旧配置里的各种思考强度取值都能被静默丢弃
         for v in ["low", "high", "max", "none", "ultra"] {
-            let t = format!("[minimax]\nreasoning_effort = \"{v}\"\n");
+            let t = format!("[minimax]\nclaim_intervals = 21600\nreasoning_effort = \"{v}\"\n");
             assert!(parse(&t).is_ok(), "遗留取值 {v} 应被忽略");
         }
     }
@@ -341,69 +324,61 @@ mod tests {
     fn 模板不含遗留键() {
         let t = template_str();
         assert!(!t.contains("reasoning_effort"), "模板仍含遗留键");
+        assert!(!t.contains("claim_intervals"), "模板仍含遗留键");
+        // 新键仍在
+        assert!(t.contains("claim_interval = 6"));
+        assert!(t.contains("refresh_interval = 36"));
         // 模板本身可解析
         let c = parse(&t).unwrap();
         assert_eq!(c.port, 3060);
-        assert_eq!(c.claim_interval_for("trae").unwrap(), 6 * 3600);
+        assert_eq!(c.claim_interval, 6);
+        assert_eq!(c.refresh_interval, 36);
     }
 
-    /// 示例文件里 trae=6h、raccoon=12h。
+    /// 全局间隔与供应商无关：任何一个 id 都取同一个值。
     #[test]
-    fn 示例文件里的供应商间隔() {
-        let c = Config::default();
-        assert_eq!(c.claim_interval_for("trae").unwrap(), 6 * 3600);
-        assert_eq!(c.claim_interval_for("raccoon").unwrap(), 12 * 3600);
-    }
-
-    /// 示例文件未列出的供应商用兜底 6h。
-    #[test]
-    fn 未知供应商用兜底值() {
-        let c = Config::default();
+    fn 全局间隔() {
+        let c = parse("claim_interval = 12\nrefresh_interval = 48\n").unwrap();
+        assert_eq!(c.claim_interval().unwrap(), Duration::from_secs(12 * 3600));
         assert_eq!(
-            c.claim_interval_for("not-exist").unwrap(),
-            FALLBACK_CLAIM_INTERVAL_SECS
+            c.refresh_interval().unwrap(),
+            Duration::from_secs(48 * 3600)
         );
-        assert_eq!(FALLBACK_CLAIM_INTERVAL_SECS, 21600);
-    }
-
-    /// 兜底值与示例文件里最短的显式间隔一致，避免只改一处。
-    #[test]
-    fn 注释里的兜底值与常量一致() {
-        assert!(
-            DEFAULT_CONFIG_STR.contains("21600"),
-            "示例文件应写明 6h = 21600"
-        );
-    }
-
-    /// 用户配置可覆盖单个供应商，未写的供应商用**该供应商自己的**示例值。
-    #[test]
-    fn 部分覆盖() {
-        let c = parse("[trae]\nclaim_intervals = 3600\n").unwrap();
-        assert_eq!(c.claim_interval_for("trae").unwrap(), 3600);
-        // raccoon 未写 → 取其自己的默认值（示例文件的 12h），而不是兜底值
-        assert_eq!(c.claim_interval_for("raccoon").unwrap(), 12 * 3600);
     }
 
     /// 间隔过小必须报错，不静默纠正。
     #[test]
     fn 间隔过小报错() {
-        let c = parse("[trae]\nclaim_intervals = 10\n").unwrap();
-        let err = c.claim_interval_for("trae").unwrap_err();
-        assert!(err.to_string().contains("trae") && err.to_string().contains("10"));
+        let c = parse("claim_interval = 0\n").unwrap();
+        let err = c.claim_interval().unwrap_err();
+        assert!(err.to_string().contains("claim_interval") && err.to_string().contains('0'));
     }
 
+    /// 间隔过大也要报错（多半是把秒当小时写了）。
     #[test]
-    fn 边界值六十秒可用() {
-        let c = parse("[trae]\nclaim_intervals = 60\n").unwrap();
-        assert_eq!(c.claim_interval_for("trae").unwrap(), 60);
+    fn 间隔过大报错() {
+        let c = parse("refresh_interval = 21600\n").unwrap();
+        let err = c.refresh_interval().unwrap_err();
+        assert!(err.to_string().contains("refresh_interval"));
+    }
+
+    /// 边界值可用。
+    #[test]
+    fn 边界值可用() {
+        let c = parse("claim_interval = 1\nrefresh_interval = 8760\n").unwrap();
+        assert_eq!(c.claim_interval().unwrap(), Duration::from_secs(3600));
+        assert_eq!(
+            c.refresh_interval().unwrap(),
+            Duration::from_secs(8760 * 3600)
+        );
     }
 
     #[test]
     fn 与其它字段共存() {
-        let c =
-            parse("host = \"0.0.0.0\"\nport = 8080\n[raccoon]\nclaim_intervals = 86400\n").unwrap();
+        let c = parse("host = \"0.0.0.0\"\nport = 8080\nclaim_interval = 24\n").unwrap();
         assert_eq!(c.port, 8080);
-        assert_eq!(c.claim_interval_for("raccoon").unwrap(), 86400);
+        assert_eq!(c.host.to_string(), "0.0.0.0");
+        assert_eq!(c.claim_interval().unwrap(), Duration::from_secs(24 * 3600));
     }
 
     /// 旧的扁平 `[claim_intervals]` 表已移除，应报错而不是被忽略。
@@ -417,12 +392,22 @@ mod tests {
     fn 空配置取默认() {
         let c = parse("").unwrap();
         assert_eq!(c.port, 3060);
-        assert_eq!(c.claim_interval_for("trae").unwrap(), 6 * 3600);
+        assert_eq!(c.claim_interval, 6);
+        assert_eq!(c.refresh_interval, 36);
     }
 
-    /// 写错供应商名应报错（不是被当未知供应商静默接受）。
+    /// 写错供应商名应报错（不是被当遗留表静默接受）。
     #[test]
     fn 写错供应商名被拒() {
         assert!(parse("[racocon]\nclaim_intervals = 3600\n").is_err());
+    }
+
+    /// 键名写错（`claim_intervals` 而非 `claim_interval`）是全局未知键，应用默认值。
+    ///
+    /// 注：顶层 `claim_intervals = 60` 会被当作遗留键剥掉，故这里用带后缀的错键验证。
+    #[test]
+    fn 顶层遗留键剥掉后取默认() {
+        let c = parse("claim_intervals = 60\n").unwrap();
+        assert_eq!(c.claim_interval, 6);
     }
 }

@@ -220,12 +220,12 @@ pub trait Provider: Send + Sync {
         None
     }
 
-    /// 主动刷新登录令牌（`ofm-server refresh <id>`）。
+    /// 主动刷新登录令牌（`ofm-server refresh <id>`，以及 `serve` 里按
+    /// `refresh_interval` 自动调用的定时任务）。
     ///
     /// 返回可读的结果描述（如新到期时间），成功时应已落盘。
-    /// 供应商无续期机制时返回 [`ProviderError::Unsupported`]。
-    ///
-    /// 默认实现返回不支持；注意这与“已实现但暂未被自动调用”不同。
+    /// 供应商无续期机制时返回 [`ProviderError::Unsupported`]，`serve` 会据此
+    /// 停止该供应商的自动刷新循环（不是错误，不重复告警）。
     async fn refresh(&self) -> Result<String, ProviderError> {
         Err(ProviderError::Unsupported(self.id()))
     }
