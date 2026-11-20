@@ -2,30 +2,7 @@
 host = "127.0.0.1"
 # 监听端口。
 port = 3060
-
-# 供应商设置
-[trae]
-# 签到间隔(s)
-claim_intervals = 21600
-# 模型思考强度(trae的这个设置不生效)
-reasoning_effort = "none"
-
-[raccoon]
-claim_intervals = 43200
-# low high
-reasoning_effort = "low"
-
-[codearts]
-claim_intervals = 21600
-# low high
-reasoning_effort = "low"
-
-[minimax]
-claim_intervals = 21600
-# low medium high xhigh max
-reasoning_effort = "low"
-
-[loomy]
-claim_intervals = 21600
-# low medium high
-reasoning_effort = "low"
+# 签到间隔(h)
+claim_interval = 6
+# 登录令牌刷新间隔(h)
+refresh_interval = 36
