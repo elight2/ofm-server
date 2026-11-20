@@ -78,6 +78,22 @@ fn default_loomy() -> LoomyConfig {
     example().loomy
 }
 
+fn default_workbuddy() -> WorkBuddyConfig {
+    // workbuddy 段尚未进 `config.example.toml`（该文件不在本阶段的可改范围内），
+    // 故这里直接给默认值，**不能**走 `example()`：
+    // `example()` 会解析整份配置并触发各字段的默认值函数，
+    // 而本函数正是其中之一，会造成无限递归。
+    WorkBuddyConfig {
+        claim_intervals: DEFAULT_CLAIM_INTERVAL_SECS,
+        reasoning_effort: WorkBuddyReasoningEffort::default(),
+    }
+}
+
+/// 自动签到默认间隔（秒）。
+///
+/// 供不能走 `example()` 的默认值函数使用（见 [`default_workbuddy`]）。
+const DEFAULT_CLAIM_INTERVAL_SECS: u64 = 21600;
+
 /// 解析示例文件。供 `Config::default()` 与字段级默认共用。
 fn example() -> Config {
     toml::from_str(DEFAULT_CONFIG_STR).expect("config.example.toml 必须可解析")
@@ -107,6 +123,9 @@ pub struct Config {
     /// loomy 供应商设置。
     #[serde(default = "default_loomy")]
     pub loomy: LoomyConfig,
+    /// workbuddy 供应商设置。
+    #[serde(default = "default_workbuddy")]
+    pub workbuddy: WorkBuddyConfig,
 }
 
 /// trae 供应商设置。
@@ -202,6 +221,63 @@ pub enum MinimaxReasoningEffort {
     Xhigh,
     /// 最大。
     Max,
+}
+
+/// workbuddy 供应商设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBuddyConfig {
+    /// 自动签到间隔（秒）。
+    #[serde(default = "default_claim_interval_secs")]
+    pub claim_intervals: u64,
+    /// 思考强度。
+    #[serde(default)]
+    pub reasoning_effort: WorkBuddyReasoningEffort,
+}
+
+/// workbuddy 的思考强度。
+///
+/// 上游 `reasoning_effort` 的请求层合法集合是
+/// `minimal/low/medium/high/xhigh/max`（**不含** `off`/`none`），
+/// 见 `provider-info/workbuddy.md` §5。实际发给上游的档位还会按
+/// 该模型 `reasoning.supportedEfforts` 向下钳制。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkBuddyReasoningEffort {
+    /// 关闭思考（上游取值 `none`）。
+    ///
+    /// 只有模型声明 `reasoning.canDisableThinking=true` 时才生效，
+    /// 否则该档位被丢弃（不发 `reasoning_effort`）。
+    None,
+    /// 最低。
+    Minimal,
+    /// 低。
+    Low,
+    /// 中。
+    #[default]
+    Medium,
+    /// 高。
+    High,
+    /// 极高。
+    Xhigh,
+    /// 最大。
+    Max,
+}
+
+impl WorkBuddyReasoningEffort {
+    /// 转成上游请求层使用的档位。
+    pub fn as_effort(self) -> crate::providers::workbuddy::chat::Effort {
+        use crate::providers::workbuddy::chat::Effort;
+        match self {
+            Self::None => Effort::None,
+            Self::Minimal => Effort::Minimal,
+            Self::Low => Effort::Low,
+            Self::Medium => Effort::Medium,
+            Self::High => Effort::High,
+            Self::Xhigh => Effort::Xhigh,
+            Self::Max => Effort::Max,
+        }
+    }
 }
 
 /// loomy 的思考强度。
@@ -390,6 +466,7 @@ impl Config {
             crate::providers::codearts::ID => self.codearts.claim_intervals,
             crate::providers::minimax::ID => self.minimax.claim_intervals,
             crate::providers::loomy::ID => self.loomy.claim_intervals,
+            crate::providers::workbuddy::ID => self.workbuddy.claim_intervals,
             _ => FALLBACK_CLAIM_INTERVAL_SECS,
         };
         if secs < MIN_CLAIM_INTERVAL_SECS {

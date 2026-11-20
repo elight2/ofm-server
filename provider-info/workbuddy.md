@@ -208,6 +208,12 @@ data: [DONE]
 ```
 
 * `reasoning_content`（或 `reasoning`）承载思考链；官方 harness 两者都读 `[打包JS]`。
+* **中间帧的 `finish_reason` 是空串 `""` 而非 `null`**（表示「本帧未结束」），
+  只有最后一帧才给 `"stop"` / `"length"` 等真实取值。解析时须把空串当作缺失，
+  否则会在第一帧就判定流结束，后续正文全部丢失（实测确认）。
+* `usage` 字段在中间帧恒为 `null`，真实 usage 只出现在结束帧；解析时须忽略 `null`。
+* `delta.function_call` 在结束帧可能是 `{"name":"","arguments":""}`（空串等价缺失），
+  不应误判为一次工具调用。
 * `usage` 除标准字段外还有 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` /
   `prompt_cache_write_tokens`（以及 Anthropic 风格的 `cache_read_input_tokens` /
   `cache_creation_input_tokens`）和 `credit`（费用权重，非 token 数）`[打包JS]`。
@@ -219,9 +225,11 @@ data: [DONE]
 
 ### 4.1 上游模型目录
 
+主源（实测可用）：
+
 ```text
-GET https://www.workbuddy.cn/v3/config
-（headers: Connection: close，超时 5s；失败可重试）
+GET https://www.workbuddy.cn/v2/enterprises/personal/models
+（headers 需带 User-Agent: WorkBuddy/5.11.3，否则返回 code=12403）
 → {"code":0,"data":{
      "models":[ { id, name, credits, vendor, iconUrl,
                  maxInputTokens, maxOutputTokens, maxAllowedSize,
@@ -229,20 +237,31 @@ GET https://www.workbuddy.cn/v3/config
                  onlyReasoning, temperature,
                  reasoning:{ effort|defaultEffort, supportedEfforts[],
                              canDisableThinking, summary } , ... } ],
-     "agents":[ { name:"cli", models:[...] , ...} ],
+     "agents":[ { name:"cli", models:[ { id, ... } ] , ...} ],
      "availableModels":[...] , ...
    }}
 ```
 
-* `data.models[]` 是权威目录（harness `enrichLanguageModelFromCatalog` 读它的
-  `maxInputTokens` / `supportsImages` / `supportsReasoning`）`[打包JS]`。
+备源：
+
+```text
+GET https://www.workbuddy.cn/v3/config
+（headers: Connection: close，超时 5s；失败可重试）
+```
+
+* `data.models[]` 含全部模型（对话、图像、视频、补全等）`[打包JS]`。
 * `data.agents[].models[]` 给出各 agent（`cli`/`craft`）可选模型子集 `[打包JS]`。
+  **`name == "cli"` 的 agent 的 `models[]` 才是对话侧真正可调用的清单**（实测：
+  该 agent 列出 16 个模型，逐个调用 `/v2/chat/completions` 均返回正常 SSE；
+  而 `data.models[]` 里另有图像/视频/补全类条目，调用会返回 `code=11102`）。
+* 旧目录 `/v3/config` 曾列出 39 个模型，其中部分（如 `glm-4.6`）在对话端点返回
+  `code=11102`，因此不能直接全量暴露。
 * `product.json` 里另有一份**内置兜底目录**（58 条，含 `default`/`auto`/图像/视频/补全类模型），
   远端不可用时官方回退用它 `[打包JS]`。
 
 ### 4.2 映射到 `/v1/models`
 
-* 只暴露 `data.models[]` 中 `id` 以对话模型为主的条目；图像/视频/补全类
+* 只暴露 `cli` agent 的 `models[]`（或备源里等价的对话模型集合）；图像/视频/补全类
   （`hunyuan-image-*`、`kling-*`、`codewise-*`、`hunyuan-3b` 等 `maxOutputTokens` 仅 256 或无
   `maxInputTokens` 的条目）不映射为 chat 模型。
 * `id` → `model.id`；`name` → `model.name`；`owned_by` 固定 `workbuddy`。
@@ -250,15 +269,12 @@ GET https://www.workbuddy.cn/v3/config
 * `supportsImages` → `input_modalities` 含 `image`。
 * `reasoning.supportedEfforts` → `reasoning_efforts`；`reasoning.defaultEffort` → `default_reasoning_effort`；
   `reasoning.canDisableThinking=false` 时不暴露 `none`。
-* `credits`（如 `x0.51 credits`）可映射为倍率 `rate`。
+* `credits`（如 `x0.51 credits`）是**额度描述而非倍率**，不映射为 `rate`。
 
-### 4.3 另一目录（不用于 `/v1/models`）
+### 4.3 旧目录（仅作备源）
 
-```text
-GET https://www.workbuddy.cn/v2/enterprises/personal/models
-→ {"models":[{"id":..., "tags":[...]}]}   # cloud agent 别名目录，会过滤 tags 含 text-to-image 的项
-```
-`[打包JS]`，本协议不使用该目录。
+`/v3/config` 的结构与 §4.1 主源一致（同样含 `models[]` 与 `agents[]`），
+仅在主源不可用时作为备源使用。
 
 ## 5. reasoning_effort 字段映射
 
@@ -319,6 +335,10 @@ POST https://www.workbuddy.cn/billing/meter/get-user-resource-summary
 桌面端解析：`creditsTotal = Σ CycleTotalCapacity`，`creditsLeft = Σ CycleRemainCapacity`，
 并把每个包映射为 `{commodityCode: PackageCode, remaining, total}` `[打包JS]`。
 
+**注意**：额度字段（`CycleTotalCapacity` / `CycleRemainCapacity` / `CycleUsedCapacity`）
+在实际响应里可能返回**数字或字符串**（实测个人账号返回 `"2262"` 这样的字符串），
+解析时须两种都兼容。
+
 配套的分页明细端点（`resourcePrefix` 为空，`POST`，`Accept-Language` 头）：
 
 * `/billing/meter/get-user-resource-free-packages`
@@ -372,8 +392,9 @@ Headers: X-Enterprise-Id: <enterpriseId>
 * `mapCheckinStatus`：`1001→AlreadyClaimed`、`1002→NotEligible`、`1003→EventEnded`，
   其余 `UnknownBizError` `[打包JS]`。
 * 设备令牌由图灵 SDK（`turingSdk.channelId = 109144`）产生，取不到时客户端发
-  `X-Device-Token-Error` 头 `[打包JS]`。**建议先不带该头请求**
-  （国际版旧插件实测可直接成功，中国版是否强制 `[未验证]`）。
+  `X-Device-Token-Error` 头 `[打包JS]`。**中国版实测无需该头即可成功**：
+  个人账号带现有认证头 + 空请求体 `{}` 即可领取（实测 `code=0`、`credit=100`），
+  故图灵令牌不是必需条件。
 * Web 版（renderer）另有不带 `/v2` 前缀的两个端点：
   `POST /billing/meter/checkin-status`、`POST /billing/meter/daily-checkin` `[打包JS]`；
   桌面端主链路用带 `/v2` 的 `checkin-activity-status`。

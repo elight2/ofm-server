@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn 令牌信封能解析camelCase() {
+    fn 令牌信封能解析camel_case() {
         let env: TokenEnvelope = serde_json::from_str(
             r#"{"code":0,"data":{"accessToken":"at","refreshToken":"rt","tokenType":"Bearer","expiresIn":3600,"refreshExpiresIn":7200}}"#,
         )

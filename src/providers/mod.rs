@@ -56,6 +56,9 @@ pub fn build_registry(root: &Path, config: &Config) -> anyhow::Result<Registry> 
         root.to_path_buf(),
         config.loomy.reasoning_effort,
     )?) as Arc<dyn Provider>);
-    registry.register(Arc::new(WorkBuddyProvider::new(root.to_path_buf())?) as Arc<dyn Provider>);
+    registry.register(Arc::new(WorkBuddyProvider::new(
+        root.to_path_buf(),
+        config.workbuddy.reasoning_effort.as_effort(),
+    )?) as Arc<dyn Provider>);
     Ok(registry)
 }

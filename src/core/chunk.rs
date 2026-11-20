@@ -82,13 +82,18 @@ pub fn parse_chunk(v: &Value, tc_id_in_function: bool) -> Vec<Event> {
                     }
                 }
             }
-            if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str()) {
+            // `finish_reason` 为**空串**等同于缺失（上游用 `""` 表示「本帧未结束」，
+            // 只有 `null`/字段不存在才是真结束）。误判成终止会导致后续帧全被丢弃。
+            if let Some(fr) = ch.get("finish_reason").and_then(|x| x.as_str())
+                && !fr.is_empty()
+            {
                 out.push(Event::Finish(crate::core::stream::map_finish(fr)));
             }
         }
     }
 
-    if let Some(u) = v.get("usage") {
+    // `usage` 为 `null`（上游每帧都带）时不当成一次 usage 事件。
+    if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
         out.push(Event::Usage(parse_usage(u)));
     }
 
