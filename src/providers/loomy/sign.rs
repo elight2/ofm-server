@@ -42,6 +42,7 @@ pub struct SignedHeaders {
 ///
 /// `body` 必须是**实际发送的字节**（紧凑 JSON），签名用的 MD5 与 Content-MD5
 /// 头都基于它。
+#[allow(clippy::too_many_arguments)]
 pub fn sign(
     access_key_id: &str,
     access_key_secret: &str,
@@ -180,7 +181,7 @@ fn uuid4_string() -> String {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        buf = (nanos as u128).to_be_bytes();
+        buf = nanos.to_be_bytes();
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }

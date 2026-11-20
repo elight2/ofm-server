@@ -163,6 +163,14 @@ fn base() -> Value {
     })
 }
 
+fn snippet(s: &str) -> String {
+    let t = s.trim();
+    if t.chars().count() <= 200 {
+        return t.to_string();
+    }
+    t.chars().take(200).collect::<String>() + "…"
+}
+
 #[cfg(test)]
 mod live {
     use super::*;
@@ -180,12 +188,4 @@ mod live {
             .to_string();
         assert!(err.contains("020002"), "{err}");
     }
-}
-
-fn snippet(s: &str) -> String {
-    let t = s.trim();
-    if t.chars().count() <= 200 {
-        return t.to_string();
-    }
-    t.chars().take(200).collect::<String>() + "…"
 }

@@ -2,299 +2,294 @@
 
 > 分析来源: 解包 Electron 应用 `resources/app.asar.unpacked/electron/` 下 801 个 .js 源码文件
 > 客户端版本: 0.9.39
-> 分析方式: 静态代码分析
+> 分析方式: 静态代码分析 + 生产网关实测（2026-11-20）
 
 ## 0. 总结
 
-* 客户端版本: 0.9.39
-* 分析方式: 解包 Electron ASAR，静态分析源码
-* 开发者: iFlyTek.Inc
-
-### 本协议不支持, 但 Chat Completions 有的功能
-* 无 (Loomy 使用 OpenAI 兼容协议)
-
-### 本协议与官方客户端的出入
-* 无 (Loomy 是客户端，不是上游 API)
+* Loomy 是讯飞（iFlyTek.Inc）出品的 Electron 办公助手，客户端版本 0.9.39。
+* **对话侧是标准 OpenAI 兼容协议**：`/chat/completions` 收发均为 OpenAI 语义，
+  流式为纯 `data:` 帧，`messages`/`tools`/`tool_choice`/`reasoning_effort` 全部逐项生效。
+* **登录不走 IM 渠道**，而是讯飞统一账号网关（手机号 + 短信验证码，见 §1）。
+* 本协议不支持、但 Chat Completions 有的功能：无。
 
 ### 域名
 
-| 域名和端点 | 功能 |
-|-----------|------|
-| `https://api.sgroup.qq.com` | QQ 机器人 API |
-| `https://sandbox.api.sgroup.qq.com` | QQ 沙箱环境 |
-| `https://bots.qq.com/app/getAppAccessToken` | QQ 获取 access_token |
-| `https://oapi.dingtalk.com` | 钉钉 OAPI |
-| `https://api.dingtalk.com` | 钉钉开放 API |
-| `https://novac2c.cdn.weixin.qq.com/c2c` | 微信 CDN 下载 |
-| `https://work.weixin.qq.com/ai/qc/generate` | 企业微信生成二维码 |
-| `https://work.weixin.qq.com/ai/qc/query_result` | 企业微信查询扫码结果 |
-| `spark-api-open.xf-yun.com` | 讯飞星火 API |
+| 域名 | 用途 |
+|------|------|
+| `https://account.xfinfr.com` | 讯飞统一账号网关（登录、发短信验证码、查用户信息） |
+| `https://loomyad.xunfei.cn/api/v1` | **模型 API**（对话 / 模型目录 / 积分 / 宠物打工） |
+| `https://api.loomy.ai/api/v1` | 仅客户端升级检查（`/version/check`），**不是**模型 API |
+| `https://ossptest.voicecloud.cn/loomy/integration/api/v1` | 测试环境（规模同生产，登录态无效会回 `100002`） |
+| `spark-api-open.xf-yun.com` | 讯飞星火 API（客户端内备用，本项目不用） |
 
 ## 1. 登录方式
 
-Loomy 支持 6 种 IM 渠道的登录，各自独立：
+客户端 UI（`LoginPage`）只有两个 Tab：**手机号** 和 **微信**。二者最终都落到
+讯飞统一账号网关 `https://account.xfinfr.com`，一套 `SDK-HMAC-SHA1` 签名。
 
-### 1.1 飞书 (Feishu)
-- 存储: `electron-store` 配置文件，路径 `getUserDataPath()/feishu-config.json`
-- 凭证: `appId`, `appSecret`
-- 认证: 使用 `@larksuiteoapi/node-sdk`，通过 `lark.Client` 初始化
-- WebSocket: 使用 `lark.WSClient` 长连接接收消息
-- 事件: 订阅 `im.message.receive_v1` 等事件
+### 1.1 手机号 + 短信验证码（本项目采用）
 
-### 1.2 钉钉 (Dingtalk)
-- 存储: `electron-store` 配置文件
-- 凭证: `clientId`, `clientSecret`
-- 认证: 使用 `dingtalk-stream` 包的 `DWClient`
-- WebSocket: Stream 长连接，订阅 `TOPIC_ROBOT` 主题
-- API: 通过 `oapi.dingtalk.com` 获取 access_token
+```text
+POST /login/phone/sendMsgCode   {"mobile":"<11 位手机号>"}
+  → {"code":"000000","desc":"成功","data":{"msgid":"<32 hex>"}}
+POST /login/phone/checkCode     {"mobile":"...","msgid":"...","code":"<验证码>"}
+  → {"code":"000000","data":{"session":"<32 hex>","userid":"...","expireTime":<ms>}}
+GET  /userinfo/query/baseInfo   （带 session）
+  → {"code":"000000","data":{...}}   登录态有效
+  → {"code":"020002","desc":"session无效"}   登录态失效
+```
 
-### 1.3 企业微信 (WeCom)
-- 存储: `electron-store` 配置文件
-- 凭证: `botid`, `secret`
-- 认证: 使用 `@wecom/aibot-node-sdk` 的 `AiBot.WSClient`
-- WebSocket: 长连接，事件包括 `message.text`, `message.image`, `message.file` 等
+签名细节（`sign.js` 复刻，见 `src/providers/loomy/sign.rs`）：
 
-### 1.4 QQ
-- 存储: `electron-store` 配置文件
-- 凭证: `appId`, `appSecret`
-- 认证: 通过 `https://bots.qq.com/app/getAppAccessToken` 获取 access_token
-- WebSocket: 自定义 WebSocket 客户端，使用 OpCode 协议（IDENTIFY, HEARTBEAT, RESUME 等）
-- API: `https://api.sgroup.qq.com` 或沙箱环境
+* 算法 `SDK-HMAC-SHA1`，`Authorization` 头形如
+  `SDK-HMAC-SHA1 Access=<AK>, SignedHeaders=<h1;h2;...>, Signature=<base64>`
+* 待签串 9 行，`\n` 分隔：
+  `METHOD / escapedPath / escapedQuery / Content-MD5 / Content-Type / Date / Nonce / (空) / (空)`
+* 方法大写；路径与 query 按 RFC3986 转义（额外把 `! ' ( ) *` 转成 `%21 %27 %28 %29 %2A`）
+* `Date` 用 RFC1123 GMT（`Fri, 20 Nov 2026 00:44:14 GMT`），`Nonce` 为 32 hex
+* 参与签名的头必须同时出现在 `SignedHeaders` 与请求头里
+* AK/SK 来自客户端 `.env.prod`（AES-256-GCM 加密），目前**硬编码**在
+  `src/providers/loomy/account.rs`
 
-### 1.5 微信 (Weixin)
-- 存储: 通过 `WeixinGatewayBridge` 管理的 utility 进程
-- 凭证: `token`, `accountId`, `userId`, `name`
-- 认证: 通过二维码扫码登录（`/login/qr/start`, `/login/qr/wait`）
-- 通信: 长轮询 (Long Polling) `/getupdates` 端点
-- 文件下载: CDN `https://novac2c.cdn.weixin.qq.com/c2c/download`，AES-ECB 解密
+`session` 有效期 **14 天**，无续期机制。
 
-### 1.6 Nexus
-- 配置: `nexus-config.js`
-- 通过 `NexusDispatchClient` 连接远程网关
+### 1.2 微信扫码
+
+`/login/qr/start` → `/login/qr/wait` 轮询，成功同样换回一个 `session`。
+本项目未实现（需要用户扫码，无法在服务器上自动化）。
+
+### 1.3 IM 渠道（飞书 / 钉钉 / 企业微信 / QQ）
+
+这些是**机器人通道**配置（`appId`/`appSecret` 等存在 `electron-store` 配置文件里），
+与模型对话无关，本项目不涉及。
 
 ## 2. 令牌续期方式
 
-| 渠道 | 续期方式 |
-|------|----------|
-| 飞书 | 使用 `@larksuiteoapi/node-sdk` 自动管理 token 生命周期 |
-| 钉钉 | `DWClient` 自动管理，通过 `getAccessToken()` 获取 |
-| 企业微信 | `@wecom/aibot-node-sdk` 自动管理 |
-| QQ | 手动获取，`getAccessToken()` 检查过期（提前 60s 刷新），缓存至 `tokenExpiresAt` |
-| 微信 | 长轮询 `getupdates_buf` 维持会话，token 在 `post()` 方法中携带 |
-| Nexus | 由 `NexusDispatchClient` 管理 |
+**无**。讯飞账号 `session` 固定 14 天有效，过期只能重新登录
+（`ofm-server login loomy`）。故 `Provider::refresh` 返回 `Unsupported`。
 
 ## 3. Chat Completions 映射
 
-Loomy 使用 OpenCode 运行时进行 AI 对话，核心文件 `llm-completion.js`：
-
 ### 3.1 请求格式
 
-```
-POST /chat/completions
+```text
+POST https://loomyad.xunfei.cn/api/v1/chat/completions
+Authorization: Bearer <session>
+token: <session>
 Content-Type: application/json
-Authorization: Bearer <token>
-token: <token>  (useSessionAuth 时)
-Accept: application/json
 ```
+
+`Authorization` 与 `token` 两者**各自单独都能生效**（实测只带 Bearer 也返回 200），
+但官方客户端（`useSessionAuth: true`）两个都发，照抄最稳。
+
+客户端还会带 `traceparent` / `ChatId` / `MsgId` / `loomy-version`。实测**都非必需**
+（缺失时正常返回），本项目仍带上以对齐链路。
 
 ### 3.2 请求体
 
 ```json
 {
   "model": "<modelID>",
-  "messages": [
-    {"role": "system", "content": "..."},
-    {"role": "user", "content": "..."}
-  ],
-  "temperature": 0.7,
-  "max_tokens": 600,
-  "stream": false,
-  "enable_thinking": false,
-  "chat_template_kwargs": {"enable_thinking": false}
+  "messages": [{"role": "user", "content": "..."}],
+  "stream": true,
+  "reasoning_effort": "low",
+  "tools": [{"type": "function", "function": {}}],
+  "tool_choice": "required"
 }
 ```
+
+* `stream` 恒发 `true`：上游 SSE 分帧正常，非流式由下游聚合。
+* `messages` 纯文本给字符串，含图片给内容数组
+  （`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`）。
+  **图片只对 `capabilities.input_modalities` 含 `image` 的模型有效**；
+  `spark-x2.6` 无视觉能力，发图片回 HTTP 400「请求参数错误」。
+* tool 消息的 `content` 是工具结果字符串，并带 `tool_call_id`。
 
 ### 3.3 模型标识
 
-格式: `providerID/modelID`
-- 解析: `parseModelId(modelId)` 返回 `{providerID, modelID}`
-- 配置来源: `config.provider[providerID].models[modelID]`
+模型名直接用 `/models` 返回的 `id`（如 `spark-x2.6`、`GLM-5.3-Flash`）。
+本项目对外再加 `loomy/` 前缀路由。
 
-### 3.4 认证方式
+另有路由模型 `auto`：实测会转发到具体模型（如 `GLM-5.3-Flash`），
+响应里的 `model` 是**真实模型名**而非 `auto`。
 
-1. **API Key 模式**: `Authorization: Bearer <apiKey>`
-2. **Session Auth 模式**: `token: <sessionToken>` 头（用于 iModel 等需要登录态的 provider）
+### 3.4 思考强度
 
-### 3.5 思考强度
+目录里每个 chat 模型带
+`reasoning_efforts: ["none","low","medium","high","xhigh"]` 与
+`default_reasoning_effort: "low"`。`reasoning_effort` 字段逐档透传生效。
 
-在模型配置中通过 `variants` 字段实现：
-```javascript
-variants: {
-  low: { reasoningEffort: 'low' },
-  medium: { reasoningEffort: 'medium' },
-  high: { reasoningEffort: 'high' }
-}
+本项目配置只暴露三档（`low`/`medium`/`high`），逐档透传；
+上游还有 `none`/`xhigh`，配置层未开。
+
+### 3.5 工具调用
+
+四种 `tool_choice` 均**实测生效**（`none` 回文本、`required` 与指定函数均回
+`finish_reason: tool_calls`），无需像 trae 那样降级。`Auto` 时不发送该字段。
+
+### 3.6 响应格式
+
+纯 `data:` 帧（无 `event:` 行），标准 OpenAI chunk：
+
+```text
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"..."}}],...}
+data: {"choices":[{"index":0,"delta":{"content":"..."}}],...}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x",
+        "function":{"name":"get_weather","arguments":""}}]}}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"",
+        "function":{"name":"","arguments":"{\"city\":"}}]}}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+       "usage":{"prompt_tokens":28,"completion_tokens":32,"total_tokens":60,
+                "completion_tokens_details":{"reasoning_tokens":29},
+                "points_consumed":1}}
+data: [DONE]
 ```
 
-### 3.6 工具调用
+工具调用后续分片里 `id` / `name` 是**空串**，等价于缺失，解析时不可覆盖已累积值。
 
-```json
-{
-  "tools": [{
-    "type": "function",
-    "function": {
-      "name": "<toolName>",
-      "description": "<description>",
-      "parameters": { /* JSON Schema */ }
-    }
-  }],
-  "tool_choice": {
-    "type": "function",
-    "function": {"name": "<toolName>"}
-  }
-}
-```
-
-### 3.7 响应格式
-
-```json
-{
-  "choices": [{
-    "message": {
-      "role": "assistant",
-      "content": "<response>",
-      "tool_calls": [...]
-    }
-  }]
-}
-```
+`usage` 额外带 `points_consumed`（本次扣分），非 OpenAI 标准，本项目忽略。
+`finish_reason` 实测出现 `stop` / `length` / `tool_calls`。
 
 ## 4. models 端点映射
 
 ### 4.1 获取模型列表
 
-```
-GET /models
-Authorization: Bearer <apiKey>
-token: <token>  (session auth 时)
+```text
+GET https://loomyad.xunfei.cn/api/v1/models
+Authorization: Bearer <session>
+token: <session>
 ```
 
 ### 4.2 响应格式
 
 ```json
 {
-  "data": [
-    {
-      "id": "<modelId>",
-      "name": "<displayName>",
-      "is_default_model": true,
-      "is_default_small_model": false,
-      "protocol": "openai",
-      "limit": {"context": 8192, "output": 4096},
-      "modalities": {"input": ["text"], "output": ["text"]},
-      "reasoning": true,
-      "tool_call": true,
-      "attachment": true
-    }
-  ]
+  "reasoning_enabled": true,
+  "reasoning_catalog_version": 3,
+  "object": "list",
+  "data": [{
+    "id": "spark-x2.6", "name": "Spark X2.6", "object": "model",
+    "owned_by": "loomy", "created": 1790065212,
+    "type": "chat", "protocol": "openai_chat",
+    "context_length": 128000, "max_output_tokens": 131072,
+    "reasoning_efforts": ["none","low","medium","high","xhigh"],
+    "default_reasoning_effort": "low",
+    "is_default_model": true, "is_default_small_model": false,
+    "capabilities": {"reasoning": true, "vision": false,
+                     "function_calling": true, "streaming": true,
+                     "system_message": true,
+                     "input_modalities": ["text"], "output_modalities": ["text"]}
+  }]
 }
 ```
 
-### 4.3 内置 Fallback
+实测目录（2026-11-20）：
 
-当 `/models` 返回 404/500 时，使用内置模型列表：
-- 星火 (Spark): 根据 baseURL 路径判断，`/v2` 路径使用 `spark-x` 推理模型
+| id | type | 视觉 | 工具 |
+|----|------|------|------|
+| `spark-x2.6` | chat | ✗ | ✓ |
+| `DeepSeek-V4.1-Flash` | chat | ✓ | ✓ |
+| `deepseek-v4-flash-1017` | chat | ✓ | ✓ |
+| `GLM-5.3-Flash` | chat | ✓（含 video） | ✓ |
+| `qwen3.8-flash` | chat | ✓（含 video） | ✓ |
+| `auto` | chat（路由） | — | — |
+| `Hy-Image-3.5-preview` | image | ✓ | ✗ |
+| `doubao-seedream-5-lite` | image | ✓ | ✗ |
+| `qwen-image-3.0-pro` | image | ✓ | ✗ |
+
+**没有倍率字段**，故本项目 `ModelInfo::rate` 恒为 `None`。
+
+### 4.3 过滤规则
+
+* 只保留 `type == "chat"`：`type == "image"` 的文生图模型经 `/chat/completions`
+  转发必然 404「该模型暂未开放，请切换其他模型」。
+* `auto` 保留（它是合法 chat 路由模型，只是没有 `capabilities`）。
 
 ## 5. reasoning_effort 字段映射
 
-Loomy 在模型配置中为所有 OpenAI-compatible 模型自动添加思考强度 variants：
+| 配置值 | 上游值 | 说明 |
+|--------|--------|------|
+| `low` | `low` | 默认档，与目录 `default_reasoning_effort` 一致 |
+| `medium` | `medium` | |
+| `high` | `high` | |
 
-| variant | reasoningEffort 值 | 说明 |
-|---------|-------------------|------|
-| low | `low` | 低思考强度 |
-| medium | `medium` | 中思考强度 |
-| high | `high` | 高思考强度 |
-
-**实现方式**: `withThinkingVariants()` 函数在模型配置中自动注入 `variants.low/medium/high` 字段。
-
-**前端调用**: 前端按请求透传 variant，OpenCode 在 `session.prompt` 时用 `model.variants[variant]` 深合并进 provider options。
-
-**软关闭推理**: 对于 Qwen3 等推理模型，额外添加：
-1. `enable_thinking: false` (顶层字段)
-2. `chat_template_kwargs.enable_thinking: false` (vLLM/Qwen3 标准参数)
-3. user 消息前缀 `/no_think` (Qwen3 软关标记)
+上游还接受 `none`（几乎不思考）和 `xhigh`，本项目配置层未暴露。
 
 ## 6. 余额获取
 
-Loomy 本身不直接获取余额，而是通过各 IM 渠道的凭证状态间接体现：
+```text
+GET https://loomyad.xunfei.cn/api/v1/points/balance
+  → {"code":"000000","desc":"成功","data":{"balance":6000,
+     "dailyBalance":4981,"availableBalance":10981}}
+```
 
-### 6.1 飞书
-- `testConnection()` 调用 `client.auth.tenantAccessToken.internal()` 验证凭证
+* `balance` = 永久积分
+* `dailyBalance` = 当日剩余额度
+* `availableBalance` = 两者之和（**对外展示用这个**）
 
-### 6.2 钉钉
-- `testConnection()` 调用 `GET oapi.dingtalk.com/gettoken?appkey=<clientId>&appsecret=<clientSecret>`
+账单明细：`GET /points/records?pageNo=1&pageSize=20`，`data.list[]` 每项含
+`ledgerId/modelName/direction(credit|debit)/description/createdAt/
+pointsActual/consumeSource/balanceBefore/balanceAfter/dailyCycleDate`。
 
-### 6.3 QQ
-- `testConnection()` 调用 `getAccessToken()` 验证凭证
+其它积分端点（实测存在但本项目未用）：`/points/activation`、
+`/points/first-login`、`/invitation-codes`、`/points/redemption-codes/redeem`、
+`/points/by-chat`、`/points/by-turn`、`/points/records`（v2 形态）、
+`/team-points/*`（需先切团队，否则回 `100001 当前未切换到团队`）。
 
-### 6.4 企业微信
-- 通过 `@wecom/aibot-node-sdk` 的 `authenticated` 事件确认连接状态
+## 7. 签到协议（宠物打工奖励）
 
-### 6.5 微信
-- `testConnection()` 调用 gateway 的 `testConnection` RPC
+Loomy **没有**「每日签到」字样的接口，但每日福利落在「宠物打工」这套接口上，
+语义与签到等价：
 
-## 7. 签到协议
+```text
+GET  /pet-work
+  → data: {enabled, businessDate:"YYYY-MM-DD",
+           config:{version:"pet-work-v1", dailyMaxPoints:1000, sampleWindowDays:28,
+                   minimumActiveDays:7, sessionWeight:0.4, depthWeight:0.6,
+                   tiers:[{tierId:"tier_1",score:60},{tierId:"tier_2",score:100},
+                          {tierId:"tier_3",score:150}], ...},
+           status:{earnedPointsToday, rewardedTierIds, dailyRewardCapped, lastGrant}}
 
-**无**
+POST /pet-work/rewards
+     {"businessDate":"...","configVersion":"pet-work-v1","reachedTierId":"tier_1"}
+  → data: {granted, duplicate, grantedPoints, grantedTierIds, status{...}}
+```
 
-Loomy 是 IM 机器人客户端，不涉及签到功能。
+**实测结论（2026-11-20）**：
+
+* 服务端**不校验**本地算出的打工分数，直接申请任意合法 `tierId` 都会发分；
+* 每档每天只能领一次，重复申请回 `duplicate: true` + `grantedPoints: 0`；
+* 档位奖励 `tier_1/2/3 → 200/300/500`，累加受 `dailyMaxPoints`（1000）封顶，
+  封顶后 `status.dailyRewardCapped = true` 且不再发分；
+* **按档位升序逐个申请**才能拿满 1000；只申请 `tier_3` 只拿 500。
+
+客户端另有 `GET /pet-work` 的本地评分逻辑（`pet-work-service.js` 用
+`activeSessionCount` / `extraValidTurnCount` 相对基线算 `petWorkScore`），
+但服务端不校验，本项目跳过这一步，直接按档位申请。
 
 ## 8. 上游异常响应
 
-### 8.1 HTTP 错误处理
+### 8.1 两套错误形态
 
-| 状态码 | 处理方式 |
-|--------|----------|
-| 401/403 | 返回 "鉴权失败，请检查 token/API Key 是否正确" |
-| 404 | 返回 "该供应商不支持模型列表接口，请手动输入模型 ID 添加" |
-| 500 | 返回 "该供应商的模型列表接口暂不可用，请手动输入模型 ID 添加" |
-| 超时 | 抛出 `LlmCompletionError('请求超时', 'timeout')` |
+| 接口 | 形态 |
+|------|------|
+| `/points/*`、`/pet-work*`、`/models` | 恒 HTTP 200 + `{"code","desc","data"}` 信封，`code != "000000"` 即失败 |
+| `/chat/completions` 认证失效 | **HTTP 200** + `{"code":"100002","desc":"登录已失效，请重新登录","trace_id":...}`（非 SSE） |
+| `/chat/completions` 参数错误 | HTTP 400 + `{"error":{"message":"请求参数错误","type":"invalid_request_error","code":400,"metadata":{"provider_name":"loomy"}}}` |
+| `/chat/completions` 模型未开放 | HTTP 404 + `{"error":{"message":"该模型暂未开放，请切换其他模型","code":404}}` |
 
-### 8.2 错误分类
+注意认证失效的 `content-type` 是 `application/json` 而非 `text/event-stream`，
+故在 SSE 解码前按 content-type 拦一层。
 
-```javascript
-class LlmCompletionError extends Error {
-  constructor(message, code) {
-    this.code = code; // 'no-model', 'bad-model-id', 'protocol-unsupported', 'no-base-url', 'no-session', 'no-api-key', 'timeout', 'http-xxx', 'network', 'no-tool-call', 'bad-arguments', 'wrong-tool'
-  }
-}
-```
+### 8.2 错误码
 
-### 8.3 上游 API 错误响应
-
-钉钉 OAPI 错误格式:
-```json
-{
-  "errcode": 40001,
-  "errmsg": "invalid credential"
-}
-```
-
-QQ API 错误格式:
-```json
-{
-  "code": 0,
-  "message": "ok"
-}
-```
-
-微信网关错误:
-```json
-{
-  "ret": -14,
-  "errmsg": "session expired"
-}
-```
+| code | 含义 | 本项目归类 |
+|------|------|-----------|
+| `000000` | 成功 | — |
+| `020002` | session 无效 | Authentication |
+| `100001` | 请求参数错误 | InvalidRequest |
+| `100002` | 登录已失效 | Authentication |
+| `210105` | 验证码错误（登录） | — |
 
 ## 9. 消息处理协议
 
