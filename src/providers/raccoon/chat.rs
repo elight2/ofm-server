@@ -8,7 +8,6 @@
 
 use serde::Serialize;
 
-use crate::config::RaccoonReasoningEffort;
 use crate::core::provider::{ChatRequest, Message, Part, Role};
 
 /// 对话路径（相对 `api::LLM_PREFIX`）。
@@ -26,12 +25,6 @@ pub struct ChatBody {
     /// （见 `provider-info/raccoon.md` §3.6）。`Auto` 时不发送该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
-    /// 思考强度。只有 `low` 才发送；`high` 不发送该字段。
-    ///
-    /// 实测见 `provider-info/raccoon.md` §3.7：发 `"low"` 思考被完全抑制，
-    /// 发 `"high"` 反而比不发时思考更少，故「深度思考」用不发送实现。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,7 +85,7 @@ pub struct ImageUrl {
 }
 
 impl ChatBody {
-    pub fn build(req: &ChatRequest, effort: RaccoonReasoningEffort) -> Self {
+    pub fn build(req: &ChatRequest) -> Self {
         Self {
             model: req.model.clone(),
             stream: true,
@@ -110,16 +103,7 @@ impl ChatBody {
                 })
                 .collect(),
             tool_choice: req.tool_choice.to_json(),
-            reasoning_effort: effort_field(effort),
         }
-    }
-}
-
-/// 档位 → 上游 `reasoning_effort` 取值。`None` 表示不发送该字段。
-fn effort_field(effort: RaccoonReasoningEffort) -> Option<&'static str> {
-    match effort {
-        RaccoonReasoningEffort::Low => Some("low"),
-        RaccoonReasoningEffort::High => None,
     }
 }
 
@@ -192,15 +176,12 @@ mod tests {
     /// 单段文本用字符串形态；恒流式。
     #[test]
     fn 纯文本用字符串且恒流式() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "sn-glm-5-3".into(),
-                messages: vec![user_msg("你好")],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "sn-glm-5-3".into(),
+            messages: vec![user_msg("你好")],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["model"], "sn-glm-5-3");
         assert_eq!(v["stream"], true);
@@ -212,27 +193,24 @@ mod tests {
     /// 含图片时 content 必须是数组。
     #[test]
     fn 图片走内容数组() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![Message {
-                    role: Role::User,
-                    parts: vec![
-                        Part::Text("看图".into()),
-                        Part::Image {
-                            url: "data:image/png;base64,AAA".into(),
-                            detail: None,
-                        },
-                    ],
-                    tool_calls: vec![],
-                    tool_call_id: None,
-                    tool_name: None,
-                }],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![Message {
+                role: Role::User,
+                parts: vec![
+                    Part::Text("看图".into()),
+                    Part::Image {
+                        url: "data:image/png;base64,AAA".into(),
+                        detail: None,
+                    },
+                ],
+                tool_calls: vec![],
+                tool_call_id: None,
+                tool_name: None,
+            }],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         let arr = v["messages"][0]["content"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -244,22 +222,19 @@ mod tests {
     /// 工具定义用对象形态的 parameters（不要字符串化）。
     #[test]
     fn 工具参数保持对象形态() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![user_msg("查天气")],
-                tools: vec![ToolSpec {
-                    name: "get_weather".into(),
-                    description: Some("查天气".into()),
-                    parameters: Some(serde_json::json!({
-                        "type": "object",
-                        "properties": {"city": {"type": "string"}}
-                    })),
-                }],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![user_msg("查天气")],
+            tools: vec![ToolSpec {
+                name: "get_weather".into(),
+                description: Some("查天气".into()),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}}
+                })),
+            }],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["tools"][0]["type"], "function");
         assert_eq!(v["tools"][0]["function"]["name"], "get_weather");
@@ -270,25 +245,22 @@ mod tests {
     /// assistant 的工具调用键名是标准 `function`。
     #[test]
     fn 工具调用用function键() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![Message {
-                    role: Role::Assistant,
-                    parts: vec![],
-                    tool_calls: vec![ToolCall {
-                        id: "call_1".into(),
-                        name: "get_weather".into(),
-                        arguments: r#"{"city":"北京"}"#.into(),
-                    }],
-                    tool_call_id: None,
-                    tool_name: None,
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![Message {
+                role: Role::Assistant,
+                parts: vec![],
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    arguments: r#"{"city":"北京"}"#.into(),
                 }],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+                tool_call_id: None,
+                tool_name: None,
+            }],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         let tc = &v["messages"][0]["tool_calls"][0];
         assert_eq!(tc["id"], "call_1");
@@ -300,21 +272,18 @@ mod tests {
     /// 工具结果消息需要 tool_call_id，且不带 tool_calls。
     #[test]
     fn 工具结果带tool_call_id() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![Message {
-                    role: Role::Tool,
-                    parts: vec![Part::Text("晴 25 度".into())],
-                    tool_calls: vec![],
-                    tool_call_id: Some("call_1".into()),
-                    tool_name: Some("get_weather".into()),
-                }],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![Message {
+                role: Role::Tool,
+                parts: vec![Part::Text("晴 25 度".into())],
+                tool_calls: vec![],
+                tool_call_id: Some("call_1".into()),
+                tool_name: Some("get_weather".into()),
+            }],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["messages"][0]["role"], "tool");
         assert_eq!(v["messages"][0]["tool_call_id"], "call_1");
@@ -324,21 +293,18 @@ mod tests {
     /// 多段文本合并成一条数组内容（不丢片段）。
     #[test]
     fn 多段文本走数组() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![Message {
-                    role: Role::User,
-                    parts: vec![Part::Text("a".into()), Part::Text("b".into())],
-                    tool_calls: vec![],
-                    tool_call_id: None,
-                    tool_name: None,
-                }],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![Message {
+                role: Role::User,
+                parts: vec![Part::Text("a".into()), Part::Text("b".into())],
+                tool_calls: vec![],
+                tool_call_id: None,
+                tool_name: None,
+            }],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         let arr = v["messages"][0]["content"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -349,19 +315,16 @@ mod tests {
     /// 无参数的工具有效：省略 parameters 字段，不发空对象。
     #[test]
     fn 无参数工具省略parameters() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![user_msg("hi")],
-                tools: vec![ToolSpec {
-                    name: "now".into(),
-                    description: None,
-                    parameters: None,
-                }],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![user_msg("hi")],
+            tools: vec![ToolSpec {
+                name: "now".into(),
+                description: None,
+                parameters: None,
+            }],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         assert!(v["tools"][0]["function"].get("parameters").is_none());
     }
@@ -369,15 +332,12 @@ mod tests {
     /// `Auto` 不发送 `tool_choice` 字段——那是有工具时的默认行为。
     #[test]
     fn tool_choice_auto_不发送() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![user_msg("hi")],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![user_msg("hi")],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         assert!(v.get("tool_choice").is_none());
     }
@@ -395,49 +355,29 @@ mod tests {
             ),
         ];
         for (choice, want) in cases {
-            let body = ChatBody::build(
-                &ChatRequest {
-                    model: "m".into(),
-                    messages: vec![user_msg("hi")],
-                    tools: vec![],
-                    tool_choice: choice,
-                },
-                RaccoonReasoningEffort::Low,
-            );
+            let body = ChatBody::build(&ChatRequest {
+                model: "m".into(),
+                messages: vec![user_msg("hi")],
+                tools: vec![],
+                tool_choice: choice,
+            });
             let v = serde_json::to_value(&body).unwrap();
             assert_eq!(v["tool_choice"], want);
         }
     }
 
-    /// `low` 档向上游发送 `reasoning_effort: "low"`。
+    /// **不发送**任何思考强度字段：保持上游默认状态。
     #[test]
-    fn low档发送reasoning_effort() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![user_msg("hi")],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::Low,
-        );
-        let v = serde_json::to_value(&body).unwrap();
-        assert_eq!(v["reasoning_effort"], "low");
-    }
-
-    /// `high` 档**不发送**该字段（实测发送反而思考更少）。
-    #[test]
-    fn high档不发送reasoning_effort() {
-        let body = ChatBody::build(
-            &ChatRequest {
-                model: "m".into(),
-                messages: vec![user_msg("hi")],
-                tools: vec![],
-                tool_choice: Default::default(),
-            },
-            RaccoonReasoningEffort::High,
-        );
+    fn 不发送思考强度字段() {
+        let body = ChatBody::build(&ChatRequest {
+            model: "m".into(),
+            messages: vec![user_msg("hi")],
+            tools: vec![],
+            tool_choice: Default::default(),
+        });
         let v = serde_json::to_value(&body).unwrap();
         assert!(v.get("reasoning_effort").is_none());
+        assert!(v.get("thinking").is_none());
+        assert!(v.get("output_config").is_none());
     }
 }

@@ -23,6 +23,7 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 
 ## 0. 总结
 
+
 * 客户端版本：app `26.11.100`（distro `d7ca751ba65ff48109f0f0a86178d1d659b4e399`），扩展 `huaweicloud.codearts-snap` `26.11.100`，kernel 内部 `VERSION="126.11.1-20261110192452"` `[打包JS]`
 * 分析方式：仅静态读 JS（`grep`/`python3` 切片），未执行二进制，未抓包
 * 两套代码并存：**IDE 扩展**（extension.js，PromptCenter 体系）与 **agent kernel**（Bun chunk，AgentCenter/inferhub 体系）。域名、端点、认证参数集**不同**，实现时须选定一侧，不可混用
@@ -50,7 +51,7 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 5. **续期有两套、签到只有一套**：续期 IDE 带 `code_verifier`、kernel 不带且加
    `x-agent-user-account`（§2.1）；端到端只有 `refresh_token` 重放一条链路，
    `snap-manager/v1/token/renew` 是死声明（§2.3）。
-   签到只有 `/v1/ops/*` 一套（§8.2），与官方的差异仅是额外要求 `Agent-Type` 头。
+   签到只有 `/v1/ops/*` 一套（§7.2），与官方的差异仅是额外要求 `Agent-Type` 头。
 6. **签到不复刻 UI 面板**：官方在综合栏「限时福利」面板手动点「每日领取」；server 由
    `claim` 子命令直接调 `/v1/ops/{delivery,claim,confirm}`，幂等键自生成。
 
@@ -65,10 +66,10 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 | `iamStsOpenDomain` | `https://sts.cn-north-4.myhuaweicloud.com` | 登录换 token：`/v1/oauth2/tokens`、`/v5/caller-identity` |
 | `codeartsWebNewUrl`（=`portalHcAuthorizeUrl`） | `https://codearts.huaweicloud.com` | OAuth 授权页 `/portal/authorize`、跳转 `/portal/login` |
 | `codeartsWebUrl`（=`toolkitHcOpenWebUrl`） | `https://devcloud.cn-north-4.huaweicloud.com` | 旧门户 |
-| **账户积分余额** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/snap-manager/v1/statistics/plugin`（见 §6.1） |
+| **账户积分余额** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/snap-manager/v1/statistics/plugin`（见 §3.9.1） |
 | 福利模型额度（内网） | `https://snapengine-apig.cn-north-7.myhuaweicloud.com` | `/api/v1/benefit/claim`、`/api/v1/user/tokens/balance`、`/api/v1/gateway/config` |
 | 福利模型额度（生产商用） | `https://opengw.developer.huaweicloud.com` | 同上；选择式 `MFn() = H()&&IS_PROD!=="true" ? 内网 : 生产`（`DFn()`）。**不是余额端点** |
-| **限时福利 / 每日签到** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/v1/ops/delivery`、`/v1/ops/claim`、`/v1/ops/confirm`、`/v1/ops/invite/generate`、`/v1/ops/tasks/conversation`（见 §8.2）。**与上面 benefit-service 完全无关**：workbench 用 `productService.snapEngineUrl`，扩展用 `policyCenterDomain`，两者在生产环境都指向本域名 |
+| **限时福利 / 每日签到** | `https://snap-access.cn-north-4.myhuaweicloud.com` | `/v1/ops/delivery`、`/v1/ops/claim`、`/v1/ops/confirm`、`/v1/ops/invite/generate`、`/v1/ops/tasks/conversation`（见 §7.2）。**与上面 benefit-service 完全无关**：workbench 用 `productService.snapEngineUrl`，扩展用 `policyCenterDomain`，两者在生产环境都指向本域名 |
 | 内网兜底 | `http://snapengine.codemate.cce.prod-kwe-g.dragon.tools.huawei.com/api/v2/` | `py.inferhubBaseUrl` 默认值（offset 103554750） |
 | OTel | `collector-agents-access.{cn-north-4,ap-southeast-1}.myhuaweicloud.com` | `/collector/v1/traces`、`/collector/v1/logs` |
 
@@ -88,8 +89,9 @@ kernel 内嵌 JS 已导出为 `tmp/codearts-kernel-js.txt`（262MB，grep 需 `-
 
 ## 1. 登录方式
 
+
 OAuth2 + PKCE(SHA-256) + **DPoP**(ES256)。`client_id` = `QH()` = 扩展 package.json 的 `name`，
-**本包实际值为 `codearts-snap`**（26.11.100；`"vscode-codebot"` 仅是 fallback 常量，见 §8-10）。
+**本包实际值为 `codearts-snap`**（26.11.100；`"vscode-codebot"` 仅是 fallback 常量，见 §7-10）。
 
 ### 1.1 授权 URL（IDE 扩展版，offset 6757053 区）`[打包JS]`
 
@@ -248,6 +250,7 @@ plugin-version: <Fr(!1)>
 
 ## 2. 令牌续期方式
 
+
 > 续期**只有一条**真实链路：`refresh_token` 重放 `POST /v1/oauth2/tokens`。
 > 客户端不存在服务端续期接口的调用（见 §2.3）。
 
@@ -365,6 +368,7 @@ kernel 轮询 `n = 120000`ms（120s）；`T()` 另有限流：仅当带 `CODEART
 ---
 
 ## 3. Chat Completions 映射
+
 
 上游为 **OpenAI Chat Completions 兼容**，chat provider（`IP()` → `aU`）端点：
 
@@ -499,7 +503,7 @@ key    = sha256(shared) 前 16 字节          （FLn(n)，IV 长度常量 FN=12
 | `messages` | 直通；`tool_calls` / `tool` role 直通 |
 | `tools[].function.parameters` | 直通（JSON Schema 对象） |
 | `max_tokens` | 仅 `cU(model)`：`o1`/`o3`/`o4`/`gpt-5`/`gpt-6` 系列 → 重命名为 `max_completion_tokens`（`BP()`），日志 `[openai-reasoning-model] adaptMaxTokensParam applied` |
-| `reasoning_effort` | 见 §3.3.1。**客户端不校验、不改写**非 OpenAI 模型的值，原样透传 |
+| `reasoning_effort` | 见 §3.3.1。**本协议不发送该字段**（保持上游默认思考行为）；下表仅记录官方客户端的处理 |
 | `response_format` | 仅当 AI SDK `responseFormat.type === "json"`：有 schema 且 `supportsStructuredOutputs` → `json_schema`；否则 `json_object`；`text` 不发该字段 |
 | `strictJsonSchema` | 默认 `true`，用作 `json_schema.strict`（不是顶层字段） |
 | `user` / `stop` / `seed` / `verbosity` | `user`、`stop`、`seed` 透传；`verbosity` 取 `providerOptions.textVerbosity` |
@@ -536,13 +540,15 @@ function AP(b){                       // 唯一改写：带 tools 的 OpenAI 推
 * `glm` / `sn-*` / 其它模型**不匹配 `fU`**，`reasoning_effort` 原样透传给上游，客户端不做合法性校验。
 * 改写在 request body 层（`AP(body)`），只影响该次请求；`stream`/非流式两条路径共用。
 
+**本协议不发送 `reasoning_effort`**：请求体不带该字段，由上游自行决定思考行为。
+
 ### 3.4 响应映射（上游 SSE → CC chunk）`[打包JS]`
 
 SSE 逐帧 `data: {...}`，`data: [DONE]` 结束；`xl(chunkSchema)` 解析，chunk 形状是
 标准 OpenAI CC（`choices[0].delta` / `finish_reason` / `usage`）或错误对象。
 
 **成功判定（更正）**：chat 上游**没有** `error_code === "0000"` 校验；`0000` 只用于
-benefit-service 响应（§5/§7）。`aU.doStream` 的判定是：
+benefit-service 响应（§3.9/§6）。`aU.doStream` 的判定是：
 
 * `H()` 为真：chunk 含 `error` / `error_code` / `error_msg` 任一键即按错误处理；
 * `H()` 为假：仅 `error` 键按错误处理。
@@ -639,7 +645,7 @@ raw = 原始 usage
 
 * `POST {SNAP_GATEWAY}/api/v2/chat/completions`，`stream:true`；非流式由 server 聚合。
 * AKSK 签名头：`content-type`、`x-sdk-content-sha256`（body SHA256）、
-  `x-security-token`；**不发 `maas_type`**（见 §6.5）；trace/model 头在签名后追加。
+  `x-security-token`；**不发 `maas_type`**（见 §5.5）；trace/model 头在签名后追加。
 * 请求体：`model`/`messages`/`stream`/`max_tokens:65536`/`tool_stream`/`tools`/
   `tool_choice`/`prompt_cache_key`；assistant 历史恒带 `reasoning_content`。
 * `prompt_cache_key` 由**对话前缀**派生（`ofm-<sha256>`）：取首条 system + 首条 user
@@ -665,7 +671,7 @@ raw = 原始 usage
 * 首帧租户冻结/内容安全扫描/客户端断开取消未复刻。
 * ~~`glm-5.3-flash`、`deepseek-v4.1-flash` 等 benefit 模型带 `maas_type:benefit` 返回
   `APIG.0101.404`~~ —— **已定位为发送方错误**：`maas_type` 本身导致 404，与模型无关，
-  现完全不发送。见 §6.5。
+  现完全不发送。见 §5.5。
 
 **已实测**：`GLM-5.2` 流式/非流式、工具调用（`get_time`）、工具结果回传均正常；
 `test` 用户的 pi 通过本地 `ofm` provider 完成纯文本对话和工具获取系统信息测试。
@@ -682,7 +688,114 @@ raw = 原始 usage
 
 ---
 
+### 3.9 思考强度（上游能力参考，本协议不发送）
+
+**官方客户端有思考强度 UI，但档位集合是逐模型、由服务端下发的，不是固定枚举。**
+
+客户端把档位拉下来挂成 AI SDK 的 `variants`，用户选择后原样写入请求体
+`reasoning_effort`。`thinking_type == null` 的模型不显示滑杆，即不可调。
+
+```
+POST {xCenterBase}/v1/model/thinking-variants      （hD）
+body {"model_names":[<前 50 个>]}                  （VFn=50）
+→ data.variants
+```
+`XCENTER_BASE_URLS` 为空时日志 `XCENTER_BASE_URLS is empty` 直接返回。用于给每个模型补 `variants`（思考强度档位）。
+
+**实测（2026-11-16，商业版账号）**：该接口在 `snap-access` 网关**可用**，与文档此前记录的
+「商业版禁用」结论相反（禁用的是 agent-center 的 `useragents`/`detail`，不含本接口）。
+
+```
+POST https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/thinking-variants
+Agent-Type: PromptCenter          ← 必须；AgentCenter 会被拒（400 TM.00001001）
+X-Security-Token: <security_token>
+body {"model_names":["GLM-5.2",...]}     ← 单次上限 50
+→ {"variants":{"GLM-5.2":{"strengths":["high","max"],"default_strength":"high"},
+                "kimi-k3":{"strengths":[],"default_strength":""}}}
+```
+
+* `sign` 与 `sign_unsigned`（UNSIGNED-PAYLOAD）**均可用**，返回一致。
+* `variants` 的键**就是模型 id**，无需 `third_party_model`（§4.1 的 `variants_key` 在商业版不适用）。
+* 除 `strengths` 外还有 `default_strength`（本地档位计算未使用）。
+* 模型名大小写不敏感（`GLM-5.2` 与 `glm-5.2` 均返回档位）。
+
+目录 12 个模型的实测档位，**仅两个有档位**（与 IDE 界面「只有两个 GLM 5.2 可调思考」一致）：
+
+| 模型 | `strengths` |
+|-|-|
+| `GLM-5.2` | `["high","max"]` |
+| `glm-5.2-sft-harmony` | `["high","max"]` |
+| 其余 10 个（`openpangu-*`、`glm-5.3*`、`deepseek-v4.1-flash*`、`kimi-k3*`、`speed`） | `[]` |
+
+两档 `["high","max"]` 正对应 IDE 滑杆「滑到最右端时『高』变成『最大』」。
+
+#### 3.9.1 思考档位完整链路（客户端实现）`[打包JS]`
+
+CodeArts 的思考档位**不来自本地规则**，全部由服务端下发。证据：本地档位生成函数
+`kS.variants`（`q(L)`，offset 111131407 区）对 GLM 等模型明确返回空：
+
+```js
+function q(L){
+  if(!L.capabilities.reasoning) return {};
+  let F = L.id.toLowerCase(), ...;
+  if(F.includes("deepseek")||F.includes("minimax")||F.includes("glm")||
+     F.includes("mistral")||F.includes("kimi")||F.includes("k2p5")) return {};   // ← glm 排除
+  ...
+}
+```
+
+于是 `glm-*` 的档位只能由 `thinking-variants` 提供，链路如下：
+
+1. **模型能力**：`GET …/gpts/models` → `model_parameters.thinking_type != null` → `capabilities.reasoning`；
+   同时 `variants_key = model_type === "third" ? model_parameters.third_party_model : model_id`。
+   注意 `variants_key` **不必等于模型 id**，第三方模型用 `third_party_model`。
+2. **拉档位**（`CJ()` = `fetchThinkingVariants`，offset 99272736 区）：
+   ```js
+   POST {XCENTER_BASE}/v1/model/thinking-variants
+   { "model_names": [variants_key, ...] }        // 只发前 50 个（VFn=50）
+   → data.variants[variants_key].strengths        // string[]，缺省视为 []
+   ```
+   重试：`retries:2`，遇网络错/`ECONNABORTED`/429/≥500 重试；多 base URL 轮询。
+3. **档位 → AI SDK variants**（`QJ()`）：
+   ```js
+   function QJ(n){ let u={}; for(let t of n) u[t]={reasoningEffort:t}; return u }
+   ```
+   即 `strengths` 里的字符串**本身就是** `reasoning_effort` 的取值，一字不改。
+4. **挂到模型**：
+   ```js
+   variants: (()=>{ let $=y?.variants_key, E=$?f[$]:void 0;
+                    return E?.length>0 ? QJ(E) : void 0 })()
+   ```
+   无 `strengths` 的模型 `variants` 为 `undefined`（UI 不显示滑杆）。
+
+**UI 档位文案**（通用 i18n 表，非 GLM 专有）：
+`thinkingLevelMinimal/Low/Medium/High/Xhigh/Max/None/Auto` → 最小/低/中/高/超高/最大/默认/自动。
+滑杆只在 `variants` 存在时出现，故只有服务端下发了 `strengths` 的模型（如两个 GLM 5.2）可控。
+
+**发往上游**：选中档位 → `providerOptions.reasoningEffort` → request body `reasoning_effort`（原值）。
+与 §3.3.1 一致：GLM 不被 `fU` 匹配，故即使带 `tools` 也不会被改成 `none`。
+
+**推论（未实测）**：`ofm-server` 若要支持 CodeArts 思考档位，正确做法是自行调用
+`POST /v1/model/thinking-variants` 取 `strengths`，再把用户档位作为 `reasoning_effort` 透传；
+不应硬编码 `low`/`high`，因为档位集合是逐模型、服务端下发的。
+
+#### 3.9.2 本协议不发送思考强度字段
+
+请求体不带 `reasoning_effort`，由上游自行决定思考行为（保持上游默认状态）。
+下表仅记录上游档位的取值范围，供后续实现参考。
+
+上游档位取值**不固定**，取决于 `thinking-variants` 对每个模型返回的 `strengths`
+（12 个模型中仅 `GLM-5.2`、`glm-5.2-sft-harmony` 有 `["high","max"]`，其余为空）。
+
+| `strengths` | 最浅档 | 最深档 |
+|-|-|-|
+| `["high","max"]` | `high` | `max` |
+| `[]` / 模型未知 | 无（不发送） | 无（不发送） |
+
+⚠︎ `high` 与 `max` 的**实际思考深度差异未经实测**，不能假定单调（raccoon 正是反例）。
+
 ## 4. models 端点映射
+
 
 > **实现结论（2026-02-18，已实测并落地 `catalog.rs`）**：商业版（非 gamma、无权益）真实可用的
 > 模型目录路径是内核 `$D`（provider-models-plugin）：
@@ -709,7 +822,7 @@ raw = 原始 usage
 > - benefit-service `opengw…/api/v1/gateway/config`：AKSK 签名被服务端接受（HTTP 200），
 >   但业务恒报 `{"error_code":"4000","error_msg":"invalid channel, group not found"}`——账号未
 >   开通权益（extension 先查 `{policyCenterDomain}/v1/benefit-gateway-config`，`enabled=false`
->   时不走 benefit 网关），属预期；已开通权益的账号才会从 `gateway/config`（§6.4）拿到福利模型。
+>   时不走 benefit 网关），属预期；已开通权益的账号才会从 `gateway/config`（§5.4）拿到福利模型。
 > - xCenter/agent-center（§4.1/4.2）：商业版内核 `XCENTER_BASE_URLS=[]`、`CODEAGENT_ID=""`
 >   硬编码为空，`BD()` 直接短路，整条路径禁用。
 > - extension PromptCenter（§4.2）：商业版 `x-auth-token` 为空串（`Tr()`：`isDefaultToken=false`
@@ -797,126 +910,10 @@ Authorization: SDK-HMAC-SHA256 Access=<ak>, SignedHeaders=<signedHeaders>, Signa
 
 ---
 
-## 5. reasoning_effort 字段映射
+## 5. 余额获取
 
-**官方客户端有思考强度 UI，但档位集合是逐模型、由服务端下发的，不是固定枚举。**
 
-客户端把档位拉下来挂成 AI SDK 的 `variants`，用户选择后原样写入请求体
-`reasoning_effort`。`thinking_type == null` 的模型不显示滑杆，即不可调。
-
-```
-POST {xCenterBase}/v1/model/thinking-variants      （hD）
-body {"model_names":[<前 50 个>]}                  （VFn=50）
-→ data.variants
-```
-`XCENTER_BASE_URLS` 为空时日志 `XCENTER_BASE_URLS is empty` 直接返回。用于给每个模型补 `variants`（思考强度档位）。
-
-**实测（2026-11-16，商业版账号）**：该接口在 `snap-access` 网关**可用**，与文档此前记录的
-「商业版禁用」结论相反（禁用的是 agent-center 的 `useragents`/`detail`，不含本接口）。
-
-```
-POST https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/thinking-variants
-Agent-Type: PromptCenter          ← 必须；AgentCenter 会被拒（400 TM.00001001）
-X-Security-Token: <security_token>
-body {"model_names":["GLM-5.2",...]}     ← 单次上限 50
-→ {"variants":{"GLM-5.2":{"strengths":["high","max"],"default_strength":"high"},
-                "kimi-k3":{"strengths":[],"default_strength":""}}}
-```
-
-* `sign` 与 `sign_unsigned`（UNSIGNED-PAYLOAD）**均可用**，返回一致。
-* `variants` 的键**就是模型 id**，无需 `third_party_model`（§4.1 的 `variants_key` 在商业版不适用）。
-* 除 `strengths` 外还有 `default_strength`（本地档位计算未使用）。
-* 模型名大小写不敏感（`GLM-5.2` 与 `glm-5.2` 均返回档位）。
-
-目录 12 个模型的实测档位，**仅两个有档位**（与 IDE 界面「只有两个 GLM 5.2 可调思考」一致）：
-
-| 模型 | `strengths` |
-|-|-|
-| `GLM-5.2` | `["high","max"]` |
-| `glm-5.2-sft-harmony` | `["high","max"]` |
-| 其余 10 个（`openpangu-*`、`glm-5.3*`、`deepseek-v4.1-flash*`、`kimi-k3*`、`speed`） | `[]` |
-
-两档 `["high","max"]` 正对应 IDE 滑杆「滑到最右端时『高』变成『最大』」。
-
-### 5.1 思考档位完整链路（客户端实现）`[打包JS]`
-
-CodeArts 的思考档位**不来自本地规则**，全部由服务端下发。证据：本地档位生成函数
-`kS.variants`（`q(L)`，offset 111131407 区）对 GLM 等模型明确返回空：
-
-```js
-function q(L){
-  if(!L.capabilities.reasoning) return {};
-  let F = L.id.toLowerCase(), ...;
-  if(F.includes("deepseek")||F.includes("minimax")||F.includes("glm")||
-     F.includes("mistral")||F.includes("kimi")||F.includes("k2p5")) return {};   // ← glm 排除
-  ...
-}
-```
-
-于是 `glm-*` 的档位只能由 `thinking-variants` 提供，链路如下：
-
-1. **模型能力**：`GET …/gpts/models` → `model_parameters.thinking_type != null` → `capabilities.reasoning`；
-   同时 `variants_key = model_type === "third" ? model_parameters.third_party_model : model_id`。
-   注意 `variants_key` **不必等于模型 id**，第三方模型用 `third_party_model`。
-2. **拉档位**（`CJ()` = `fetchThinkingVariants`，offset 99272736 区）：
-   ```js
-   POST {XCENTER_BASE}/v1/model/thinking-variants
-   { "model_names": [variants_key, ...] }        // 只发前 50 个（VFn=50）
-   → data.variants[variants_key].strengths        // string[]，缺省视为 []
-   ```
-   重试：`retries:2`，遇网络错/`ECONNABORTED`/429/≥500 重试；多 base URL 轮询。
-3. **档位 → AI SDK variants**（`QJ()`）：
-   ```js
-   function QJ(n){ let u={}; for(let t of n) u[t]={reasoningEffort:t}; return u }
-   ```
-   即 `strengths` 里的字符串**本身就是** `reasoning_effort` 的取值，一字不改。
-4. **挂到模型**：
-   ```js
-   variants: (()=>{ let $=y?.variants_key, E=$?f[$]:void 0;
-                    return E?.length>0 ? QJ(E) : void 0 })()
-   ```
-   无 `strengths` 的模型 `variants` 为 `undefined`（UI 不显示滑杆）。
-
-**UI 档位文案**（通用 i18n 表，非 GLM 专有）：
-`thinkingLevelMinimal/Low/Medium/High/Xhigh/Max/None/Auto` → 最小/低/中/高/超高/最大/默认/自动。
-滑杆只在 `variants` 存在时出现，故只有服务端下发了 `strengths` 的模型（如两个 GLM 5.2）可控。
-
-**发往上游**：选中档位 → `providerOptions.reasoningEffort` → request body `reasoning_effort`（原值）。
-与 §3.3.1 一致：GLM 不被 `fU` 匹配，故即使带 `tools` 也不会被改成 `none`。
-
-**推论（未实测）**：`ofm-server` 若要支持 CodeArts 思考档位，正确做法是自行调用
-`POST /v1/model/thinking-variants` 取 `strengths`，再把用户档位作为 `reasoning_effort` 透传；
-不应硬编码 `low`/`high`，因为档位集合是逐模型、服务端下发的。
-
-### 5.2 本实现的落地方式 `src/providers/codearts/variants.rs`
-
-* 配置只暴露抽象档位 `[codearts] reasoning_effort = "low"|"high"`，**不暴露上游取值**。
-* 启动/首次使用时拉一次全量档位，缓存 `REFRESH_INTERVAL = 1h`（单一常量，便于调整）。
-* 每次请求按 `model` 就近映射：
-  * `low` → 该模型支持档位中**最浅**的一个；
-  * `high` → 该模型支持档位中**最深**的一个（"不抑制思考"语义）。
-  * 例：`["high","max"]` → `low` 得 `high`，`high` 得 `max`。
-* `strengths` 为空或模型未知 → **不发** `reasoning_effort`。
-* 拉取失败保留旧缓存（从未成功则视为"全不支持"），不影响对话可用性。
-
-⚠︎ 映射结果的**语义效果未经实测**（只验证了字段确实按上述规则发出）。
-`high`/`max` 哪个思考更深取决于上游，与 raccoon 一样可能存在非单调。
-
-### 5.3 取值效果
-
-上游档位取值**不固定**，取决于 `thinking-variants` 对每个模型返回的 `strengths`
-（见上表：12 个模型中仅 `GLM-5.2`、`glm-5.2-sft-harmony` 有 `["high","max"]`，其余为空）。
-
-|`strengths`|`[codearts] reasoning_effort="low"`|`"high"`|
-|-|-|-|
-|`["high","max"]`|发 `high`（最浅）|发 `max`（最深）|
-|`[]` / 模型未知|**不发**该字段|**不发**该字段|
-
-⚠︎ `high` 与 `max` 的**实际思考深度差异未经实测**，不能假定单调（raccoon 正是反例）。
-
-## 6. 余额获取
-
-### 6.1 唯一的账户余额端点 `[打包JS + curl 实测 2026-11-16]`
+### 5.1 唯一的账户余额端点 `[打包JS + curl 实测 2026-11-16]`
 
 UI 上「总已用积分: 2.78/9600」的数据源**不是** benefit-service，也不是 `/v1/ops/credit/usage`：
 
@@ -952,7 +949,7 @@ GET {chatDomain}/snap-manager/v1/statistics/plugin
 `/v1/ops/credit/usage` 的响应形如 `{totalTokenUsed,promptTokenUsed,completionTokenUsed,
 cachedTokenUsed,cacheHitRatio,creditCost}`。
 
-### 6.2 已被证伪的三个来源（勿再使用）
+### 5.2 已被证伪的三个来源（勿再使用）
 
 | 来源 | 结论 |
 |-|-|
@@ -961,9 +958,9 @@ cachedTokenUsed,cacheHitRatio,creditCost}`。
 | `claim`/`confirm` 的 `totalAmount`/`remainingAmount` | 单个活动积分包的量（100、1800…），非账户总额 |
 
 > 早期本文档把 `tokens/balance` 当作余额、`benefit/claim` 当作签到，均属误判，
-> 已于 2026-11-16 更正。benefit-service 的真实语义见 §6.4。
+> 已于 2026-11-16 更正。benefit-service 的真实语义见 §5.4。
 
-### 6.3 server 实现
+### 5.3 server 实现
 
 `ops::fetch_balance` → `fetch_credit_usage`，取 `usageTotalPackageCredit` 的
 `package_credit_amount − package_credit_used`。
@@ -973,7 +970,7 @@ cachedTokenUsed,cacheHitRatio,creditCost}`。
 
 实测 `ofm-server status codearts` → `余额: 9597.22`（= 9600 − 2.78，与 UI 一致）。
 
-### 6.4 benefit-service（福利模型额度，不是余额）
+### 5.4 benefit-service（福利模型额度，不是余额）
 
 > 代码位于 **agent kernel** 的 `benefit-service`（`_D`/`PFn`/`DFn`/`MFn`），非 IDE 扩展。
 > 独立网关 `opengw.developer.huaweicloud.com`（生产）/ `snapengine-apig.cn-north-7`（内网），与 chat 域名不同。
@@ -1002,7 +999,7 @@ headers（`PFn()`）：`Content-Type: application/json` + `x-snap-traceid: <uuid
 >    无 body 才用空体 hash。
 > 2. **不得重复发送已参与签名的头**：签名头已含 `content-type`，发请求时再追加一次
 >    会变成重复头，服务端重算签名值不符 → 同样 `APIG.0301`。
-> 3. **query 不参与签名**（与 §7 的 `/v1/ops/*` **相反**）：官方 `y2i` 的 `HttpRequest`
+> 3. **query 不参与签名**（与 §6 的 `/v1/ops/*` **相反**）：官方 `y2i` 的 `HttpRequest`
 >    不解析 query，canonical query 恒为空；实测两种写法服务端都接受。
 
 `gateway/config` 返回：
@@ -1018,7 +1015,7 @@ headers（`PFn()`）：`Content-Type: application/json` + `x-snap-traceid: <uuid
 的模型表里查，命中则仍走 `inferhub-provider` 并带 `traceMaasType`，否则 `providerID="benefit-model"`。
 **福利模型和能力模型走不同计费通道**，不区分会导致双计费（代码注释原文 `potential dual-billing risk`）。
 
-### 6.5 `maas_type: benefit` 的真实语义（2026-11-16 实测更正）
+### 5.5 `maas_type: benefit` 的真实语义（2026-11-16 实测更正）
 
 早期实现按模型名前缀（`glm-5.3-flash`/`deepseek-v4.1-flash`）给 chat 请求追加
 `maas_type: benefit`，导致这些模型恒返回 `404 InferHub.APIG.0101.404`。
@@ -1047,14 +1044,15 @@ headers（`PFn()`）：`Content-Type: application/json` + `x-snap-traceid: <uuid
 > `education`/`examination` 渠道当前签名失败（query 参与签名导致 `APIG.0301`），但与本问题无关。
 
 `server 实现`：`benefit.rs` 仅保留 `fetch_config`（当前无调用点）。
-`maas_type: benefit` 已确认是**错误方向**（实测本账号恒 404，见 §6.5），
+`maas_type: benefit` 已确认是**错误方向**（实测本账号恒 404，见 §5.5），
 chat 侧完全不发送该头；12 个模型全部正常。
 
-## 7. 上游异常响应
+## 6. 上游异常响应
+
 
 > 本节（错误码表 `hVn`/`RFn`、流内错误 `_P`、4291→402 映射）代码位于 **agent kernel**（`benefit-service` 等），非 IDE 扩展。
 
-### 7.1 业务错误码 `hVn` `[打包JS]`
+### 6.1 业务错误码 `hVn` `[打包JS]`
 
 | code | 含义 |
 |-|-|
@@ -1072,7 +1070,7 @@ chat 侧完全不发送该头；12 个模型全部正常。
 * zh：`福利模型额度已用尽，请切换其他模型继续使用`
 * en：`The free benefit model quota is used up. Please switch to another model to continue.`
 
-### 7.2 流内错误 `_P(n,u,t)`（offset 150640877）`[打包JS]`
+### 6.2 流内错误 `_P(n,u,t)`（offset 150640877）`[打包JS]`
 
 `H()` 分支解析 `{error_code, error_msg}`；非 `H()` 为 `{...n.error, rateLimitInfo}`。
 判定：
@@ -1080,7 +1078,7 @@ chat 侧完全不发送该头；12 个模型全部正常。
 * `InferHub.4291.200` → 402 不可重试
 * 含 `.429` → 结合 `x-session-retry` 计数判定可重试
 
-### 7.3 限流 `fP` + 退避 `[打包JS]`
+### 6.3 限流 `fP` + 退避 `[打包JS]`
 
 限流维度键：`RPM` / `RPH` / `RP6H` / `RPD` / `TPM` / `TPH` / `TP6H` / `TPD`。
 `Bw(n)` 只判 `RPM` / `TPM`（决定是否算"短时限流"）。
@@ -1100,7 +1098,7 @@ token 限额告警阈值：90% / 100%。
 * `x-session-retry >= 3` → 停止
 * 响应头含 `need-switch-model` → 建议换模型（日志 `[retriable decision] response header hasRetry: …, needswitch: …`）
 
-### 7.4 权益/签到错误码 `RFn` `[打包JS]`
+### 6.4 权益/签到错误码 `RFn` `[打包JS]`
 
 | 端点 | 错误码 |
 |-|-|
@@ -1110,7 +1108,7 @@ token 限额告警阈值：90% / 100%。
 
 失败统一 `{success:false, error_code, error_message}`；网络异常 `error_code:"network_error"`。
 
-### 7.5 其他 `[打包JS]`
+### 6.5 其他 `[打包JS]`
 
 * `InferhubBaseUrlMissing`：`statusCode 555`、`isRetryable:false`（配置缺失，不应重试）
 * 租户冻结：首 chunk `TM.00020005` → 400；`ModelArts.81101`/`81111`/`81114`/`BusyException`
@@ -1120,18 +1118,19 @@ token 限额告警阈值：90% / 100%。
 
 ---
 
-## 8. 签到协议（限时福利 / 每日签到）
+## 7. 签到协议（限时福利 / 每日签到）
+
 
 签到走 `https://snap-access.cn-north-4.myhuaweicloud.com/v1/ops/*`，**AKSK 签名即可调通**，
-server 已实现并实领成功（§8.2）。
+server 已实现并实领成功（§7.2）。
 
 > 客户端里另有一套 benefit-service（`opengw.developer.huaweicloud.com`），只管**福利模型额度**，
-> 与签到、积分余额均无关。见 §6.4 与 §8.1。
+> 与签到、积分余额均无关。见 §5.4 与 §7.1。
 
-### 8.1 benefit-service 的 `claim` **不是签到** `[打包JS + curl]`
+### 7.1 benefit-service 的 `claim` **不是签到** `[打包JS + curl]`
 
 > ⚠️ 客户端里有两套互不相干的「福利」，早期文档把二者混为一谈。
-> benefit-service 的 `claim` 只是**福利模型渠道的加载开关**，完整语义与签名见 **§6.4**。
+> benefit-service 的 `claim` 只是**福利模型渠道的加载开关**，完整语义与签名见 **§5.4**。
 > 本账号对该端点恒返回 `{"error_code":"4000","error_msg":"invalid channel, group not found"}`
 > （福利模型渠道未开通），与 method / channel / body 均无关。
 
@@ -1150,7 +1149,7 @@ server 已实现并实领成功（§8.2）。
 
 server 侧已删除这套 claim 实现，`benefit.rs` 仅保留 `fetch_config`（无调用点）。
 
-### 8.2 「限时福利 / 每日签到」`/v1/ops/*`（workbench 面板 + 扩展消息通道）`[打包JS]`
+### 7.2 「限时福利 / 每日签到」`/v1/ops/*`（workbench 面板 + 扩展消息通道）`[打包JS]`
 
 这是用户在 UI 上看到的「限时福利 → 每日签到领 100 积分」。代码里叫 **welfare / activity**，
 **关键词不是「签到」**（`签到` 只出现在语言包里，见下），搜 `claim` / `benefit` 也搜不到，
@@ -1278,7 +1277,7 @@ GET  /v1/ops/delivery?channel=IDE
 
 #### 7.2.4b 账户积分余额
 
-见 **§6.3**（`/snap-manager/v1/statistics/plugin`）。`claim`/`confirm` 响应的
+见 **§5.3**（`/snap-manager/v1/statistics/plugin`）。`claim`/`confirm` 响应的
 `totalAmount`/`remainingAmount` 只是该活动积分包的量，不是账户总额。
 
 #### 7.2.5 业务语义 `[打包JS]`
@@ -1305,9 +1304,10 @@ webview 侧在 `index-BIyAOOK4.js` @~322928（`freeBenefit: "限时福利"`、
 > 「100 积分」这个具体数值**不在客户端任何静态资源里**，由服务端 `displayConfig` 下发，
 > 因此无法从代码确认；「每日签到」的判定也完全在服务端（`campaignId` 由 delivery 下发）。
 
-## 9. 未验证清单
+## 8. 未验证清单
 
-仅列正文无法定论的点；已解决项均已并入 §1–§8。
+
+仅列正文无法定论的点；已解决项均已并入 §1–§7。
 
 | # | 项 | 影响 |
 |-|-|-|

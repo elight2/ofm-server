@@ -4,7 +4,7 @@
 //! 1. 流式：逐事件转 chunk；
 //! 2. 非流式：聚合全部事件为单个 `chat.completion`。
 //!
-//! 错误处理策略（`provider-info/trae.md` §5.2）：错误出现在任何内容帧之前时，
+//! 错误处理策略（`provider-info/trae.md` §7.2）：错误出现在任何内容帧之前时，
 //! 调用方仍可改 HTTP 状态码；一旦已产出内容，只能以流内 `error` 帧收尾。
 
 use std::collections::BTreeMap;

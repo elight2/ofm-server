@@ -9,15 +9,16 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 
 标注方式：`[抓包]` = 官方客户端真实流量；`[curl]` = 我方直接构造 HTTP 请求实测；
 `[打包JS]` = 客户端打包 JS 静态阅读；`[打包JS 插桩]` = 在客户端 JS 内注入钩子运行时 dump 明文 payload
-（唯一能拿到密文请求明文字段的手段，见 §5.1）；`[二进制]` = `libai_agent.so`/`libharness.so` 符号与字符串；`[未验证]`。
+（唯一能拿到密文请求明文字段的手段，见 §3.9.1）；`[二进制]` = `libai_agent.so`/`libharness.so` 符号与字符串；`[未验证]`。
 
 ## 0. 总结
 
+
 * 客户端(WebUI)版本: Trae CN **1.107.1**（appVersion `3.4.18`，buildVersion `2.3.102387`，`x-app-version-code`/`x-ide-version-code` = `20261110`）
 * 分析方式: deb 解包 + 二进制符号分析 + mitmproxy 抓包 + 明文 curl 递增实验 + **打包 JS 插桩**
-  （2026-11-17 起，见 §5.1：在 `RustAdapter` 跨入 native 前 dump 明文 IPC payload，
+  （2026-11-17 起，见 §3.9.1：在 `RustAdapter` 跨入 native 前 dump 明文 IPC payload，
   这是唯一能拿到官方对话请求明文字段的手段 —— 密文抓包只能看到 base64 blob）
-* UA: 三套，按发起进程分，不可混用。对话必须 `[curl]` 用 `TraeClient/TTNet`（UA 参与限流分桶，见 §8）
+* UA: 三套，按发起进程分，不可混用。对话必须 `[curl]` 用 `TraeClient/TTNet`（UA 参与限流分桶，见 §7）
 
 | UA | 发起进程 `[抓包]` |
 |-|-|
@@ -57,7 +58,7 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 
 以下偏离逐条经用户批准（2026-11-14/15；维护标准要求与官方客户端一致）。分两类：A 类是我方主动改动上游字面值，B 类是官方行为不可观测（请求体密文）只能取推断值。
 
-1. **对话端点不同** `[curl + 打包JS 插桩]` — A 类。官方 side_chat 主对话走 **Js→Rust IPC `lite.send_message`**（`service:"lite"`，非 HTTP，§5.1 已插桩实证）；IDE 侧另经 `create_agent_task`（HTTP，体密文）。本实现只能用 `llm_utils_chat`（HTTP 明文）。理由：明文 `llm_utils_chat` 已通过 `MAINTAIN.md` 两条验收（对话 + 工具调用），参考实现 `tmp/dsh-ofm-ng/TROUBLESHOOT.md` 亦直连实测该端点可用。代价：三条 HTTP 路径均无思考强度字段（§5.2）。
+1. **对话端点不同** `[curl + 打包JS 插桩]` — A 类。官方 side_chat 主对话走 **Js→Rust IPC `lite.send_message`**（`service:"lite"`，非 HTTP，§3.9.1 已插桩实证）；IDE 侧另经 `create_agent_task`（HTTP，体密文）。本实现只能用 `llm_utils_chat`（HTTP 明文）。理由：明文 `llm_utils_chat` 已通过 `MAINTAIN.md` 两条验收（对话 + 工具调用），参考实现 `tmp/dsh-ofm-ng/TROUBLESHOOT.md` 亦直连实测该端点可用。代价：三条 HTTP 路径均无思考强度字段（§3.9.2）。
 2. **请求体不加密** `[curl]` — A 类。官方发 base64 密文（entropy≈7.99）；本发明文 JSON。服务端不强制加密：认证先于 body 解析（无 JWT+明文 → `401/1001`；有 JWT+明文缺 app_id → `400/4001 expr_path=app_id`；有 JWT+含 app_id → `200` 正常回答）。→ 不需要逆向 `libharness.so`；与 §3.6 的客户端明文直通分支互证。**补充（2026-11-15）**：加密不经协议协商 —— 抓包 `llm_utils_chat` 的 29 个请求头中**无任何**声明 `body 已加密`/`encryption-version`/`protocol-key` 的字段，服务端无法可靠区分「忘加密」与「旧版客户端不支持加密」，故必须容忍明文。UA 只作限流分桶标签（换 UA 即放行），不承担客户端鉴权。
 3. **不实现会话落库** `[抓包]` — A 类。官方每轮附带 `solo_hub/.../batchInsert` + `sync_history_state` + `workflow/start`（摘要/记忆）；本实现每请求自带完整 messages 历史，无跨请求会话态。
 4. **`finish_reason` 改写** `[curl t7]` — A 类，**已批准（2026-11-15）**。上游**工具轮次也只回 `stop`**（t7 有 tool_calls，done 帧仍 `{"finish_reason":"stop"}`）。本实现在本轮产出 tool_calls 时改写为 `tool_calls`，以符合 CC 规范。回退方式：删掉改写，原样透传 `stop`（代价：依赖 `finish_reason=="tool_calls"` 判断退出条件的客户端会把工具轮当最终回答，agent 循环失效）。
@@ -65,15 +66,15 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 6. **`app_id` 取参考实现常量** `6eefa01c-1036-4c7e-9ca5-d891f63bfcd8` `[curl]` — B 类，出处 `tmp/dsh-ofm-ng/.../trae-product.ts:322`；抓包请求体是密文，无法从流量验证此值。放 body `app_id` 或头 `X-App-Id` 均实测通过。
 7. **`function` 取 `solo_agent`** `[curl + 抓包]` — B 类，**已批准（2026-11-15）**。官方对话请求里的 `function` 值看不到（体密文），且该字段是服务端**模型准入闸门**，不是可选装饰。取值依据见 §3.2；两个候选的目录覆盖与逐条代价见 §4.3。
 8. **图片不走官方上传链路** `[curl vs 抓包]` — A 类，**已批准（2026-11-15）**。官方四步：附件落本地 → `get_resource_upload_url` → 传 TOS → `commit_resource_upload_result` → `Read` 工具交独立多模态模型转描述（§3.7）。我方：CC 的 `image_url`（含 `data:` URL）内联直发，一步完成。理由：内联实测有效；上传链路要复刻 TOS 分片协议 + 凭证信封，成本高，且走完拿到的只是**图片的文字描述**，能力并不等价。
-9. **流内错误映射为 HTTP 状态码 + 裁剪 message** `[curl e4/e5/3003]` — A 类，**已批准（2026-11-15）**。详见 §8.2。
-10. **上游独有、CC 无法表达因而放弃的能力** `[抓包]` — B 类后果。`create_agent_task` 自主 agent 循环（多轮工具自执行、记忆、plan_item）、服务端 PE 与 `extra_config`/`model_extra_config` 行为开关、`reasoning_effort_config`（目录有 `support_thinking`/`options`/`default_level`；我方入参能否映射过去已实测为**不能**，见 §5）、`access.identity_list` 准入身份、`model_entitlement_usage_cost` 计费倍率。
+9. **流内错误映射为 HTTP 状态码 + 裁剪 message** `[curl e4/e5/3003]` — A 类，**已批准（2026-11-15）**。详见 §7.2。
+10. **上游独有、CC 无法表达因而放弃的能力** `[抓包]` — B 类后果。`create_agent_task` 自主 agent 循环（多轮工具自执行、记忆、plan_item）、服务端 PE 与 `extra_config`/`model_extra_config` 行为开关、`reasoning_effort_config`（目录有 `support_thinking`/`options`/`default_level`；我方入参能否映射过去已实测为**不能**，见 §3.9）、`access.identity_list` 准入身份、`model_entitlement_usage_cost` 计费倍率。
 
 ### 域名
 
 | 域名和端点 | 功能 |
 |-|-|
 | `api5-normal.mchost.guru/api/agent/v3/llm_utils_chat` | 对话（本实现主路径）`[抓包+curl]` |
-| `api5-normal.mchost.guru/api/agent/v3/create_agent_task` | IDE 侧 agent 任务（密文请求；明文可直达 `task_created`，但随后被服务端 prompt 模板卡死）`[抓包+curl]`，本实现不用；side_chat 主对话走 IPC `lite.*`（§5.1、§5.3）|
+| `api5-normal.mchost.guru/api/agent/v3/create_agent_task` | IDE 侧 agent 任务（密文请求；明文可直达 `task_created`，但随后被服务端 prompt 模板卡死）`[抓包+curl]`，本实现不用；side_chat 主对话走 IPC `lite.*`（§3.9.1、§3.9.3）|
 | `api5-normal.mchost.guru/api/agent/v3/{workflow/start,sync_history_state,query_history_state,initialize,append_msg,stop_chat,subscribe_events}` | agent 辅助 `[抓包+二进制]`，本实现不用 |
 | `api5-normal.mchost.guru/api/ide/v1/{get_resource_upload_url,commit_resource_upload_result}` | 图片上传两步（官方链路，本实现不用）`[抓包 flows2]`，见 §3.7 |
 | `tos-d-lq.bytedancevod.com` | 图片实际上传主机 `[抓包 flows2 仅由 session_key 得知名，流量未捕获]` |
@@ -91,6 +92,7 @@ body 解码/熵分类、可选 `TRAE_FORCE_401` 短路）；原始记录 `tmp/tr
 | `trae-ws-cn.mchost.guru/custom_model` | `product.json` 声明的 WS，本实现不用 |
 
 ## 1. 登录方式
+
 
 自动 PKCE（`S256`），`client_id` 固定 `ono9krqynydwx5` `[抓包]`。三步，全部 1.107.1/3.4.18 实测。
 
@@ -157,6 +159,7 @@ device_private_key_pem = "<EC prime256v1>"   # 须与已绑定公钥配对，Exc
 
 ## 2. 令牌续期方式
 
+
 ```
 POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 ```
@@ -173,11 +176,11 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
   * `GrantType` 字段**不需要**（`{ClientID,GrantType,RefreshToken}` 报 10101）。
   * 控制面响应是**另一套信封**（与 `/api/agent/v3/*` 的 `{"code":…}` 不同）：
     `{"ResponseMetadata":{…,"Error":{"Code","Message","StandardCode","Data"},"TraceID",…},"Result":{…},"success","logId"}`
-    → 续期与登录的错误解析不能用 §8 那套 `code` 数字，需单独分支。
+    → 续期与登录的错误解析不能用 §7 那套 `code` 数字，需单独分支。
 * **未知项只剩一个**：RefreshToken 是否**轮换**（参考实现注释称旧 refreshToken 即刻失效 `[参考实现，未验证]`）。成功响应的字段结构不用等验证 —— 见本节末尾。
 * 已实测到的相关事实：抓到的 JWT 载荷 `source=refresh_token`、`source_id` = RefreshToken 原文，证明该 Token 本身就是续期产物 `[抓包 jwt.txt + requests.old.log:1142]` → 续期链路真实可用。
 * 令牌留存（`tmp/trae-capture/requests.old.log:1142`，旧版日志 header 截断但该 body 完整）：`RefreshToken`、`BoundDeviceID=28j7pl18l6wkyk`、`TokenExpireDuration=1209600000`(14天)、`RefreshExpireAt=1810220992928`。
-* `Token` 过期时的行为 = `401 {"code":1001,…}`（§8）`[curl err1/e3]`；**我方策略**：`exp` 前主动续期，`1001` 兜底触发续期后重试一次。
+* `Token` 过期时的行为 = `401 {"code":1001,…}`（§7）`[curl err1/e3]`；**我方策略**：`exp` 前主动续期，`1001` 兜底触发续期后重试一次。
   这是**我方设计，不是官方行为**。
 
 **官方客户端不会因 401 而续期** `[抓包 flows2 2026-11-15，用 mitmdump request 钩子伪造 401]`：
@@ -208,9 +211,10 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 `[抓包 requests.old.log:1142]` 已知 = `Result.{Token, RefreshToken, RefreshExpireAt, BoundDeviceID,
    ClientID, DeviceBindStatus}`（外层 `ResponseMetadata`）。续期调用**几乎必然回同一结构**，
    字段名可直接实现 `[推断，未验证]`。唯一真正未知的是 **RefreshToken 是否轮换**（若轮换，
-   我方必须持久化新值，旧值作废）。→ 不阻塞实现；定案选项见 §9.1。
+   我方必须持久化新值，旧值作废）。→ 不阻塞实现；定案选项见 §8.1。
 
 ## 3. Chat Completions 映射
+
 
 以下每条都属 Trae CN 1.107.1 / appVersion 3.4.18，实测方式标注在行内。
 
@@ -250,9 +254,9 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 | — | `function` | **定稿 `solo_agent`**（§0 出入 7，已批准）`[curl + 抓包 2026-11-15]`。**`function` 是模型准入闸门**（决定性实测）：`qwen3.8-flash` + `solo_work_lite` → 流内 `4001`；同模型 + `solo_agent` → `200` 正常回答（`provider_model_name=qwen3.8-flash`）。官方对话请求里的 `function` 值**看不到**（体密文）；间接证据 `[推断]`：官方所用 `qwen3.8-flash` 只存在于 `solo_agent` 目录，且明文 `batchInsert` 的 `agent_type=solo_agent` `[抓包]`。两个候选的目录覆盖与逐条代价见 §4.3 → 本实现取 `solo_agent` |
 | `stream` | `stream: true` | `[curl g1]` 上游对 `stream:false` 仍回 SSE，故本实现恒发 `true`，非流式由我方聚合 |
 | `messages[].role: user` | `{role:"user",content:[{type:"text",text:"…"}]}` | `[curl t8]` `content` 为字符串 → `cannot unmarshal string into …LLMRawMessage.messages.content of type []*idecopilot.LLMRawMessageContent` |
-| `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §8.2）|
-| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | 两个可能的位置均已实测证伪：**顶层** `{"reasoning_effort_level":…}`（20 次，p=0.70~0.83）与 **`model_info` 嵌套** `{"model_info":{"reasoning_effort_level":…}}`（12 次，p=0.790，区间重叠且方向相反）。`llm_utils_chat` 上该字段被**静默忽略**，非法值也不报错（宽松绑定）。旁证：`support_thinking:false` 的模型行为与可调档模型无法区分。<br>**完整方法、数据、检验力边界与已排除的其他思路见 §3.2.1 与 §5。** 档位真实能力见 §4.4。<br>**早期反例已撤销**：曾记「`support_thinking` 不门控，`glm-5.2` 标 false 仍出 reasoning」系跨 function 混用数据的误判；`glm-5.2` 在 `solo_agent` 下实为 `true`。|
-| 思考档位能力 | — | 见 §4.4（目录元数据）与 §5（请求侧无解）。官方客户端可见 18 个模型中 10 个三档齐全、4 个仅 `light`+`high`、4 个不可调；`options` 形态按模型不同，禁止硬编码映射 |
+| `messages[].content[] = {type:"image_url", image_url:{url}}` | **唯一可用形态**；`url` 支持外链，也支持 `data:` URL | **`[curl]` 图片字段名已由 Go 报错确认**：`image_url` 传字符串 → `cannot unmarshal string into Go struct field LLMRawMessageContent.messages.content.image_url of type idecopilot.LLMRawMessageImageUrl`；传数字 → 同结构名。故 `LLMRawMessageContent` 有 `image_url`（`LLMRawMessageImageUrl` 类型）。`{type:"image", image_url:"<str>"}` → `400`；`{type:"image",url:"…"}` → 流内 `4001`。只有 `type:"image_url"` + 对象形态通过。<br>**`data:image/png;base64,…` 实测被真实解析**：1×1 纯红 PNG（像素 `FF0000`，已 zlib 解扫描线核实）→ 无 error，正常回答「浅粉色/珊瑚粉」（色相族对、明度不准 = 模型感知精度，非协议问题）。→ **我方不必自建图床**，CC 的 base64 图片可直接透传。<br>**外链不可达时**回 `3003 model service is unavailable`（HTTP 200 流内 error，见 §7.2）|
+| `reasoning_effort`（CC）| **本实现无法支持，须声明为忽略** | 两个可能的位置均已实测证伪：**顶层** `{"reasoning_effort_level":…}`（20 次，p=0.70~0.83）与 **`model_info` 嵌套** `{"model_info":{"reasoning_effort_level":…}}`（12 次，p=0.790，区间重叠且方向相反）。`llm_utils_chat` 上该字段被**静默忽略**，非法值也不报错（宽松绑定）。旁证：`support_thinking:false` 的模型行为与可调档模型无法区分。<br>**完整方法、数据、检验力边界与已排除的其他思路见 §3.2.1 与 §3.9。** 档位真实能力见 §4.4。<br>**早期反例已撤销**：曾记「`support_thinking` 不门控，`glm-5.2` 标 false 仍出 reasoning」系跨 function 混用数据的误判；`glm-5.2` 在 `solo_agent` 下实为 `true`。|
+| 思考档位能力 | — | 见 §4.4（目录元数据）与 §3.9（请求侧无解）。官方客户端可见 18 个模型中 10 个三档齐全、4 个仅 `light`+`high`、4 个不可调；`options` 形态按模型不同，禁止硬编码映射 |
 | `messages[].role: system` | `{role:"system",content:[{type:"text",text:"…"}]}` | **`[curl f2]` 实测被消费**：system「你必须只回复数字1」+ user「你好」→ 正文回 `1`，reasoning 明确复述「系统提示：“你必须只回复数字1”」。原未验证项解除 |
 | `messages[].role: assistant` + `tool_calls` | `content:[]` + `tool_calls:[{id,type:"function",function_call:{name,arguments}}]` | `[curl t7]` 键名是 **`function_call`** 非 CC 的 `function`；与参考实现 `transformSOLOMessage` 一致 |
 | `messages[].role: tool` | `{role:"tool",tool_call_id,name,content:[{type:"text",text:"…"}]}` | `[curl t7]` 实测上游接受回传并被模型消费（表格复述我给的虚构配置）|
@@ -287,7 +291,7 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
     "content":[{"type":"text","text":"OS=Arch Linux; CPU=…"}]}]}
 ```
 
-### 3.2.1 思考强度实测（历史记录；定论见 §5）`[curl，Trae CN 1.107.1 的 API 端点，2026-11-15]`
+### 3.2.1 思考强度实测（历史记录；定论见 §3.9）`[curl，Trae CN 1.107.1 的 API 端点，2026-11-15]`
 
 目标：不破解加密，在 `llm_utils_chat` 明文通道上找到能调节思考强度的字段位置。
 
@@ -330,10 +334,10 @@ POST https://api.trae.cn/trae/api/v3/oauth/ExchangeToken   （无认证）
 * `ModelHyperParamsConfig{thinking_enable, reasoning_param, temperature, top_p, top_k}` 属
   **自定义模型**链路（§3.6），预设模型不走。
 
-> **本条已于 2026-11-17 升级为定论，见 §5。** 补两条更强证据：
-> (1) 类型错配探针证明 `llm_utils_chat` 的 Go 结构体**根本没有**这些字段，不是「接受但忽略」（§5.2）；
-> (2) 插桩证明官方档位走 `custom_model.reasoning_effort_level`、通道是 IPC `lite.send_message` 而非 HTTP（§5.1）。
-> `create_agent_task` 的明文 body 虽能跑到 `task_created`，但被服务端 prompt 模板卡死，无法验证档位（§5.3）。
+> **本条已于 2026-11-17 升级为定论，见 §3.9。** 补两条更强证据：
+> (1) 类型错配探针证明 `llm_utils_chat` 的 Go 结构体**根本没有**这些字段，不是「接受但忽略」（§3.9.2）；
+> (2) 插桩证明官方档位走 `custom_model.reasoning_effort_level`、通道是 IPC `lite.send_message` 而非 HTTP（§3.9.1）。
+> `create_agent_task` 的明文 body 虽能跑到 `task_created`，但被服务端 prompt 模板卡死，无法验证档位（§3.9.3）。
 
 ### 3.2.2 `tool_choice` 实测：上游有字段但被静默忽略 `[curl，2026-11-16]`
 
@@ -381,7 +385,7 @@ tool_choice: {"type":"function","function":{"name":"get_weather"}}
 | `extra_info` | `{model, version:1, content:<字符串化 reasoning_content>, input_token, expire_time}` | 丢弃 |
 | `token_usage` | `{prompt_tokens, completion_tokens, total_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, cluster, *_total}` | `usage.prompt_tokens/completion_tokens/total_tokens`；`prompt_tokens_details.cached_tokens ← cache_read_input_tokens`；`completion_tokens_details.reasoning_tokens ← reasoning_tokens`；`cache_creation_input_tokens` 无 CC 标准位，丢弃 |
 | `done` | `{finish_reason:"stop"}` | `choices[0].finish_reason`；本轮有 tool_calls 则改写 `tool_calls`（§0 出入 4，已批准）；随后 `data: [DONE]` |
-| **`error`** | `{code, message, extra:null}` | 见 §8，**必须先于内容帧判断** |
+| **`error`** | `{code, message, extra:null}` | 见 §7，**必须先于内容帧判断** |
 | `progress_notice` | **裸字符串** `"Processing_1794708540"`、`";Processing_1794708541631326453_rRktuc"` `[curl 图片/难题请求]` | 丢弃。`data` 不是 JSON（`json.loads` 会失败），解析时必须容忍非 JSON 帧。出现在图片下载、长思考等慢请求中，实测在 `error` **之前** |
 
 `output` 帧规则（实测）：
@@ -399,7 +403,7 @@ tool_choice: {"type":"function","function":{"name":"get_weather"}}
 ### 3.4 非流式 `[curl g1]`
 
 上游对 `stream:false` 仍返回 `Content-Type: text/event-stream` + 相同 SSE 帧。
-下游 `stream:false` 时：我方聚合 `output` 的 `response` 为 `message.content`、`reasoning_content` 为扩展字段、累积 `tool_calls`、`token_usage` 填 `usage`，拼成单个 `chat.completion` 对象返回。聚合失败（中途 `event:error`）见 §8。
+下游 `stream:false` 时：我方聚合 `output` 的 `response` 为 `message.content`、`reasoning_content` 为扩展字段、累积 `tool_calls`、`token_usage` 填 `usage`，拼成单个 `chat.completion` 对象返回。聚合失败（中途 `event:error`）见 §7。
 
 ### 3.5 `create_agent_task` 端点备查（本实现不用）`[抓包 + curl，Trae CN 1.107.1]`
 
@@ -421,7 +425,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
 `use_remote_service:true`、`prompt_max_tokens`（用户侧 936000，assistant 回显 168000）。
 
 **明文请求体的必填链已探明，但该通道跑不通一次完整对话**（服务端 prompt 模板缺失），
-详见 §5.3。**注**：side_chat 主对话实际不走本端点，走 Js→Rust IPC `lite.send_message`（§5.1）。
+详见 §3.9.3。**注**：side_chat 主对话实际不走本端点，走 Js→Rust IPC `lite.send_message`（§3.9.1）。
 
 
 ### 3.6 二进制字符串佐证（`[二进制 libharness.so]`，2026-11-15）
@@ -445,7 +449,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
   `TodayUserRequestLimit`、`FreeActivityQuotaExhausted`、`RequestWaitExceedQueueSize`、
   `RiskRequestImageContentSafety`、`ContextLengthExceeded`、`NotSupportMultiMedia`、
   `ModelNotExisted`、`EnterpriseSeatQuotaExhausted`、`OutOfQuota`、`AbnormalAccountLimitRequest`
-  等）。这是**客户端侧**枚举，不等同于 §8 上游 `{"code":4011}` 的数字码；
+  等）。这是**客户端侧**枚举，不等同于 §7 上游 `{"code":4011}` 的数字码；
   但可用于判断「额度耗尽/风控」这类场景官方是怎么命名的。`[未验证]` 数字 code 映射表。
 * **`CreateTaskRequest` 字段序**（off 43151615，仅一处定义）：
   `chat_session_id user_input cross_session_invocations tool_list extra session_id e_version
@@ -455,7 +459,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
   mode_type custom_subagent_info agent_static_dsl_name enable_decouple_model_extra_config
   history_message_limit raw_rules …`
   → **顶层 `reasoning_effort_level` 与嵌套 `custom_model` 并存**，二者在结构体里是平级邻居。
-  这与 §5.2 的 curl 探针结果一致（顶层字段存在且为 string）。
+  这与 §3.9.2 的 curl 探针结果一致（顶层字段存在且为 string）。
 * **`ReasoningEffortConfig` 字段序**（off 20023112）：`parameter options default_level`；
   `CloudReasoningEffortConfig` 为同一结构 + `userId account`。
   → `parameter` 是**参数名**（可配，默认 `reasoning_effort`），不是档位值本身。
@@ -463,11 +467,11 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
   `reasoning_effort_options`、`default_reasoning_effort`、`reasoning_effort_config`
   → 嵌套配置与扁平 legacy 字段在结构体层面并存；但目录接口实际只填嵌套那套（§4.4 实测）。
 * **`ReasoningParam`**（off 20031800）：`values dev manual_usage` —— 自定义模型的档位值来自
-  `values`，对应 §5.1 的 `i()` 第一条分支。
+  `values`，对应 §3.9.1 的 `i()` 第一条分支。
 * **lite 通道方法名表**（off 19949597）：`lite.create_chat_session / lite.send_message /
   lite.fork_session / lite.resume_message / lite.action_queue / lite.add_attachment /
   lite.restore_session_attachment / lite.migration_agent_data_start / lite.migration_work_agent_data`
-  —— 与 §5.1 插桩捕获的 `service:"lite"` 一致；**全部是 Js→Rust IPC，无 HTTP 映射**。
+  —— 与 §3.9.1 插桩捕获的 `service:"lite"` 一致；**全部是 Js→Rust IPC，无 HTTP 映射**。
 * **`LiteSendMessageRequest with 25 elements`**（Rust 侧结构体名），
   内嵌 `LiteInitialMessage{model_selection_strategy custom_model query dsl_agent assistant_message_id
   is_in_code_mode ask_question_config active_text_editor from_append_msg}`。
@@ -475,7 +479,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
   `ForkSessionRequest{strict_source_project}`。
 * `struct LlmUtilsErrorData with 1 element` / `struct LlmUtilsOutputData with 1 element`
   —— **`llm_utils_chat` 只有 error/output 两个响应结构体，没有请求结构体的 serde 名**，
-  与 §5.2「结构体里没有 `reasoning_effort_level`」互证。
+  与 §3.9.2「结构体里没有 `reasoning_effort_level`」互证。
 * `reasoning_effort_level` 在打包 JS 中出现 21 次、`reasoning_effort` 128 次、`custom_model` 287 次
   → 字段名高频出现在客户端构造侧，不是服务端下发只读字段。
 
@@ -492,7 +496,7 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
                        uploadHost, uri, userId}
      Auth = "GJZWJT7CHNZUT4T18CN3:version:v2:<HMAC-JWT>"，内含 bucket/expires/fileInfos[].oidKey（凭证不落文档）
 3) 实际 PUT/分片上传到 tos-d-lq.bytedancevod.com（**不在本抓包范围**：`--allow-hosts` 只放了 trae 域名，
-     该主机名来自 `product.json` 声明的 AhaNet 通道；见 §7）
+     该主机名来自 `product.json` 声明的 AhaNet 通道；见 §6）
 4) POST /api/ide/v1/commit_resource_upload_result  {session_key:…} → `{}`（空对象即成功）
 ```
 
@@ -514,7 +518,183 @@ ID 体系（从明文 `batchInsert` 可见，各 24hex 递增）：`chat_session
 `llm_utils_chat` 明文路径实测直接生效（§3.2，1×1 红 PNG 被识别为粉色调），无需上传、无需工具、
 无需 TOS 凭证。差异属 §0 出入 8。
 
+### 3.9 思考强度（上游能力参考，本协议不发送）
+
+**结论：本实现三条可用 HTTP 路径全部无法把档位送达上游，`reasoning_effort` 须声明为忽略。**
+理由不是「没找到字段」，而是「找到字段的通道不走 HTTP，走 HTTP 的通道没有字段」。
+
+#### 3.9.1 档位在官方客户端的真实落点 `[打包JS 插桩 2026-11-17]`
+
+方法：在解包副本 `tmp/trae-extract/.../@byted-icube/solo-lite/dist/7528.da417b03.mjs` 的
+`RustAdapter` 内 `r = await el(s.request(C), a.signal)`（跨入 native 前的最后一份明文）前插入
+`fetch('http://127.0.0.1:17391/dump', …)`，把 `{service, method, data, context}` 原样转发到本地捕获器
+（`tmp/dump-server.py` → `tmp/trae-dump.jsonl`）。`node_modules.asar` 仅 28 字节 stub，实际加载
+`node_modules/` 目录，故改文件的立即生效。**同一会话连续三次改档，两两 diff 每次仅 1 处差异。**
+
+请求体（`lite.send_message`，`[打包JS 插桩]`，三档各一次）：
+
+```json
+{"service":"lite","method":"send_message","data":{
+  "custom_model":{"provider":"","is_preset":true,"config_name":"glm-5.3","config_source":1,
+    "model_name":"glm-5.3","display_model_name":"GLM-5.3","ak":"","base_url":"",
+    "use_remote_service":true,"multimodal":false,"prompt_max_tokens":936000,
+    "reasoning_effort_level":"extra_high"},
+  "model_name":"glm-5.3","model_selection_strategy":"manual",
+  "agent_type":"solo_agent","agent_id":"solo_agent","session_type":"side_chat",
+  "chat_session_id":"6afbbf5df3dcb7b0fe9616f0","content":[],
+  "query":"[{\"type\":\"text\",\"data\":{\"content\":\"hi\"}}]",
+  "common_params":"{…icube_uid,user_id,machine_id,device_id,…,message_source:\"manual\"…}",
+  "__hit_my_space":…,"__hit_shared_artifact_and_workroom":…,"workspace_folders":…}}
+```
+
+三次的 `custom_model.reasoning_effort_level` 依次为 `high` / `extra_high` / `light`，
+其余字段（含 `common_params` 全串）逐字节相同。
+
+**定案**：
+
+| 项 | 值 |
+|-|-|
+| 通道 | `service:"lite"`, `method:"send_message"`（Js→Rust 内部 IPC，**非 HTTP**）|
+| 字段位置 | `custom_model.reasoning_effort_level`（嵌套，**不在顶层**）|
+| 字段值 | 目录 `reasoning_effort_config.options` 的原值（`light`/`high`/`extra_high`）|
+| 携带粒度 | **逐消息**，非会话级（由 `side-chat:reasoning-effort:v1:…` 客户端存储取出后写入）|
+| 分支 | `config_source:1`（Trae 预设）→ 客户端 `ey()` 的预设分支；不发 `reasoning_effort` |
+
+客户端归一化函数（`ai-modules-chat/dist/index.mjs` 模块 12878，导出 `QE`/`sT`/`HU`）全文：
+
+```js
+function i(e){ // QE: 求合法档位集
+ let t=e?.config_source===n.Lf.Personal, r=e?.reasoning_param;
+ if(t&&!e.reasoning_effort_config&&1===e.thinking_enable&&r?.values?.length){
+   if("string"!=typeof r.parameter||!r.parameter.trim()||!Array.isArray(r.values)||
+      r.values.some(e=>"string"!=typeof e||!e.trim())||new Set(r.values).size!==r.values.length)return;
+   return{options:r.values,default_level:void 0}}
+ let i=e?.reasoning_effort_config,o=i?.options,a=i?.default_level;
+ if(!(t&&("string"!=typeof i?.parameter||!i.parameter.trim())||i?.support_thinking!==!0||
+      !Array.isArray(o)||0===o.length||o.some(e=>"string"!=typeof e||!e.trim()))&&
+     new Set(o).size===o.length&&(t||"string"==typeof a&&o.includes(a)))
+   return{options:o,default_level:a}}
+
+function o(e,t){ // sT: 求最终档位值
+ let r=i(e);if(!r)return;let{options:o,default_level:a}=r;
+ if(t&&o.includes(t))return t;
+ if(e?.config_source!==n.Lf.Personal)return a;
+ let s=2===e.thinking_enable?"none":0===e.thinking_enable?"default":void 0;
+ return s&&o.includes(s)?s:a&&o.includes(a)?a:o.find(e=>"none"!==e)??o[0]}
+
+function a(e,t){ // HU: 组装 payload 片段
+ let r=o(e,t.reasoningEffortLevel);
+ return{model_display_name:…, is_max_mode:…, ...r?{reasoning_effort_level:r}:{}}}
+```
+
+语义要点：
+
+* `support_thinking !== true` → 返回 `undefined` → 请求体里**完全不带**该字段（非空串、非 `"none"`）
+* 非 Personal：`default_level` 必须是 `options` 成员，否则整个配置判废
+* Personal：`thinking_enable` 2→`"none"`、0→`"default"`，再按 `options` 成员性回落
+* 兜底链：`options.find(v=>v!=="none") ?? options[0]`
+
+#### 3.9.2 走 HTTP 的通道上没有该字段 `[curl，类型错配探针 2026-11-17]`
+
+探针原理：给字段塞**类型错配**的值（字段本应是 string 就塞 number）。字段存在 → Go 解码器报
+`cannot unmarshal … into Go struct field <结构>.<字段>`；字段不存在 → 静默忽略、正常出流。
+这比「传合法值比行为差异」强得多，因为后者会被「接受但忽略」混淆。
+
+| 端点 | 探针 | 结果 | 判定 |
+|-|-|-|-|
+| `llm_utils_chat` | 顶层 `reasoning_effort_level: 123` | HTTP 200，正常回答 | **字段不存在** |
+| `llm_utils_chat` | 顶层 `reasoning_effort: 123` | HTTP 200，正常回答 | **字段不存在** |
+| `llm_utils_chat` | `custom_model: []` | HTTP 200，正常回答 | **字段不存在** |
+| `llm_utils_chat` | `model_info: []` | HTTP 200，正常回答 | **字段不存在** |
+| `create_agent_task` | 顶层 `reasoning_effort_level: 123` | HTTP 400 `cannot unmarshal number into Go struct field CreateAgentTaskRequest.reasoning_effort_level of type string` | **字段存在，string** |
+| `create_agent_task` | `custom_model: []` | HTTP 200（流内 `4001 model config is empty`）| 类型宽松，**无法验证内部字段** |
+
+对照有效性：同法在 `llm_utils_chat` 上给 `tool_choice` 传对象会报
+`cannot unmarshal object into Go struct field LLMUtilsChatRequest.tool_choice of type string`（§3.2.2），
+证明该探针不会漏报。
+
+→ **`llm_utils_chat` 是彻底无解**（结构体里没有这个字段，不是被忽略），
+**`create_agent_task` 顶层有 `reasoning_effort_level string`**，但它不是官方客户端用的位置，
+且 `custom_model` 内部字段无法用此法定性。
+
+#### 3.9.3 `create_agent_task` 明文可跑到 `task_created`，但被服务端模板卡住 `[curl 2026-11-17]`
+
+`create_agent_task` 请求体官方是密文（§0 出入 2），但服务端对明文有直通分支。逐次 400 报错递增，
+已探明最小必填链（顺序即报错顺序）：
+
+```
+app_id → conversation_id → session_id → user_id → device_id → agent_type
+→ model_name → config_name → ide_version → user_input.id
+```
+
+其中 `user_input` 是对象，`user_input.query` 是 `[{type:"text",data:{content:…}}]`。
+补齐后仍报流内 `4001 model config is empty for model name: glm-5.3` → 须加
+`is_custom_model:true` + `custom_model{…}`。再报 `4001 failed to get summary config: failed to get summary template data`
+→ 须补 `tool_list:[]`, `history_id_list:[]`, `render_context:{}`, `extra_config:{}`,
+`mcp_tool_list:[]`, `prompt_set:""`, `agent_version:""`, `e_version:""`, `config_source:1`。
+
+补齐后 SSE 正常开流：
+
+```
+event:task_created  {"task_id":"28e3de2b-…","agent_run_id":"bfdced12-…"}
+event:model_config  {"config_name":"glm-5.3","model_name":"glm-5.3","extra_config":{…}}
+event:agent_status  {"agents":[{…,"status":"running"}]}
+event:error {"code":8000001,"message":"failed to render user input message: failed to generate
+             user input prompt: no user input prompt template found for agent type: solo_agent,
+             v2_use_session_context: false, …"}
+```
+
+**最终障碍是服务端 prompt 模板缺失，与档位字段无关。**已尝试无效：
+`mode_type:1/2`、`prompt_set:"solo_agent"`、
+`extra_config.{use_v2_process,v2_use_session_context,use_v2_session_context}:true`
+（错误信息里的 `v2_use_session_context` 恒为 `false`，说明该开关不是从这几个键读）。
+换模型（`deepseek-v4.1-flash`）、换新 `conversation_id` 均无变化。
+→ 该通道**当前无法用明文跑通一次完整对话**，故档位是否被消费**无法验证**。
+
+#### 3.9.4 实现决定
+
+* **不发送任何思考强度字段**：`ChatBody::build` 不发档位字段（发了也是死字段，见 §3.9.2），
+  也不发 `reasoning_effort`；保持上游默认思考行为。
+* 配置层**不再提供**思考强度选项：下游传 `low`/`high`/`medium` 等一律忽略。
+* `catalog.rs` **仍应解析** `reasoning_effort_config.{support_thinking,options,default_level}`
+  （§4.4）：它不是给上游的入参，是**目录元数据**，用于 `/v1/models` 如实标注「该模型可选哪几档、
+  默认哪档」，让下游客户端 UI 不撒谎。
+* `/v1/models` 暴露 `config_name` 为 `id`（§4.4），档位信息挂扩展字段
+
+#### 3.9.5 已证伪的思路（勿重复）
+
+| 思路 | 结论 | 依据 |
+|-|-|-|
+| `llm_utils_chat` 顶层 `reasoning_effort_level` | 无效应 | §3.2.1 实测 n=5，p=0.70~0.83，区间完全重叠 |
+| `llm_utils_chat` 的 `model_info.reasoning_effort_level` | 无效应 | §3.2.1 实测 n=6，p=0.790，方向相反 |
+| `llm_utils_chat` 上任何形式 | **字段不存在** | §3.9.2 类型错配探针 |
+| 传 `extra_config` 开关 | 全等 | §3.2.1：111 字段在档位切换时零差异 |
+| 按档位路由到不同后端 | 否 | §3.2.1：`provider_model_name` 恒为 `ep-20261020194436-p4fjc` |
+| 把 `reasoning_effort_config` 对象当请求字段发 | 无意义 | 它是目录元数据，客户端只发单个字符串（§3.9.1）|
+| 走 `create_agent_task` | **未验证**（模板缺失，跑不通）| §3.9.3 |
+
+#### 3.9.6 取值与效果
+
+只有两个取值集，按模型从目录读（§4.4），**不得硬编码**：
+
+| 取值集 | 来源 | 客户端 UI 显示 |
+|-|-|-|
+| `light` / `high` / `extra_high` | `reasoning_effort_config.options` | 轻 / 高 / 极高 |
+| `light` / `high` | 同上（缺 `extra_high` 的 4 个模型）| 轻 / 高 |
+| 无（`support_thinking:false`）| — | 不显示档位选择器 |
+
+**效果**：客户端侧为**逐消息**改变 `custom_model.reasoning_effort_level` 一个字符串（§3.9.1 已实证）；
+**上游侧的实际效果在本实现可用的 HTTP 通道上无法观测，且已证伪无效**（§3.2.1、§3.9.2）。
+官方 `lite.send_message` 链路末端是否真的影响 `thought` 长度同样未定量测量（§8.2）。
+
+**注意 `default_level` 不参与请求构造**：它只在客户端无用户选择时经 `sT()` 归一化为某个 `options`
+成员再写入；不传时服务端取自己的默认值（目录里可见模型 20 条全为 `high`，§4.4）。
+
+**CC 侧映射**：CC 的 `reasoning_effort` 是 `minimal|low|medium|high`（OpenAI 口径），
+与 trae 的 `light|high|extra_high` **无可靠对应关系**，且本实现无法送达 →
+`reasoning_effort` 落在 `types.rs` 的 `extra` 后被丢弃，**文档与 `/v1/models` 须声明为忽略**。
 ## 4. models 端点映射
+
 
 ### 4.1 上游请求 `[抓包 + curl，Trae CN 1.107.1]`
 
@@ -577,7 +757,7 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 | `support_thinking=true`（全条目口径） | 27 | 1 |
 
 * 选 `solo_agent`（本实现）取不到的 8 个 `chat_completion` 模型：`seed-code-pro-0430`、`Doubao-Seed-2.0-Code`、`glm-5-turbo`、`kimi-k2.6`、`sagitta`、`aquila`、`file_search_agent`、`explore_sub_agent_v2`（后两个是子 agent，非用户可选模型）。
-* 选 `solo_work_lite` 取不到的 31 个，含官方主对话在用的 `qwen3.8-flash`、`deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.3_advisor` → 且这些会直接撞 §8.2 的 `4001`。
+* 选 `solo_work_lite` 取不到的 31 个，含官方主对话在用的 `qwen3.8-flash`、`deepseek-v4.1-flash-{300K,600K,1M}`、`kimi-k3-auto`、`glm-5.3_advisor` → 且这些会直接撞 §7.2 的 `4001`。
 * → **定稿 `solo_agent`**（§0 出入 7）。净收益 23 个可对话模型（31−8）、`support_thinking` 覆盖 1 → 27。
 
 **`is_invisible_to_user` 的语义已由客户端 UI 对照定案 `[抓包 + 用户客户端核对 2026-11-15]`**：
@@ -681,7 +861,7 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 （`Doubao-Seed-Evolving`/`mimo-v2.6-flash`/`mimo-v2.6-pro`/`minimax-m3`）。
 → 与客户端 UI 档位数逐一对应（`light`→轻、`high`→高、`extra_high`→极高）。
 
-**客户端档位归一化算法**（可 1:1 移植，`sT`）见 **§5.1**；本轮结论为「目录元数据可解析、请求侧无解」。
+**客户端档位归一化算法**（可 1:1 移植，`sT`）见 **§3.9.1**；本轮结论为「目录元数据可解析、请求侧无解」。
 
 **同名不同 `config_name`（客户端只显示一个名字，上游是多条）**：
 `DeepSeek-V4.1-Flash` → `-1M`/`-300K`/`-600K`/主条目；`DeepSeek-V4-Pro` → `-Official`/主条目；
@@ -697,184 +877,10 @@ POST https://api5-normal.mchost.guru/api/ide/v1/batch_get_detail_param   （明�
 `config_name` 跨 function 重复（96 个唯一名里 79 个出现在多个 function），不是下发给下游的模型数。
 **本项目实际下发的是 `solo_agent` + `usage=chat_completion` 的 56 条，且这 56 条 `config_name` 无重复。**
 
-## 5. reasoning_effort 字段映射
+## 5. 余额获取
 
-**结论：本实现三条可用 HTTP 路径全部无法把档位送达上游，`reasoning_effort` 须声明为忽略。**
-理由不是「没找到字段」，而是「找到字段的通道不走 HTTP，走 HTTP 的通道没有字段」。
 
-### 5.1 档位在官方客户端的真实落点 `[打包JS 插桩 2026-11-17]`
-
-方法：在解包副本 `tmp/trae-extract/.../@byted-icube/solo-lite/dist/7528.da417b03.mjs` 的
-`RustAdapter` 内 `r = await el(s.request(C), a.signal)`（跨入 native 前的最后一份明文）前插入
-`fetch('http://127.0.0.1:17391/dump', …)`，把 `{service, method, data, context}` 原样转发到本地捕获器
-（`tmp/dump-server.py` → `tmp/trae-dump.jsonl`）。`node_modules.asar` 仅 28 字节 stub，实际加载
-`node_modules/` 目录，故改文件的立即生效。**同一会话连续三次改档，两两 diff 每次仅 1 处差异。**
-
-请求体（`lite.send_message`，`[打包JS 插桩]`，三档各一次）：
-
-```json
-{"service":"lite","method":"send_message","data":{
-  "custom_model":{"provider":"","is_preset":true,"config_name":"glm-5.3","config_source":1,
-    "model_name":"glm-5.3","display_model_name":"GLM-5.3","ak":"","base_url":"",
-    "use_remote_service":true,"multimodal":false,"prompt_max_tokens":936000,
-    "reasoning_effort_level":"extra_high"},
-  "model_name":"glm-5.3","model_selection_strategy":"manual",
-  "agent_type":"solo_agent","agent_id":"solo_agent","session_type":"side_chat",
-  "chat_session_id":"6afbbf5df3dcb7b0fe9616f0","content":[],
-  "query":"[{\"type\":\"text\",\"data\":{\"content\":\"hi\"}}]",
-  "common_params":"{…icube_uid,user_id,machine_id,device_id,…,message_source:\"manual\"…}",
-  "__hit_my_space":…,"__hit_shared_artifact_and_workroom":…,"workspace_folders":…}}
-```
-
-三次的 `custom_model.reasoning_effort_level` 依次为 `high` / `extra_high` / `light`，
-其余字段（含 `common_params` 全串）逐字节相同。
-
-**定案**：
-
-| 项 | 值 |
-|-|-|
-| 通道 | `service:"lite"`, `method:"send_message"`（Js→Rust 内部 IPC，**非 HTTP**）|
-| 字段位置 | `custom_model.reasoning_effort_level`（嵌套，**不在顶层**）|
-| 字段值 | 目录 `reasoning_effort_config.options` 的原值（`light`/`high`/`extra_high`）|
-| 携带粒度 | **逐消息**，非会话级（由 `side-chat:reasoning-effort:v1:…` 客户端存储取出后写入）|
-| 分支 | `config_source:1`（Trae 预设）→ 客户端 `ey()` 的预设分支；不发 `reasoning_effort` |
-
-客户端归一化函数（`ai-modules-chat/dist/index.mjs` 模块 12878，导出 `QE`/`sT`/`HU`）全文：
-
-```js
-function i(e){ // QE: 求合法档位集
- let t=e?.config_source===n.Lf.Personal, r=e?.reasoning_param;
- if(t&&!e.reasoning_effort_config&&1===e.thinking_enable&&r?.values?.length){
-   if("string"!=typeof r.parameter||!r.parameter.trim()||!Array.isArray(r.values)||
-      r.values.some(e=>"string"!=typeof e||!e.trim())||new Set(r.values).size!==r.values.length)return;
-   return{options:r.values,default_level:void 0}}
- let i=e?.reasoning_effort_config,o=i?.options,a=i?.default_level;
- if(!(t&&("string"!=typeof i?.parameter||!i.parameter.trim())||i?.support_thinking!==!0||
-      !Array.isArray(o)||0===o.length||o.some(e=>"string"!=typeof e||!e.trim()))&&
-     new Set(o).size===o.length&&(t||"string"==typeof a&&o.includes(a)))
-   return{options:o,default_level:a}}
-
-function o(e,t){ // sT: 求最终档位值
- let r=i(e);if(!r)return;let{options:o,default_level:a}=r;
- if(t&&o.includes(t))return t;
- if(e?.config_source!==n.Lf.Personal)return a;
- let s=2===e.thinking_enable?"none":0===e.thinking_enable?"default":void 0;
- return s&&o.includes(s)?s:a&&o.includes(a)?a:o.find(e=>"none"!==e)??o[0]}
-
-function a(e,t){ // HU: 组装 payload 片段
- let r=o(e,t.reasoningEffortLevel);
- return{model_display_name:…, is_max_mode:…, ...r?{reasoning_effort_level:r}:{}}}
-```
-
-语义要点：
-
-* `support_thinking !== true` → 返回 `undefined` → 请求体里**完全不带**该字段（非空串、非 `"none"`）
-* 非 Personal：`default_level` 必须是 `options` 成员，否则整个配置判废
-* Personal：`thinking_enable` 2→`"none"`、0→`"default"`，再按 `options` 成员性回落
-* 兜底链：`options.find(v=>v!=="none") ?? options[0]`
-
-### 5.2 走 HTTP 的通道上没有该字段 `[curl，类型错配探针 2026-11-17]`
-
-探针原理：给字段塞**类型错配**的值（字段本应是 string 就塞 number）。字段存在 → Go 解码器报
-`cannot unmarshal … into Go struct field <结构>.<字段>`；字段不存在 → 静默忽略、正常出流。
-这比「传合法值比行为差异」强得多，因为后者会被「接受但忽略」混淆。
-
-| 端点 | 探针 | 结果 | 判定 |
-|-|-|-|-|
-| `llm_utils_chat` | 顶层 `reasoning_effort_level: 123` | HTTP 200，正常回答 | **字段不存在** |
-| `llm_utils_chat` | 顶层 `reasoning_effort: 123` | HTTP 200，正常回答 | **字段不存在** |
-| `llm_utils_chat` | `custom_model: []` | HTTP 200，正常回答 | **字段不存在** |
-| `llm_utils_chat` | `model_info: []` | HTTP 200，正常回答 | **字段不存在** |
-| `create_agent_task` | 顶层 `reasoning_effort_level: 123` | HTTP 400 `cannot unmarshal number into Go struct field CreateAgentTaskRequest.reasoning_effort_level of type string` | **字段存在，string** |
-| `create_agent_task` | `custom_model: []` | HTTP 200（流内 `4001 model config is empty`）| 类型宽松，**无法验证内部字段** |
-
-对照有效性：同法在 `llm_utils_chat` 上给 `tool_choice` 传对象会报
-`cannot unmarshal object into Go struct field LLMUtilsChatRequest.tool_choice of type string`（§3.2.2），
-证明该探针不会漏报。
-
-→ **`llm_utils_chat` 是彻底无解**（结构体里没有这个字段，不是被忽略），
-**`create_agent_task` 顶层有 `reasoning_effort_level string`**，但它不是官方客户端用的位置，
-且 `custom_model` 内部字段无法用此法定性。
-
-### 5.3 `create_agent_task` 明文可跑到 `task_created`，但被服务端模板卡住 `[curl 2026-11-17]`
-
-`create_agent_task` 请求体官方是密文（§0 出入 2），但服务端对明文有直通分支。逐次 400 报错递增，
-已探明最小必填链（顺序即报错顺序）：
-
-```
-app_id → conversation_id → session_id → user_id → device_id → agent_type
-→ model_name → config_name → ide_version → user_input.id
-```
-
-其中 `user_input` 是对象，`user_input.query` 是 `[{type:"text",data:{content:…}}]`。
-补齐后仍报流内 `4001 model config is empty for model name: glm-5.3` → 须加
-`is_custom_model:true` + `custom_model{…}`。再报 `4001 failed to get summary config: failed to get summary template data`
-→ 须补 `tool_list:[]`, `history_id_list:[]`, `render_context:{}`, `extra_config:{}`,
-`mcp_tool_list:[]`, `prompt_set:""`, `agent_version:""`, `e_version:""`, `config_source:1`。
-
-补齐后 SSE 正常开流：
-
-```
-event:task_created  {"task_id":"28e3de2b-…","agent_run_id":"bfdced12-…"}
-event:model_config  {"config_name":"glm-5.3","model_name":"glm-5.3","extra_config":{…}}
-event:agent_status  {"agents":[{…,"status":"running"}]}
-event:error {"code":8000001,"message":"failed to render user input message: failed to generate
-             user input prompt: no user input prompt template found for agent type: solo_agent,
-             v2_use_session_context: false, …"}
-```
-
-**最终障碍是服务端 prompt 模板缺失，与档位字段无关。**已尝试无效：
-`mode_type:1/2`、`prompt_set:"solo_agent"`、
-`extra_config.{use_v2_process,v2_use_session_context,use_v2_session_context}:true`
-（错误信息里的 `v2_use_session_context` 恒为 `false`，说明该开关不是从这几个键读）。
-换模型（`deepseek-v4.1-flash`）、换新 `conversation_id` 均无变化。
-→ 该通道**当前无法用明文跑通一次完整对话**，故档位是否被消费**无法验证**。
-
-### 5.4 实现决定
-
-* `config.rs` 的 `TraeReasoningEffort` 保持仅 `None`；下游传 `low`/`high`/`medium` 等在**配置期拒绝**
-* `ChatBody::build` 不发任何档位字段（发了也是死字段，见 §5.2）
-* `catalog.rs` **仍应解析** `reasoning_effort_config.{support_thinking,options,default_level}`
-  （§4.4）：它不是给上游的入参，是**目录元数据**，用于 `/v1/models` 如实标注「该模型可选哪几档、
-  默认哪档」，让下游客户端 UI 不撒谎。若日后 §5.3 打通，再由 `sT()` 的语义填值。
-* `/v1/models` 暴露 `config_name` 为 `id`（§4.4），档位信息挂扩展字段
-
-### 5.5 已证伪的思路（勿重复）
-
-| 思路 | 结论 | 依据 |
-|-|-|-|
-| `llm_utils_chat` 顶层 `reasoning_effort_level` | 无效应 | §3.2.1 实测 n=5，p=0.70~0.83，区间完全重叠 |
-| `llm_utils_chat` 的 `model_info.reasoning_effort_level` | 无效应 | §3.2.1 实测 n=6，p=0.790，方向相反 |
-| `llm_utils_chat` 上任何形式 | **字段不存在** | §5.2 类型错配探针 |
-| 传 `extra_config` 开关 | 全等 | §3.2.1：111 字段在档位切换时零差异 |
-| 按档位路由到不同后端 | 否 | §3.2.1：`provider_model_name` 恒为 `ep-20261020194436-p4fjc` |
-| 把 `reasoning_effort_config` 对象当请求字段发 | 无意义 | 它是目录元数据，客户端只发单个字符串（§5.1）|
-| 走 `create_agent_task` | **未验证**（模板缺失，跑不通）| §5.3 |
-
-### 5.6 取值与效果
-
-只有两个取值集，按模型从目录读（§4.4），**不得硬编码**：
-
-| 取值集 | 来源 | 客户端 UI 显示 |
-|-|-|-|
-| `light` / `high` / `extra_high` | `reasoning_effort_config.options` | 轻 / 高 / 极高 |
-| `light` / `high` | 同上（缺 `extra_high` 的 4 个模型）| 轻 / 高 |
-| 无（`support_thinking:false`）| — | 不显示档位选择器 |
-
-**效果**：客户端侧为**逐消息**改变 `custom_model.reasoning_effort_level` 一个字符串（§5.1 已实证）；
-**上游侧的实际效果在本实现可用的 HTTP 通道上无法观测，且已证伪无效**（§3.2.1、§5.2）。
-官方 `lite.send_message` 链路末端是否真的影响 `thought` 长度同样未定量测量（§9.2）。
-
-**注意 `default_level` 不参与请求构造**：它只在客户端无用户选择时经 `sT()` 归一化为某个 `options`
-成员再写入；不传时服务端取自己的默认值（目录里可见模型 20 条全为 `high`，§4.4）。
-
-**CC 侧映射**：CC 的 `reasoning_effort` 是 `minimal|low|medium|high`（OpenAI 口径），
-与 trae 的 `light|high|extra_high` **无可靠对应关系**，且本实现无法送达 →
-`reasoning_effort` 落在 `types.rs` 的 `extra` 后被丢弃，**文档与 `/v1/models` 须声明为忽略**。
-
-## 6. 余额获取
-
-Host `api.trae.cn`（与 §7 签到同 host，与登录的 `api.trae.com.cn` 不同），
+Host `api.trae.cn`（与 §6 签到同 host，与登录的 `api.trae.com.cn` 不同），
 请求头与签到完全相同（VSCode UA 那套，**不带** `x-machine-id`）。
 
 ```
@@ -910,11 +916,12 @@ POST /trae/api/v2/pay/ide_user_ent_usage
 → 11-15 10:15 为 5675.78（`consumed_amount` 1624.22），净 **+97.86**；
 量级与「当日签到 +100」一致，但同期另有若干成功对话消耗，**不能证明全部来自签到**。
 
-**余额与签到不可混用**：抄 §7 的 `claim` 语义陷阱 —— 当日已签到时调 `claim` 仍返回
+**余额与签到不可混用**：抄 §6 的 `claim` 语义陷阱 —— 当日已签到时调 `claim` 仍返回
 `{"code":0,"message":"success"}`，与成功无法区分，故**不能靠 claim 返回值判断**，
 只能靠「`status` 判定 → `claim` → 复读 `status`/`ide_user_ent_usage` 校验余额变化」。
 
-## 7. 签到协议
+## 6. 签到协议
+
 
 Host `api.trae.cn`，走 VSCode UA 那套头（`[抓包]` 实测**不带** `x-machine-id`，与参考实现不同）：
 `user-agent: VSCode 1.107.1 (Trae CN)`、`authorization: Cloud-IDE-JWT <jwt>`、`x-app-version: 3.4.18`、
@@ -962,15 +969,16 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 * `did_checked_in: false` **在 `checked_in:true` 时为 false** → 疑为「本次请求触发签到成功」，不是「今日是否签过」。`[未验证：未取到 `true` 样本]`
 * `credits:100 / extra_credits:100` = 本次签到基础/额外额度；`enable:true` = 活动开启
 
-余额端点与读数、以及「无法精确对账」的说明见 **§6 余额获取**（不在此重复）。
+余额端点与读数、以及「无法精确对账」的说明见 **§3.9 余额获取**（不在此重复）。
 
 实现流程（README 要求每 1h）：`status.enable && !status.checked_in` → `claim` → 复读 `status` 确认 `checked_in` 变 `true` 并记余额增量；`checked_in` 已为 `true` 则本轮直接跳过，**不要调 claim**（避免把「已签到」误记为「本次领到」）。
 
-## 8. 上游异常响应
+## 7. 上游异常响应
+
 
 **两类，实现必须都处理。第二类是 HTTP 200，靠 HTTP 状态码判断会漏。**
 
-### 8.1 HTTP 层错误 `[curl，Trae CN 1.107.1，2026-11-15]`
+### 7.1 HTTP 层错误 `[curl，Trae CN 1.107.1，2026-11-15]`
 
 | HTTP | 上游 body | 触发条件 `[实测]` | → 下游（CC 规范错误）|
 |-|-|-|-|
@@ -981,7 +989,7 @@ POST /trae/api/v2/pay/ide_user_pay_status     {}                    [抓包]
 | `403` | `{"code":991402,"message":"git token not found"}` | `[抓包]` 仅 `/api/remote/v1/git/repositories`，本实现不用该端点 | 不透传 |
 | `400` | `{"code":400,"message":"[LocalConvSync.FetchCliConversation] hub error: code=2900101, message=cli device is offline"}` | `[抓包]` `batchInsert`，本实现不落库 | 不透传 |
 
-### 8.2 SSE 流内错误（HTTP 200）`[curl e4/e5，2026-11-15]`
+### 7.2 SSE 流内错误（HTTP 200）`[curl e4/e5，2026-11-15]`
 
 上游在业务/限流错误时**照样返回 HTTP 200 + SSE**，帧形如：
 
@@ -1008,46 +1016,47 @@ data:{"finish_reason":"stop"}
 
 判定依据用**「是否已产出内容帧」**，不用 `error` 的 `id`：实测 `4011`/`4001` 的 `error` 是 `id:1`，但 `3003`（图片下载失败）前面已有 2 帧 `progress_notice`，`error` 在 `id:3` —— 所以「`error` 恒为 `id:1`」不成立。
 
-1. **`error` 之前没有任何 `output` 帧**（实测三类全属此类；`progress_notice` 不算内容）：我方尚未发出内容，故**不发 200**，直接映射 HTTP 错误 —— `4011` → `429` + `rate_limit_error`（上游无 `Retry-After`）、`4001` → `400` + `invalid_request_error`、`3003` → `400` + `invalid_request_error`（message 裁剪后）。未观测到的 `code` 一律 `502` + `api_error`，`message` 取首行，原始 `code` 附在 `error.code`（§9.2 会陆续补进此表）。
+1. **`error` 之前没有任何 `output` 帧**（实测三类全属此类；`progress_notice` 不算内容）：我方尚未发出内容，故**不发 200**，直接映射 HTTP 错误 —— `4011` → `429` + `rate_limit_error`（上游无 `Retry-After`）、`4001` → `400` + `invalid_request_error`、`3003` → `400` + `invalid_request_error`（message 裁剪后）。未观测到的 `code` 一律 `502` + `api_error`，`message` 取首行，原始 `code` 附在 `error.code`（§8.2 会陆续补进此表）。
 2. **`error` 出现在 `output` 之后**（尚未观测到，防御性）：HTTP 200 已发出，只能以 `data: {"error":{…}}` 结尾 + `[DONE]`。
 3. 重试：`4011` 与 `1001` 各重试一次，间隔递增；不做无限重试，避免消耗积分。
 4. `4011`/`4001` 的 `message` 是给人看的英文整句、无内部细节，保留原文并附 `code`；`3003` 例外，须只取首行 `model service is unavailable`，丢弃后面的 Go 错误与 Request id。
 
-## 9. 剩余未验证
+## 8. 剩余未验证
+
 
 协议分析阶段结束：§0 出入 10 条已全部经用户批准（2026-11-14/15），实现尚未开始（`TODO.md` #1）。
 下面只列真正未定的事项，正文各节已定稿的结论不再在此重复。
 
-### 9.1 RefreshToken 是否轮换（唯一需用户决定）
+### 8.1 RefreshToken 是否轮换（唯一需用户决定）
 
 §2 的必填请求体与响应结构都已确定，剩下的问题是**旧 refreshToken 在续期后是否作废**（决定我方要不要把新值写回 `credential.toml`）。实现上先按「无条件写回」处理，两种情况都正确；要定案二选一：
 
 * a) 用真实 RefreshToken 直接 `curl` 一次 `ExchangeToken` —— 立刻可定，但**旧 refreshToken 可能被轮换作废**（参考实现称即刻失效，未验证），届时客户端与 `tmp/trae-capture/jwt.txt` 的凭证一起失效，用户须重新登录一次。
 * b) 等 JWT `exp`（2026-11-28）临近时抓客户端自然续期 —— 无副作用，但要等约两周。§2 已证明只有这条被动路径能看到续期。
 
-### 9.2 留待观察（不阻塞实现）
+### 8.2 留待观察（不阻塞实现）
 
 * `api5-normal.mchost.guru` vs `trae-api-cn.mchost.guru` 的选择策略；`api5-normal` 的下发来源未定位（§0 域名表）。
-* 流内 `error.code` 全集（额度耗尽、内容风控未观测到）。客户端侧 ErrorCode 枚举见 §3.6，数字映射未知。未知 code 的兜底策略已写在 §8.2。
-* `did_checked_in: true` 的样本（§7），下次签到时顺手可取。
+* 流内 `error.code` 全集（额度耗尽、内容风控未观测到）。客户端侧 ErrorCode 枚举见 §3.6，数字映射未知。未知 code 的兜底策略已写在 §7.2。
+* `did_checked_in: true` 的样本（§6），下次签到时顺手可取。
 * `tos-d-lq.bytedancevod.com` 的实际 PUT 分片协议未捕获（`--allow-hosts` 不含该主机）。本实现不走该链路（§0 出入 8），仅在日后要复刻官方图片行为时才需要。
 * 大上下文模式能否经明文路径选择：`mode_type` 实测不生效，`__dev`/`__max` 变体是否可直接指定 `[未验证]`（§4.3）。
-* **`create_agent_task` 的服务端 prompt 模板缺失**（§5.3）：明文 body 已能建任务、出 `model_config`，
+* **`create_agent_task` 的服务端 prompt 模板缺失**（§3.9.3）：明文 body 已能建任务、出 `model_config`，
   但 `8000001 no user input prompt template found for agent type: solo_agent`。
   错误串里的 `v2_use_session_context` 恒为 `false`，且不由 `extra_config.{use_v2_process,
   v2_use_session_context,use_v2_session_context}`、`mode_type`、`prompt_set` 控制
-  → 该开关的真实来源未定位。打通后即可直接验证 `reasoning_effort_level` 是否被消费（§5.3）。
-* **`custom_model` 内部字段无法用类型错配探针定性**（§5.2）：`create_agent_task` 上 `custom_model:[]`
+  → 该开关的真实来源未定位。打通后即可直接验证 `reasoning_effort_level` 是否被消费（§3.9.3）。
+* **`custom_model` 内部字段无法用类型错配探针定性**（§3.9.2）：`create_agent_task` 上 `custom_model:[]`
   只回 `4001 model config is empty`，不报 `cannot unmarshal` → 该字段在服务端 Go 结构里是
   宽松类型（`interface{}`/`map`），故**无法确认** `custom_model.reasoning_effort_level`
-  在该通道上是否被解析。要验证只能靠 §5.3 打通后的行为差分。
+  在该通道上是否被解析。要验证只能靠 §3.9.3 打通后的行为差分。
 * **`is_internal` / `EnableReasoningEffortConfig` 的真实逻辑未读**：`libharness.so` 内
   `is_internal` 命中 33 处（off 20031548 / 20032073 / 20084974 / 20172795 / 20189274 等），
   `EnableReasoningEffortConfig` 1 处 @20031916，`BYTEDANCE` 0 处。
   客户端 JS 侧 `isInternalAgentWindow()` 要求 `account.scope === BYTEDANCE`，
   而本站凭据（`testdata/providers/trae/credential.toml`）**无 `scope` / `account` / `region` / `user_id`
   字段** → 当前是外部账号。用户已声明无内部账号，故**该分支不追**；
-  但需注意：外部账号在 UI 上仍能看到并切换档位（§5.1 已实证外部账号的 `lite.send_message`
+  但需注意：外部账号在 UI 上仍能看到并切换档位（§3.9.1 已实证外部账号的 `lite.send_message`
   确实携带 `reasoning_effort_level`），故「该字段只对内部账号生效」的旧判断**不成立**。
 * **`reasoning_effort_level` 在 `lite.send_message` 链路末端是否被 Rust/native 丢弃**：
   插桩只能证明 **JS 侧发出**该字段；`libharness.so` 是否原样转发到上游 HTTP 无法直接观测

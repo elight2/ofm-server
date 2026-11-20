@@ -1,6 +1,6 @@
 //! 余额：资源包汇总（个人）/ 企业额度（企业）。
 //!
-//! 协议见 `provider-info/workbuddy.md` §6。
+//! 协议见 `provider-info/workbuddy.md` §5。
 //!
 //! * **个人账号**：`POST /billing/meter/get-user-resource-summary`（**无** `/v2` 前缀，
 //!   桌面端 `resourcePrefix` 为空）。返回各资源包的 `CycleTotalCapacity` /

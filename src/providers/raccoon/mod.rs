@@ -21,7 +21,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::config::RaccoonReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
@@ -34,17 +33,14 @@ pub struct RaccoonProvider {
     client: reqwest::Client,
     /// 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: Arc<Mutex<()>>,
-    /// 思考强度（来自 `[raccoon] reasoning_effort`）。
-    effort: RaccoonReasoningEffort,
 }
 
 impl RaccoonProvider {
-    pub fn new(root: PathBuf, effort: RaccoonReasoningEffort) -> anyhow::Result<Self> {
+    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             root,
             client: api::client()?,
             refresh_lock: Arc::new(Mutex::new(())),
-            effort,
         })
     }
 
@@ -125,7 +121,7 @@ impl Provider for RaccoonProvider {
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let cred = self.credential()?;
         let token = self.access_token().await?;
-        let body = chat::ChatBody::build(&req, self.effort);
+        let body = chat::ChatBody::build(&req);
         let url = format!("{}{}{}", api::HOST, api::LLM_PREFIX, chat::PATH);
 
         // 自己序列化并 .body()：避免 .json() 追加第二个 content-type 头。

@@ -34,17 +34,14 @@ pub struct WorkBuddyProvider {
     client: reqwest::Client,
     /// 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: Arc<Mutex<()>>,
-    /// 思考档位（未配置时用 `high`）。
-    effort: chat::Effort,
 }
 
 impl WorkBuddyProvider {
-    pub fn new(root: PathBuf, effort: chat::Effort) -> anyhow::Result<Self> {
+    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             root,
             client: api::client()?,
             refresh_lock: Arc::new(Mutex::new(())),
-            effort,
         })
     }
 
@@ -133,20 +130,7 @@ impl Provider for WorkBuddyProvider {
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let cred = self.live_credential().await?;
 
-        // 思考档位按该模型实际支持的集合钳制（§5）。
-        let supported = match self.catalog(&cred).await {
-            Ok(cat) => cat
-                .models
-                .iter()
-                .find(|m| m.id == req.model)
-                .and_then(chat::supported_of),
-            Err(e) => {
-                tracing::warn!("[workbuddy] 拉取模型目录失败，思考档位不钳制: {e}");
-                None
-            }
-        };
-
-        let body = chat::build_body(&req, Some(self.effort), supported.as_ref());
+        let body = chat::build_body(&req);
         let url = format!("{}{}", api::HOST, api::CHAT_PATH);
 
         let payload = serde_json::to_vec(&body)
@@ -301,7 +285,7 @@ mod tests {
     async fn 未登录时报未接入() {
         let dir = std::env::temp_dir().join("ofm-workbuddy-provider-test");
         let _ = std::fs::remove_dir_all(&dir);
-        let p = WorkBuddyProvider::new(dir.clone(), chat::Effort::High).unwrap();
+        let p = WorkBuddyProvider::new(dir.clone()).unwrap();
         let err = p.live_credential().await.unwrap_err();
         assert!(
             matches!(&err, ProviderError::NotLoggedIn(m) if m.contains("login workbuddy")),

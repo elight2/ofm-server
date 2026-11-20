@@ -8,8 +8,9 @@
 //! * `data.agents[]` 里每个 agent 的 `models[]` 是该 agent 可选模型。
 //!   `cli` agent 的清单是「对话侧可调用」的权威判据：只有出现在这里的模型
 //!   才能在 `/v2/chat/completions` 上正常返回 SSE。
-//! * `data.models[]` 提供每个模型的 `reasoning.supportedEfforts` /
-//!   `defaultEffort` / `canDisableThinking` 声明，是思考强度映射的输入（§5）。
+//! * `data.models[]` 里每个模型还带 `reasoning` 声明（`supportedEfforts` /
+//!   `defaultEffort` / `canDisableThinking`），但本服务**不发送**任何思考强度
+//!   字段，故不解析该节。
 
 use serde::Deserialize;
 
@@ -67,42 +68,14 @@ pub struct CatalogModel {
     #[serde(default)]
     #[allow(dead_code)]
     pub supports_tool_call: bool,
-    /// 是否支持思考。
+    /// 是否支持思考（能力标记，**不**用于挑选档位）。
     #[serde(default)]
+    #[allow(dead_code)]
     pub supports_reasoning: bool,
-    /// 思考档位声明。
+    /// 思考档位声明（**不解析**：本服务不发送任何思考强度字段）。
     #[serde(default)]
-    pub reasoning: Option<ReasoningSpec>,
-}
-
-/// `reasoning` 对象。
-///
-/// 两种形态并存：
-/// * `{"effort":"high","summary":"auto"}`（deepseek/auto 系，未列 supportedEfforts）；
-/// * `{"defaultEffort":"high","supportedEfforts":["low","high","max"],
-///    "canDisableThinking":true}`（glm/kimi/hy4 系）。
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReasoningSpec {
-    /// 默认档位（`defaultEffort`）。
-    #[serde(default)]
-    pub default_effort: Option<String>,
-    /// 默认档位（`effort`），与 `default_effort` 二选一存在。
-    #[serde(default)]
-    pub effort: Option<String>,
-    /// 支持的档位集合。
-    #[serde(default)]
-    pub supported_efforts: Vec<String>,
-    /// 是否允许关闭思考（关闭时发 `reasoning_effort: "none"`）。
-    #[serde(default)]
-    pub can_disable_thinking: Option<bool>,
-}
-
-impl ReasoningSpec {
-    /// 生效的默认档位：`defaultEffort` 优先于 `effort`。
-    pub fn effective_default_effort(&self) -> Option<&str> {
-        self.default_effort.as_deref().or(self.effort.as_deref())
-    }
+    #[allow(dead_code)]
+    pub reasoning: Option<serde_json::Value>,
 }
 
 impl CatalogModel {
@@ -138,10 +111,8 @@ impl Catalog {
     }
 }
 
-/// 拉取原始目录条目（含推理能力声明）。
+/// 拉取原始目录条目。
 ///
-/// 对话转发需要 `reasoning` 声明来钳制思考档位，故这里返回原始条目而非
-/// 对外的 [`ModelInfo`]。
 ///
 /// 主源是 `/v2/enterprises/personal/models`；它失败时退回 `/v3/config`
 /// （桌面端产品配置，模型表较旧且缺 `supportedEfforts`，但至少有列表）。
@@ -263,22 +234,16 @@ mod tests {
         assert_eq!(got[1].display_name, None);
     }
 
-    /// 两种 reasoning 声明形态都要能解析。
+    /// 目录里的 `reasoning` 节不影响模型筛选（本服务不发送思考强度字段）。
     #[test]
-    fn 解析思考声明() {
+    fn 思考声明不影响筛选() {
         let c = parse(REAL);
-        let ds = &c.models[0].reasoning.as_ref().unwrap();
-        assert_eq!(ds.effective_default_effort(), Some("high"));
-        assert!(ds.supported_efforts.is_empty());
-
-        let glm = &c.models[1].reasoning.as_ref().unwrap();
-        assert_eq!(glm.effective_default_effort(), Some("high"));
-        assert_eq!(glm.supported_efforts, vec!["low", "high", "max"]);
-        assert_eq!(glm.can_disable_thinking, Some(true));
-
-        let hy = &c.models[2].reasoning.as_ref().unwrap();
-        assert_eq!(hy.supported_efforts, vec!["high"]);
-        assert_eq!(hy.can_disable_thinking, Some(false));
+        assert_eq!(c.models.len(), 6);
+        assert_eq!(c.models[0].reasoning.as_ref().unwrap()["effort"], "high");
+        assert_eq!(
+            c.models[1].reasoning.as_ref().unwrap()["supportedEfforts"],
+            serde_json::json!(["low", "high", "max"])
+        );
     }
 
     /// 空目录返回空表。

@@ -21,7 +21,6 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use crate::config::LoomyReasoningEffort;
 use crate::core::claim::SkipReason;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
@@ -35,16 +34,13 @@ pub const ID: &str = "loomy";
 pub struct LoomyProvider {
     root: PathBuf,
     client: reqwest::Client,
-    /// 思考强度。
-    effort: LoomyReasoningEffort,
 }
 
 impl LoomyProvider {
-    pub fn new(root: PathBuf, effort: LoomyReasoningEffort) -> anyhow::Result<Self> {
+    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             root,
             client: api::client()?,
-            effort,
         })
     }
 
@@ -178,7 +174,7 @@ impl Provider for LoomyProvider {
     /// 对话（上游恒回 SSE，非流式由下游聚合）。
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let token = self.access_token().await?;
-        let body = chat::build_body(&req, self.effort);
+        let body = chat::build_body(&req);
         let url = format!("{}/chat/completions", api::MODEL_BASE_URL);
 
         // 自己序列化并 `.body()`：避免 `.json()` 追加第二个 content-type 头。

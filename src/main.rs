@@ -28,7 +28,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Refresh { provider } => cli::refresh::run(root, &provider).await,
         Command::Config => {
             // 原样输出内嵌文本，保留注释。不写盘，由 shell 重定向决定去向。
-            print!("{}", config::DEFAULT_CONFIG_STR);
+            //
+            // 思考强度已从所有供应商移除，故剔除遗留键 `reasoning_effort`
+            // （示例文件是历史产物，不在本次可改范围内）。
+            print!("{}", config::template_str());
             Ok(())
         }
     }

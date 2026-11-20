@@ -1,6 +1,6 @@
 //! 签到：每日签到活动。
 //!
-//! 协议见 `provider-info/workbuddy.md` §7。桌面端 `billingPrefix = "/v2"`：
+//! 协议见 `provider-info/workbuddy.md` §6。桌面端 `billingPrefix = "/v2"`：
 //!
 //! ```text
 //! ① POST /v2/billing/meter/checkin-activity-status
@@ -57,7 +57,7 @@ pub struct CheckinResult {
     pub streak_days: i64,
 }
 
-/// 业务码 → 签到语义（§7 的 `mapCheckinStatus`）。
+/// 业务码 → 签到语义（§6 的 `mapCheckinStatus`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckinStatus {
     /// 已领取。

@@ -102,7 +102,7 @@ pub async fn get_json<T: DeserializeOwned>(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !(200..300).contains(&status.as_u16()) {
-        // 目录接口无业务码信封，HTTP 非 200 即失败（§8.3）。
+        // 目录接口无业务码信封，HTTP 非 200 即失败（§7.3）。
         return Err(HttpError::Status {
             status: status.as_u16(),
             body: truncate_chars(&text, 300),
@@ -175,7 +175,7 @@ pub async fn post_form_json<T: DeserializeOwned>(
         .map_err(|e| HttpError::Decode(format!("{e}; 原文: {}", truncate_chars(&text, 300))))
 }
 
-/// OAuth 错误响应体（两种键名变体都要兼容，见 §8.1），仅用于解出错误码。
+/// OAuth 错误响应体（两种键名变体都要兼容，见 §7.1），仅用于解出错误码。
 #[derive(Debug, serde::Deserialize)]
 struct OAuthErrorBody {
     #[serde(default)]

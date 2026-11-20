@@ -1,6 +1,6 @@
 //! Loomy 的「签到」：宠物打工奖励（`/pet-work` + `/pet-work/rewards`）。
 //!
-//! Loomy 本身**没有**每日签到接口（`provider-info/loomy.md` §7「无」），
+//! Loomy 本身**没有**每日签到接口（`provider-info/loomy.md` §6「无」），
 //! 但它的每日福利落在「宠物打工」这套接口上，语义与签到等价：
 //!
 //! ```text

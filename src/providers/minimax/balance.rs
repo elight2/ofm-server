@@ -29,7 +29,7 @@
 //!   与真实余额不符 —— 只能用 `op_credit_summary`。
 //! * **签名头与 query 全部必需性为否**：去掉 `yy`/`x-timestamp`/`x-signature`、
 //!   去掉全部 query（含 `timezone_offset`）、`user_id` 传 `0`/空，
-//!   实测都仍返回正确余额。这与 §6 早期推断（「需签名头 + 依赖
+//!   实测都仍返回正确余额。这与 §5 早期推断（「需签名头 + 依赖
 //!   `user/info` → `get_user_extra_info` 两条前置请求」）**不符**，
 //!   已按实测简化：直连 `get_membership_info`，不带签名、不带 query。
 //!

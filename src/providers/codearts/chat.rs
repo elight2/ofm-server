@@ -46,13 +46,10 @@ struct ChatBody {
     /// 取值由**对话前缀**派生（见 [`cache_key`】）：同一会话的前缀不变时 key 不变，
     /// 上游才可能命中前缀缓存。
     prompt_cache_key: String,
-    /// 思考档位。仅当模型在上游有档位时发送（见 `variants` 模块）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<String>,
 }
 
 impl ChatBody {
-    fn build(req: &ChatRequest, effort: Option<&str>) -> Self {
+    fn build(req: &ChatRequest) -> Self {
         Self {
             model: req.model.clone(),
             messages: req.messages.iter().map(convert_message).collect(),
@@ -79,7 +76,6 @@ impl ChatBody {
                 .collect(),
             tool_choice: req.tool_choice.to_json(),
             prompt_cache_key: cache_key(req),
-            reasoning_effort: effort.map(str::to_string),
         }
     }
 }
@@ -214,12 +210,11 @@ fn header_map(
 
 /// 发起 chat 请求，返回内部事件流。
 ///
-/// `effort` 是已映射好的上游档位取值（`None` 表示不发 `reasoning_effort`）。
+/// 不发送任何思考强度字段：保持上游默认状态。
 pub async fn stream(
     client: &reqwest::Client,
     cred: &Credential,
     req: &ChatRequest,
-    effort: Option<&str>,
 ) -> Result<EventStream, ProviderError> {
     let url = format!("{SNAP_GATEWAY}{CHAT_PATH}");
     for attempt in 0..=QUEUE_MAX_ATTEMPTS {
@@ -231,9 +226,9 @@ pub async fn stream(
             tokio::time::sleep(std::time::Duration::from_secs(QUEUE_RETRY_SECS)).await;
         }
 
-        let body = serde_json::to_string(&ChatBody::build(req, effort))
+        let body = serde_json::to_string(&ChatBody::build(req))
             .map_err(|e| ProviderError::Other(format!("序列化 chat 请求失败: {e}")))?;
-        tracing::debug!("[codearts] model={} reasoning_effort={effort:?}", req.model);
+        tracing::debug!("[codearts] model={}", req.model);
         let body_hash = sha256_hex(body.as_bytes());
 
         // 与已验证的 ofm 插件一致：content-type、body hash、security token 参与签名；
@@ -363,7 +358,7 @@ mod tests {
             }],
             tool_choice: ToolChoice::Auto,
         };
-        let v = serde_json::to_value(ChatBody::build(&req, None)).unwrap();
+        let v = serde_json::to_value(ChatBody::build(&req)).unwrap();
         assert_eq!(v["stream"], true);
         assert_eq!(v["messages"][0]["content"], "你好");
         assert_eq!(v["tools"][0]["function"]["parameters"]["type"], "object");
@@ -395,28 +390,19 @@ mod tests {
         assert_ne!(cache_key(&a), cache_key(&d));
     }
 
+    /// **不发送**任何思考强度字段：保持上游默认状态。
     #[test]
-    fn 档位为空时不发字段() {
-        let req = ChatRequest {
-            model: "kimi-k3".into(),
-            messages: vec![user("hi")],
-            tools: vec![],
-            tool_choice: ToolChoice::Auto,
-        };
-        let v = serde_json::to_value(ChatBody::build(&req, None)).unwrap();
-        assert!(v.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn 档位有值时发送字段() {
+    fn 不发送思考强度字段() {
         let req = ChatRequest {
             model: "GLM-5.2".into(),
             messages: vec![user("hi")],
             tools: vec![],
             tool_choice: ToolChoice::Auto,
         };
-        let v = serde_json::to_value(ChatBody::build(&req, Some("max"))).unwrap();
-        assert_eq!(v["reasoning_effort"], "max");
+        let v = serde_json::to_value(ChatBody::build(&req)).unwrap();
+        assert!(v.get("reasoning_effort").is_none());
+        assert!(v.get("thinking").is_none());
+        assert!(v.get("output_config").is_none());
     }
 
     #[test]
@@ -437,7 +423,7 @@ mod tests {
             tools: vec![],
             tool_choice: ToolChoice::Auto,
         };
-        let v = serde_json::to_value(ChatBody::build(&req, None)).unwrap();
+        let v = serde_json::to_value(ChatBody::build(&req)).unwrap();
         assert_eq!(v["messages"][0]["reasoning_content"], "");
         assert_eq!(
             v["messages"][0]["tool_calls"][0]["function"]["name"],
@@ -465,7 +451,7 @@ mod tests {
                 tools: vec![],
                 tool_choice: ToolChoice::Auto,
             };
-            let body = serde_json::to_string(&ChatBody::build(&req, None)).unwrap();
+            let body = serde_json::to_string(&ChatBody::build(&req)).unwrap();
             assert!(!body.contains("maas_type"), "{model} 不应带 maas_type");
         }
     }

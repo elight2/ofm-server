@@ -6,6 +6,7 @@
 
 ## 0. 总结
 
+
 * Loomy 是讯飞（iFlyTek.Inc）出品的 Electron 办公助手，客户端版本 0.9.39。
 * **对话侧是标准 OpenAI 兼容协议**：`/chat/completions` 收发均为 OpenAI 语义，
   流式为纯 `data:` 帧，`messages`/`tools`/`tool_choice`/`reasoning_effort` 全部逐项生效。
@@ -23,6 +24,7 @@
 | `spark-api-open.xf-yun.com` | 讯飞星火 API（客户端内备用，本项目不用） |
 
 ## 1. 登录方式
+
 
 客户端 UI（`LoginPage`）只有两个 Tab：**手机号** 和 **微信**。二者最终都落到
 讯飞统一账号网关 `https://account.xfinfr.com`，一套 `SDK-HMAC-SHA1` 签名。
@@ -65,10 +67,12 @@ GET  /userinfo/query/baseInfo   （带 session）
 
 ## 2. 令牌续期方式
 
+
 **无**。讯飞账号 `session` 固定 14 天有效，过期只能重新登录
 （`ofm-server login loomy`）。故 `Provider::refresh` 返回 `Unsupported`。
 
 ## 3. Chat Completions 映射
+
 
 ### 3.1 请求格式
 
@@ -117,10 +121,10 @@ Content-Type: application/json
 
 目录里每个 chat 模型带
 `reasoning_efforts: ["none","low","medium","high","xhigh"]` 与
-`default_reasoning_effort: "low"`。`reasoning_effort` 字段逐档透传生效。
+`default_reasoning_effort: "low"`。上游 `reasoning_effort` 字段逐档透传生效。
 
-本项目配置只暴露三档（`low`/`medium`/`high`），逐档透传；
-上游还有 `none`/`xhigh`，配置层未开。
+**本协议不发送该字段**：请求体不带 `reasoning_effort`，保持上游默认思考行为
+（即目录声明的默认档位）。
 
 ### 3.5 工具调用
 
@@ -150,7 +154,15 @@ data: [DONE]
 `usage` 额外带 `points_consumed`（本次扣分），非 OpenAI 标准，本项目忽略。
 `finish_reason` 实测出现 `stop` / `length` / `tool_calls`。
 
+### 3.9 思考强度（上游能力参考，本协议不发送）
+
+上游支持 `none`/`low`/`medium`/`high`/`xhigh` 五档，逐档透传生效。
+
+**本协议不发送该字段**：请求体不带 `reasoning_effort`，保持上游默认思考行为
+（即目录声明的 `default_reasoning_effort`）。
+
 ## 4. models 端点映射
+
 
 ### 4.1 获取模型列表
 
@@ -205,17 +217,8 @@ token: <session>
   转发必然 404「该模型暂未开放，请切换其他模型」。
 * `auto` 保留（它是合法 chat 路由模型，只是没有 `capabilities`）。
 
-## 5. reasoning_effort 字段映射
+## 5. 余额获取
 
-| 配置值 | 上游值 | 说明 |
-|--------|--------|------|
-| `low` | `low` | 默认档，与目录 `default_reasoning_effort` 一致 |
-| `medium` | `medium` | |
-| `high` | `high` | |
-
-上游还接受 `none`（几乎不思考）和 `xhigh`，本项目配置层未暴露。
-
-## 6. 余额获取
 
 ```text
 GET https://loomyad.xunfei.cn/api/v1/points/balance
@@ -236,7 +239,8 @@ pointsActual/consumeSource/balanceBefore/balanceAfter/dailyCycleDate`。
 `/points/by-chat`、`/points/by-turn`、`/points/records`（v2 形态）、
 `/team-points/*`（需先切团队，否则回 `100001 当前未切换到团队`）。
 
-## 7. 签到协议（宠物打工奖励）
+## 6. 签到协议（宠物打工奖励）
+
 
 Loomy **没有**「每日签到」字样的接口，但每日福利落在「宠物打工」这套接口上，
 语义与签到等价：
@@ -267,9 +271,10 @@ POST /pet-work/rewards
 `activeSessionCount` / `extraValidTurnCount` 相对基线算 `petWorkScore`），
 但服务端不校验，本项目跳过这一步，直接按档位申请。
 
-## 8. 上游异常响应
+## 7. 上游异常响应
 
-### 8.1 两套错误形态
+
+### 7.1 两套错误形态
 
 | 接口 | 形态 |
 |------|------|
@@ -281,7 +286,7 @@ POST /pet-work/rewards
 注意认证失效的 `content-type` 是 `application/json` 而非 `text/event-stream`，
 故在 SSE 解码前按 content-type 拦一层。
 
-### 8.2 错误码
+### 7.2 错误码
 
 | code | 含义 | 本项目归类 |
 |------|------|-----------|
@@ -305,9 +310,10 @@ HTTP 200 + `{"code":"100002","desc":"登录已失效，请重新登录"}`，与�
 `desc` 含「缺少」的 `100002`（如只发错认证头时的「缺少 token」）是请求构造问题，
 不探测，直接归为上游响应异常（502）。
 
-## 9. 消息处理协议
+## 8. 消息处理协议
 
-### 9.1 飞书消息
+
+### 8.1 飞书消息
 
 ```javascript
 // 事件: im.message.receive_v1
@@ -325,7 +331,7 @@ HTTP 200 + `{"code":"100002","desc":"登录已失效，请重新登录"}`，与�
 }
 ```
 
-### 9.2 钉钉消息
+### 8.2 钉钉消息
 
 ```javascript
 // 回调: TOPIC_ROBOT
@@ -341,7 +347,7 @@ HTTP 200 + `{"code":"100002","desc":"登录已失效，请重新登录"}`，与�
 }
 ```
 
-### 9.3 企业微信消息
+### 8.3 企业微信消息
 
 ```javascript
 {
@@ -360,7 +366,7 @@ HTTP 200 + `{"code":"100002","desc":"登录已失效，请重新登录"}`，与�
 }
 ```
 
-### 9.4 QQ 消息
+### 8.4 QQ 消息
 
 ```javascript
 // 群消息: GROUP_AT_MESSAGE_CREATE
@@ -380,7 +386,7 @@ HTTP 200 + `{"code":"100002","desc":"登录已失效，请重新登录"}`，与�
 }
 ```
 
-### 9.5 微信消息
+### 8.5 微信消息
 
 ```javascript
 {
@@ -396,7 +402,8 @@ HTTP 200 + `{"code":"100002","desc":"登录已失效，请重新登录"}`，与�
 }
 ```
 
-## 10. 远程通道规则注入
+## 9. 远程通道规则注入
+
 
 Loomy 在发送消息给 AI 时，会注入通道特定的规则：
 
@@ -415,9 +422,10 @@ const hiddenInstructions = buildRemoteHiddenInstructions([
 - **微信**: "当前消息来源：微信。"
 - **Nexus**: "不要调用 question 工具..."
 
-## 11. 文件处理
+## 10. 文件处理
 
-### 11.1 文件下载
+
+### 10.1 文件下载
 
 | 渠道 | 方式 |
 |------|------|
@@ -427,7 +435,7 @@ const hiddenInstructions = buildRemoteHiddenInstructions([
 | QQ | 直接通过附件 URL 下载，`Authorization: QQBot <token>` |
 | 微信 | CDN 下载 + AES-ECB 解密 |
 
-### 11.2 文件上传
+### 10.2 文件上传
 
 | 渠道 | 方式 |
 |------|------|
@@ -437,7 +445,8 @@ const hiddenInstructions = buildRemoteHiddenInstructions([
 | QQ | `POST /v2/users/{openId}/files` base64 上传 |
 | 微信 | 通过 gateway RPC |
 
-## 12. 配置存储
+## 11. 配置存储
+
 
 所有渠道配置使用 `electron-store`，存储在用户数据目录：
 
@@ -451,7 +460,8 @@ getUserDataPath() → ~/.config/loomy (Linux) 或 %APPDATA%/loomy (Windows)
 - `wecom-config.json` - 企业微信配置
 - `weixin-gateway/` - 微信网关数据
 
-## 13. 主进程架构
+## 12. 主进程架构
+
 
 ```
 main.js (入口)

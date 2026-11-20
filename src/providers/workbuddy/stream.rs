@@ -10,7 +10,7 @@
 //! ```
 //! 纯 `data:` 帧，无 `event:` 行。通用骨架见 [`crate::core::chunk`]。
 //!
-//! **非标准点**（§8.3）：流内可能出现**没有 `choices` 的错误帧**
+//! **非标准点**（§7.3）：流内可能出现**没有 `choices` 的错误帧**
 //! `{"code":11140,"msg":"..."}`（HTTP 仍是 200）。这类帧必须与正常 chunk
 //! 区分开，否则会被当成空 chunk 静默丢掉，用户只看到「没反应」。
 
@@ -41,7 +41,7 @@ impl Default for FrameParser {
 
 /// 错误帧识别。
 ///
-/// 判据（§8.3）：帧**没有 `choices`** 且带 `code`（或 `msg`+`displayMsg`）时
+/// 判据（§7.3）：帧**没有 `choices`** 且带 `code`（或 `msg`+`displayMsg`）时
 /// 视为错误帧。有 `choices` 的帧即使正文出现「审核」等字样也不是错误帧。
 fn error_of(v: &Value) -> Option<UpstreamError> {
     let has_choices = v.get("choices").map(|c| c.is_array()).unwrap_or(false);
@@ -78,7 +78,7 @@ fn error_of(v: &Value) -> Option<UpstreamError> {
     })
 }
 
-/// 业务码 → 错误分类（§8.2）。
+/// 业务码 → 错误分类（§7.2）。
 fn classify_code(code: Option<i64>) -> ErrorKind {
     match code {
         // 渠道校验失败：疑似非官方客户端发起。

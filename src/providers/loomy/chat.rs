@@ -1,23 +1,23 @@
 //! Loomy 对话请求体构造。
 //!
 //! 上游 `/chat/completions` 是**标准 OpenAI 语义**（实测见 `provider-info/loomy.md`
-//! §3）：`messages`/`tools`/`tool_choice`/`reasoning_effort` 全部逐项生效，
+//! §3）：`messages`/`tools`/`tool_choice` 全部逐项生效，
 //! 流式响应是纯 `data:` 帧。故请求体只需照搬 `ChatRequest`，不做协议翻译。
+//!
+//! **不发送**思考强度字段：保持上游默认状态。
 
 use serde_json::Value;
 
-use crate::config::LoomyReasoningEffort;
 use crate::core::provider::{ChatRequest, Message, Part, Role};
 
 /// 由 [`ChatRequest`] 构造上游请求体。
 ///
 /// 恒发 `stream: true`：上游 SSE 分帧正常，非流式由下游聚合，没必要两套代码。
-pub fn build_body(req: &ChatRequest, effort: LoomyReasoningEffort) -> Value {
+pub fn build_body(req: &ChatRequest) -> Value {
     let mut body = serde_json::json!({
         "model": req.model,
         "messages": req.messages.iter().map(convert_message).collect::<Vec<_>>(),
         "stream": true,
-        "reasoning_effort": effort_field(effort),
     });
 
     if !req.tools.is_empty() {
@@ -45,18 +45,6 @@ pub fn build_body(req: &ChatRequest, effort: LoomyReasoningEffort) -> Value {
     }
 
     body
-}
-
-/// 档位 → 上游 `reasoning_effort` 取值。
-///
-/// 上游目录共五档（`none/low/medium/high/xhigh`，`default_reasoning_effort = low`），
-/// 本项目配置只暴露三档，直接逐档透传即可。
-fn effort_field(effort: LoomyReasoningEffort) -> &'static str {
-    match effort {
-        LoomyReasoningEffort::Low => "low",
-        LoomyReasoningEffort::Medium => "medium",
-        LoomyReasoningEffort::High => "high",
-    }
 }
 
 /// 单条消息 → 上游形态。
@@ -143,29 +131,23 @@ mod tests {
 
     #[test]
     fn 纯文本走字符串() {
-        let b = build_body(
-            &req(vec![msg(Role::User, vec![Part::Text("你好".into())])]),
-            Default::default(),
-        );
+        let b = build_body(&req(vec![msg(Role::User, vec![Part::Text("你好".into())])]));
         assert_eq!(b["messages"][0]["content"], "你好");
         assert_eq!(b["messages"][0]["role"], "user");
     }
 
     #[test]
     fn 图片走内容数组() {
-        let b = build_body(
-            &req(vec![msg(
-                Role::User,
-                vec![
-                    Part::Text("看图".into()),
-                    Part::Image {
-                        url: "data:image/png;base64,AA".into(),
-                        detail: None,
-                    },
-                ],
-            )]),
-            Default::default(),
-        );
+        let b = build_body(&req(vec![msg(
+            Role::User,
+            vec![
+                Part::Text("看图".into()),
+                Part::Image {
+                    url: "data:image/png;base64,AA".into(),
+                    detail: None,
+                },
+            ],
+        )]));
         let content = b["messages"][0]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "image_url");
@@ -173,13 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn 恒为流式且带思考强度() {
-        let b = build_body(
-            &req(vec![msg(Role::User, vec![Part::Text("x".into())])]),
-            LoomyReasoningEffort::High,
-        );
+    fn 恒为流式且不发思考强度() {
+        let b = build_body(&req(vec![msg(Role::User, vec![Part::Text("x".into())])]));
         assert_eq!(b["stream"], true);
-        assert_eq!(b["reasoning_effort"], "high");
+        assert!(b.get("reasoning_effort").is_none());
+        assert!(b.get("thinking").is_none());
+        assert!(b.get("output_config").is_none());
     }
 
     #[test]
@@ -191,18 +172,18 @@ mod tests {
             parameters: Some(serde_json::json!({"type":"object"})),
         }];
         r.tool_choice = ToolChoice::Required;
-        let b = build_body(&r, Default::default());
+        let b = build_body(&r);
         assert_eq!(b["tools"][0]["function"]["name"], "get_weather");
         assert_eq!(b["tool_choice"], "required");
 
         // Auto 不发该字段。
         r.tool_choice = ToolChoice::Auto;
-        let b = build_body(&r, Default::default());
+        let b = build_body(&r);
         assert!(b.get("tool_choice").is_none());
 
         // 无工具时也不发 tools。
         r.tools.clear();
-        let b = build_body(&r, Default::default());
+        let b = build_body(&r);
         assert!(b.get("tools").is_none());
     }
 
@@ -217,7 +198,7 @@ mod tests {
         let mut tool = msg(Role::Tool, vec![Part::Text("晴".into())]);
         tool.tool_call_id = Some("call_1".into());
 
-        let b = build_body(&req(vec![assistant, tool]), Default::default());
+        let b = build_body(&req(vec![assistant, tool]));
         assert_eq!(b["messages"][0]["tool_calls"][0]["id"], "call_1");
         assert_eq!(
             b["messages"][0]["tool_calls"][0]["function"]["name"],
@@ -231,7 +212,7 @@ mod tests {
     fn 非tool消息不带tool_call_id() {
         let mut m = msg(Role::User, vec![Part::Text("x".into())]);
         m.tool_call_id = Some("call_1".into());
-        let b = build_body(&req(vec![m]), Default::default());
+        let b = build_body(&req(vec![m]));
         assert!(b["messages"][0].get("tool_call_id").is_none());
     }
 }

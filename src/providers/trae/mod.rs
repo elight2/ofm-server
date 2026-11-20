@@ -22,7 +22,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::config::TraeReasoningEffort;
 use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
@@ -39,19 +38,14 @@ pub struct TraeProvider {
     client: reqwest::Client,
     /// 续期必须串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: Arc<Mutex<()>>,
-    /// 思考强度。trae 上游不认这个字段（见 `provider-info/trae.md` §3.2），
-    /// 故仅保留以便将来上游支持时使用。
-    #[allow(dead_code)]
-    effort: TraeReasoningEffort,
 }
 
 impl TraeProvider {
-    pub fn new(root: PathBuf, effort: TraeReasoningEffort) -> anyhow::Result<Self> {
+    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             root,
             client: api::client()?,
             refresh_lock: Arc::new(Mutex::new(())),
-            effort,
         })
     }
 
@@ -376,7 +370,7 @@ impl Provider for TraeProvider {
     }
 }
 
-/// HTTP 层错误映射（§5.1）。`body` 已由 [`crate::core::http::error_body`] 截断。
+/// HTTP 层错误映射（§7.1）。`body` 已由 [`crate::core::http::error_body`] 截断。
 fn map_http_error(status: u16, body: &str) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Unauthorized(body.to_string()),

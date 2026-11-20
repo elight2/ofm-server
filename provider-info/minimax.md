@@ -16,9 +16,10 @@
 **未覆盖**：余额与签到（§6/§7 由 TUI 源码取得并已实测，抓包里没有）。
 
 **实现进度**分两列：`[实测]` 标注的是本服务器实现落地时真实跑过的结果，
-§9 列了已确认项与待验项，§11 列了各步状态。
+§8 列了已确认项与待验项，§10 列了各步状态。
 
 ## 0. 总结
+
 
 * 客户端版本：`MiniMax/3.1.16`（`Electron/42.11.16`，`Chrome/148.0.7778.280`），抓包日期 2026-11-17
 * 分析方式：源码静态阅读 + mitmproxy 全量抓包（Windows 测试机 → 本机代理）
@@ -50,7 +51,9 @@
    （`adaptive`/`disabled`），发 `output_config.effort` 完全无效；
    `MiniMax-M3.1-Flash` 只认 `output_config.effort`（真实档位，单调生效），
    发 `thinking.type=disabled` 会被 **HTTP 400** 拒绝。另需注意官方 UI 显示的
-   M3 档位 `on`/`off` 是客户端内部字面量，直接发上游会被**静默忽略**（见 §5.2）
+   M3 档位 `on`/`off` 是客户端内部字面量，直接发上游会被**静默忽略**（见 §3.9.2）
+   → **本协议不发送任何思考强度字段**（请求体不带 `thinking` 也不带 `output_config`），
+   保持上游默认思考行为（§3.9.4）
 3. **`count_tokens` 与 `/messages` 的 body 白名单不同**：`count_tokens` 必须在边界剥掉
    `max_tokens`/`output_config`/`tools[].eager_input_streaming`，否则严格端点 400
    `[源码 messages-count-tokens-payload.ts:27]`
@@ -63,7 +66,7 @@
    **无法从令牌读到期时间**，只能用 `expires_in` 自算。详见 §1.4
 7. **上游会静默忽略不认识的思考字段**：M3 收到 `thinking.type=off`/`on`/`enabled`
    或 `output_config.effort` 都不报错，照常思考；只有 `disabled` 真正关闭。
-   即「发了字段 ≠ 生效」，实现时不能靠不报错来判断是否生效（§5.2）
+   即「发了字段 ≠ 生效」，实现时不能靠不报错来判断是否生效（§3.9.2）
 8. **浏览器必须由用户在图形会话里打开**：`xdg-open` 在没有 `DISPLAY`/`WAYLAND_DISPLAY`
    的环境（ssh、agent 会话等）下仍会 `spawn` 成功但不打开任何窗口，
    会产生「以为已打开、实际在等一个用户看不到的 `user_code`」的假象
@@ -81,6 +84,7 @@
 非 prod 环境的域名为 `.example.invalid` 占位（源码对外发布时替换），**只需实现 prod**。
 
 ## 1. 登录方式
+
 
 ### 1.1 端点与固定参数
 
@@ -229,6 +233,7 @@ expires_at = <毫秒时间戳>   # 收到响应时刻 + expires_in*1000
 
 ## 2. 令牌续期方式
 
+
 **端点与参数**（同一 `/oauth2/token`）`[源码 oauth-client.ts:189]`：
 
 ```text
@@ -265,12 +270,12 @@ body: grant_type=refresh_token&refresh_token=<RT>&client_id=mcode-public
 **另有一条旧式续期端点**（不走 OAuth，仅 TUI 启动时兜底用）`[源码 matrix-account-client.ts:420]`：
 
 ```text
-POST https://agent.minimaxi.com/v1/api/user/renewal?device_platform=mcode&…（§6 那组 query）
+POST https://agent.minimaxi.com/v1/api/user/renewal?device_platform=mcode&…（§3.9 那组 query）
 accept: application/json
 content-type: application/json
 user-agent: MiniMaxCode
 authorization: Bearer <access_token>
-yy / x-timestamp / x-signature：同 §6 签名头（此 POST **无 body**，故 `yy` 用 `_{}`、
+yy / x-timestamp / x-signature：同 §3.9 签名头（此 POST **无 body**，故 `yy` 用 `_{}`、
 `x-signature` 不带 body）
 → {"data":{"token":"<新 access_token>"}, …}
 ```
@@ -279,6 +284,7 @@ yy / x-timestamp / x-signature：同 §6 签名头（此 POST **无 body**，故
 我方实现用标准 `refresh_token` grant 即可，**不用这条**；仅备份说明客户端存在两种续期路径。
 
 ## 3. Chat Completions 映射
+
 
 上游是 **anthropic-messages**。下游 `POST /v1/chat/completions` 需转成 Messages 协议。
 
@@ -311,7 +317,7 @@ user-agent: MiniMaxAgent
 | `x-mavis-session-id` | `mvs_<32hex>` | 会话 ID，响应头回显同名头 |
 | `x-mavis-timezone-offset` | `28800` | 时区秒偏移（东八区） |
 | `x-mavis-turn-phase` | `initial`(8) / `iteration`(2) / 缺席(16) | 首轮与工具迭代轮标记 |
-| `anthropic-beta` | `interleaved-thinking-2025-05-14` | 仅 3/26，见 §5.3 |
+| `anthropic-beta` | `interleaved-thinking-2025-05-14` | 仅 3/26，见 §3.9.3 |
 | `x-stainless-{arch,lang,os,package-version,retry-count,runtime,runtime-version,timeout}` | `x64/js/Windows/0.91.1/0/node/v24.19.0/1200` | Anthropic 官方 SDK 自动生成，无业务含义 |
 | `priority` / `sec-fetch-{dest,mode,site}` | `u=4, i` / `empty,no-cors,none` | 浏览器/Chromium fetch 自动加，无业务含义 |
 
@@ -576,7 +582,149 @@ tool_use                        → "tool_calls"
   `chat.completion` 对象返回；中途 `event: error` 应报错而不是吐半截内容
 * 上游 **无** `id`/`model` 字段的 SSE 帧不能转发；每帧 `choices[0].delta` 只带增量内容
 
+### 3.9 思考强度（上游能力参考，本协议不发送）
+
+#### 3.9.1 两个落点（按模型分）
+
+`[抓包 + 源码 tui/.../local-turn-payload-transform.ts:patchManagedThinkingPayload]`
+
+| 模型 | `thinking_config.mode` | 上游字段 | 允许值 |
+|-|-|-|-|
+| `MiniMax-M3` | `switchable`（默认 `"true"`） | `thinking`：`{"type":"adaptive"}` / `{"type":"disabled"}` | 二值开关，**无档位** |
+| `MiniMax-M3.1-Flash` | `forced_on` | `output_config`：`{"effort":"…"}`，**不发 `thinking`** | `default`/`low`/`medium`/`high`/`xhigh`/`max` |
+
+⚠️ 上表「允许值」是**上游实际接受的字段值**，不是客户端 UI 的档位名。
+官方 UI 对 M3 显示 `on`/`off`，但那是客户端内部字面量，会在发请求前被翻译成
+`adaptive`/`disabled`；把 `on`/`off` 直接发给上游会被**静默忽略**（§3.9.2 实测）。
+
+抓包交叉验证（26 次，按模型与字段组合计数）：
+
+| 模型 | thinking | output_config | 次数 |
+|-|-|-|-|
+| M3.1-Flash | 缺席 | `{"effort":"default"}` | 2 |
+| M3.1-Flash | 缺席 | `{"effort":"low"}` | 8 |
+| M3.1-Flash | 缺席 | `{"effort":"medium"}` | 2 |
+| M3.1-Flash | 缺席 | `{"effort":"high"}` | 2 |
+| M3.1-Flash | 缺席 | `{"effort":"xhigh"}` | 4 |
+| M3.1-Flash | 缺席 | `{"effort":"max"}` | 2 |
+| M3.1-Flash | `{"type":"adaptive","display":"summarized"}` | `{"effort":"low"}` | 1（**仅 count_tokens**）|
+| M3 | `{"type":"adaptive"}` | 缺席 | 2 |
+| M3 | `{"type":"disabled"}` | 缺席 | 3 |
+
+结论：
+* **M3.1-Flash 从不在对话请求里发 `thinking`**；`thinking` 只在 `count_tokens` 出现（带 `display:"summarized"`）
+* **M3 从不发 `output_config`**
+* `display` 字段在对话请求里**完全没出现**（`[源码]` 里默认值 `"summarized"`，可能被网关剥离或客户端仅在计数路径加）
+
+#### 3.9.2 档位语义
+
+* **M3 的档位值是字面量 `"on"` / `"off"`**，不是 `low`/`high`：
+  `isMiniMaxM3ThinkingMode(v) = v==='on'||v==='off'` `[源码 thinking.ts:36]`，
+  映射到 `thinking:{type: on?'adaptive':'disabled'}` `[源码 resolveMiniMaxM3ThinkingProtocol]`。
+  官方 UI 对 M3 只给「开/关」二档
+* **M3.1-Flash 的档位值是目录里的 `effort_options`**（`default`/`low`/`medium`/`high`/`xhigh`/`max`），
+  用户所选值**原样**写进 `output_config.effort` `[源码 model-ref.ts:397]`
+* `default`：客户端 UI 的「默认」，**原样发给上游**，不是「不发送」（抓包 2 次 `{"effort":"default"}`）
+* 档位集合**禁止硬编码**，随目录 `effort_options` 变化；`default_effort` 为默认值
+* M3 的 `enabled` 取自 `effort==='on'`，且 `minimumMaxTokens = 1024`（防止关思考时 max_tokens 过小导致空响应）`[源码 thinking.ts:102]`
+* 内部 pi 档位名只是运输键：`thinkingLevelMap: {high: <用户值>}`，让 pi 的 `high` 透传成原值 `[源码]`
+
+#### 上游真实接受范围 `[实测 2026-11-17]`
+
+上文「M3 的档位值是字面量 `on`/`off`」说的是**官方客户端 UI 的内部取值**，
+它在上游请求体里被翻译成 `thinking.type: adaptive|disabled`。
+直接把这些字面量发到上游会被**静默忽略**（不报错、照常思考）——这点极易踩坑，故单列实测结果。
+
+固定 prompt（概率推导题，`max_tokens=3000`），读 `message_delta.usage.output_tokens_details.thinking_tokens`：
+
+**M3（`switchable`）**
+
+| 请求字段 | 结果 |
+|-|-|
+| `thinking:{"type":"adaptive"}` | ✅ 开思考，132 / 175 / 233（3 次） |
+| `thinking:{"type":"disabled"}` | ✅ **真正关闭**，0 / 0 / 0（3 次） |
+| `thinking:{"type":"enabled"}` | ⚠️ 静默忽略，仍思考（141） |
+| `thinking:{"type":"on"}` | ⚠️ 静默忽略，仍思考（89） |
+| `thinking:{"type":"off"}` | ⚠️ 静默忽略，仍思考，97 / 101 / 137（3 次） |
+| `output_config:{"effort":"…"}`（`low`~`max` 5 档） | ❌ **完全无效**，79~250 全落在单档噪声范围内 |
+| 只发 `output_config`、**不发** `thinking` | ❌ **完全不思考**（thinking_tokens 恒 0） |
+| `thinking:{"type":"adaptive","budget_tokens":N}` | ❌ 无规律（1024→107、4096→217、16000→158、32000→95） |
+
+→ **M3 只有开/关二值可控**，档位概念在 M3 上不存在。`on`/`off` 是客户端内部字面量，
+**不能**直接当上游字段值用；`budget_tokens` 不被识别。
+
+**M3.1-Flash（`forced_on`）**
+
+| 请求字段 | 结果 |
+|-|-|
+| `output_config:{"effort":"low"}` | ✅ 46 / 65 / 69 |
+| `output_config:{"effort":"medium"}` | ✅ 75 / 76 / 78 |
+| `output_config:{"effort":"high"}` | ✅ 70 / 70 / 114 |
+| `output_config:{"effort":"xhigh"}` | ✅ 82 / 89 / 129 |
+| `output_config:{"effort":"max"}` | ✅ 125 / 218 / 266 |
+| `output_config:{"effort":"default"}` | 与省略字段无差别（76/152/73 vs 93/136/97，噪声内相同） |
+| 完全省略两个字段 | 正常思考（93 / 136 / 147） |
+| `thinking:{"type":"disabled"}` | ❌ **HTTP 400** `invalid params, model …` |
+| `thinking:{"type":"off"}` | ⚠️ 静默忽略，照常思考 |
+
+→ **Flash 的 `effort` 是真实档位**，单调生效（相邻档有重叠：`high` 有时低于 `medium`，
+但整体趋势 clear）。`default` 与不传等价，`none` 不允许（同 `disabled`）。
+
+**结论差异表**
+
+| 控制手段 | M3 | M3.1-Flash |
+|-|-|-|
+| `thinking.type` | ✅ 唯一有效手段（`adaptive`/`disabled`） | ❌ `disabled` 会 400，其余静默忽略 |
+| `output_config.effort` | ❌ 完全无效 | ✅ 唯一有效手段 |
+| 省略全部字段 | 不思考 | 正常思考（等于 `default`） |
+
+#### 3.9.3 `anthropic-beta: interleaved-thinking-2025-05-14`
+
+`[抓包]` 仅 3/26 次出现，且全部是 `MiniMax-M3` + `thinking:{"type":"disabled"}`（即关思考的长上下文续轮）。
+`MiniMax-M3.1-Flash` **从未**带该 beta 头。
+
+`[源码 pi-mono anthropic.ts:901]`：`needsInterleavedBeta = interleavedThinking && !forceAdaptiveThinking`，
+即**非 adaptive 模型**才会带。M3.1-Flash 属 adaptive → 不带；M3 在关思考时带。
+
+实测它不影响 200 结果，我方实现可完全不发该头 `[未验证]`。
+
+#### 3.9.4 本协议不发送思考强度字段
+
+请求体既不带 `thinking` 也不带 `output_config`，由上游自行决定思考行为
+（保持上游默认状态）。下表仅记录上游的接受范围，供后续实现参考。
+
+| 上游字段 | M3 | M3.1-Flash |
+|-|-|-|
+| `thinking:{"type":"adaptive"}` | ✅ 生效 | ❌ 会 HTTP 400 |
+| `thinking:{"type":"disabled"}` | ✅ 生效（关思考） | ❌ 会 HTTP 400 |
+| `output_config:{"effort":"…"}` | ❌ 无效 | ✅ 生效 |
+
+两条硬约束（§3.9.2 实测）：
+
+* **M3 只有开/关**，`low`~`max` 对 M3 **全部等价于开思考**，属上游能力限制；
+  对 M3 **绝不能**发 `output_config`（无效）或 `on`/`off`（静默忽略）。
+* **Flash 绝不能发 `thinking`**：`disabled` 会被 HTTP 400 拒，`off` 被静默忽略。
+  档位只能走 `output_config.effort`。
+
+**上游档位集合**：由目录 `effort_options` 决定，**不硬编码**（M3.1-Flash 当前为
+`default`/`low`/`medium`/`high`/`xhigh`/`max`）。
+
+**上游档位效果**（2026-11-17 实测，M3.1-Flash，固定概率题，`max_tokens=3000`，
+每档 3 次，读 `usage.completion_tokens_details.reasoning_tokens`）：
+
+| 上游档位 | M3.1-Flash thinking_tokens | 说明 |
+|-|-|-|
+| `low` | 100 / 105 / 102 | 基线 |
+| `medium` | 100 / 131 / 143 | 明显更高 |
+| `high` | 215 / 98 / 148 | 相邻档重叠（§3.9.2 已知现象）|
+| `xhigh` | 222 / 235 / 123 | |
+| `max` | 146 / 345 / 272 | 最高 |
+
+单调趋势成立（均值 102 → 125 → 154 → 193 → 254）。M3 在 `low` 与 `max` 下
+thinking_tokens 均在 140~370 区间、无档位差异，符合「M3 只有开/关」的结论。
+
 ## 4. models 端点映射
+
 
 ```text
 GET https://agent.minimax.cn/mavis/api/v1/models?region=cn&buildEnv=prod
@@ -668,7 +816,7 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 | `attachment` | 是否支持附件 | 两模型均 `true` |
 | `modalities.input` 含 `image` | 是否支持图片 | 两模型均 `[text,image,video]` |
 | `options.reasoningSummary = "auto"` | 上游自行决定是否输出思考摘要 | 抓包里对话请求从不发 `display`，与 `auto` 一致 |
-| `thinking_config.mode` | 思考档位形态（§5.1） | `switchable` / `forced_on` |
+| `thinking_config.mode` | 思考档位形态（§3.9.1） | `switchable` / `forced_on` |
 | `effort_options` / `default_effort` | 可选档位集 | 只 M3.1-Flash 有 |
 | `ttlSeconds: 300` | 目录建议缓存 300 秒 | `[抓包]`；源码内未见读取该字段（搜 `ttlSeconds` 无命中），我方可不缓存 |
 | `whitelist` | **不用于列表** | 含 M2.7，但 `models` 未下发 → 是否可调用 `[未验证]` |
@@ -689,169 +837,10 @@ user-agent: <Electron UA>                  # Mozilla/… MiniMax/3.1.16 Chrome/1
 * `ttlSeconds: 300` 本实现**不缓存**：每次 `/v1/models` 都实时请求目录，
   因为目录是模型可用性的实时真相源（如 M2.7 一旦下发就能立即出现）
 
-## 5. reasoning_effort 字段映射
+## 5. 余额获取
 
-### 5.1 两个落点（按模型分）
 
-`[抓包 + 源码 tui/.../local-turn-payload-transform.ts:patchManagedThinkingPayload]`
-
-| 模型 | `thinking_config.mode` | 上游字段 | 允许值 |
-|-|-|-|-|
-| `MiniMax-M3` | `switchable`（默认 `"true"`） | `thinking`：`{"type":"adaptive"}` / `{"type":"disabled"}` | 二值开关，**无档位** |
-| `MiniMax-M3.1-Flash` | `forced_on` | `output_config`：`{"effort":"…"}`，**不发 `thinking`** | `default`/`low`/`medium`/`high`/`xhigh`/`max` |
-
-⚠️ 上表「允许值」是**上游实际接受的字段值**，不是客户端 UI 的档位名。
-官方 UI 对 M3 显示 `on`/`off`，但那是客户端内部字面量，会在发请求前被翻译成
-`adaptive`/`disabled`；把 `on`/`off` 直接发给上游会被**静默忽略**（§5.2 实测）。
-
-抓包交叉验证（26 次，按模型与字段组合计数）：
-
-| 模型 | thinking | output_config | 次数 |
-|-|-|-|-|
-| M3.1-Flash | 缺席 | `{"effort":"default"}` | 2 |
-| M3.1-Flash | 缺席 | `{"effort":"low"}` | 8 |
-| M3.1-Flash | 缺席 | `{"effort":"medium"}` | 2 |
-| M3.1-Flash | 缺席 | `{"effort":"high"}` | 2 |
-| M3.1-Flash | 缺席 | `{"effort":"xhigh"}` | 4 |
-| M3.1-Flash | 缺席 | `{"effort":"max"}` | 2 |
-| M3.1-Flash | `{"type":"adaptive","display":"summarized"}` | `{"effort":"low"}` | 1（**仅 count_tokens**）|
-| M3 | `{"type":"adaptive"}` | 缺席 | 2 |
-| M3 | `{"type":"disabled"}` | 缺席 | 3 |
-
-结论：
-* **M3.1-Flash 从不在对话请求里发 `thinking`**；`thinking` 只在 `count_tokens` 出现（带 `display:"summarized"`）
-* **M3 从不发 `output_config`**
-* `display` 字段在对话请求里**完全没出现**（`[源码]` 里默认值 `"summarized"`，可能被网关剥离或客户端仅在计数路径加）
-
-### 5.2 档位语义
-
-* **M3 的档位值是字面量 `"on"` / `"off"`**，不是 `low`/`high`：
-  `isMiniMaxM3ThinkingMode(v) = v==='on'||v==='off'` `[源码 thinking.ts:36]`，
-  映射到 `thinking:{type: on?'adaptive':'disabled'}` `[源码 resolveMiniMaxM3ThinkingProtocol]`。
-  官方 UI 对 M3 只给「开/关」二档
-* **M3.1-Flash 的档位值是目录里的 `effort_options`**（`default`/`low`/`medium`/`high`/`xhigh`/`max`），
-  用户所选值**原样**写进 `output_config.effort` `[源码 model-ref.ts:397]`
-* `default`：客户端 UI 的「默认」，**原样发给上游**，不是「不发送」（抓包 2 次 `{"effort":"default"}`）
-* 档位集合**禁止硬编码**，随目录 `effort_options` 变化；`default_effort` 为默认值
-* M3 的 `enabled` 取自 `effort==='on'`，且 `minimumMaxTokens = 1024`（防止关思考时 max_tokens 过小导致空响应）`[源码 thinking.ts:102]`
-* 内部 pi 档位名只是运输键：`thinkingLevelMap: {high: <用户值>}`，让 pi 的 `high` 透传成原值 `[源码]`
-
-#### 上游真实接受范围 `[实测 2026-11-17]`
-
-上文「M3 的档位值是字面量 `on`/`off`」说的是**官方客户端 UI 的内部取值**，
-它在上游请求体里被翻译成 `thinking.type: adaptive|disabled`。
-直接把这些字面量发到上游会被**静默忽略**（不报错、照常思考）——这点极易踩坑，故单列实测结果。
-
-固定 prompt（概率推导题，`max_tokens=3000`），读 `message_delta.usage.output_tokens_details.thinking_tokens`：
-
-**M3（`switchable`）**
-
-| 请求字段 | 结果 |
-|-|-|
-| `thinking:{"type":"adaptive"}` | ✅ 开思考，132 / 175 / 233（3 次） |
-| `thinking:{"type":"disabled"}` | ✅ **真正关闭**，0 / 0 / 0（3 次） |
-| `thinking:{"type":"enabled"}` | ⚠️ 静默忽略，仍思考（141） |
-| `thinking:{"type":"on"}` | ⚠️ 静默忽略，仍思考（89） |
-| `thinking:{"type":"off"}` | ⚠️ 静默忽略，仍思考，97 / 101 / 137（3 次） |
-| `output_config:{"effort":"…"}`（`low`~`max` 5 档） | ❌ **完全无效**，79~250 全落在单档噪声范围内 |
-| 只发 `output_config`、**不发** `thinking` | ❌ **完全不思考**（thinking_tokens 恒 0） |
-| `thinking:{"type":"adaptive","budget_tokens":N}` | ❌ 无规律（1024→107、4096→217、16000→158、32000→95） |
-
-→ **M3 只有开/关二值可控**，档位概念在 M3 上不存在。`on`/`off` 是客户端内部字面量，
-**不能**直接当上游字段值用；`budget_tokens` 不被识别。
-
-**M3.1-Flash（`forced_on`）**
-
-| 请求字段 | 结果 |
-|-|-|
-| `output_config:{"effort":"low"}` | ✅ 46 / 65 / 69 |
-| `output_config:{"effort":"medium"}` | ✅ 75 / 76 / 78 |
-| `output_config:{"effort":"high"}` | ✅ 70 / 70 / 114 |
-| `output_config:{"effort":"xhigh"}` | ✅ 82 / 89 / 129 |
-| `output_config:{"effort":"max"}` | ✅ 125 / 218 / 266 |
-| `output_config:{"effort":"default"}` | 与省略字段无差别（76/152/73 vs 93/136/97，噪声内相同） |
-| 完全省略两个字段 | 正常思考（93 / 136 / 147） |
-| `thinking:{"type":"disabled"}` | ❌ **HTTP 400** `invalid params, model …` |
-| `thinking:{"type":"off"}` | ⚠️ 静默忽略，照常思考 |
-
-→ **Flash 的 `effort` 是真实档位**，单调生效（相邻档有重叠：`high` 有时低于 `medium`，
-但整体趋势 clear）。`default` 与不传等价，`none` 不允许（同 `disabled`）。
-
-**结论差异表**
-
-| 控制手段 | M3 | M3.1-Flash |
-|-|-|-|
-| `thinking.type` | ✅ 唯一有效手段（`adaptive`/`disabled`） | ❌ `disabled` 会 400，其余静默忽略 |
-| `output_config.effort` | ❌ 完全无效 | ✅ 唯一有效手段 |
-| 省略全部字段 | 不思考 | 正常思考（等于 `default`） |
-
-### 5.3 `anthropic-beta: interleaved-thinking-2025-05-14`
-
-`[抓包]` 仅 3/26 次出现，且全部是 `MiniMax-M3` + `thinking:{"type":"disabled"}`（即关思考的长上下文续轮）。
-`MiniMax-M3.1-Flash` **从未**带该 beta 头。
-
-`[源码 pi-mono anthropic.ts:901]`：`needsInterleavedBeta = interleavedThinking && !forceAdaptiveThinking`，
-即**非 adaptive 模型**才会带。M3.1-Flash 属 adaptive → 不带；M3 在关思考时带。
-
-实测它不影响 200 结果，我方实现可完全不发该头 `[未验证]`。
-
-### 5.4 我方配置映射建议
-
-| `[minimax] reasoning_effort` | M3 | M3.1-Flash |
-|-|-|-|
-| `low` | `thinking:{"type":"adaptive"}` | `output_config:{"effort":"low"}` |
-| `medium` | 同上 | `{"effort":"medium"}` |
-| `high` | 同上 | `{"effort":"high"}` |
-| `xhigh` | 同上 | `{"effort":"xhigh"}` |
-| `max` | 同上 | `{"effort":"max"}` |
-
-两条硬约束（§5.2 实测）：
-
-* **M3 只有开/关**，`low`~`max` 对 M3 **全部等价于开思考**，属上游能力限制；
-  对 M3 **绝不能**发 `output_config`（无效）或 `on`/`off`（静默忽略）。
-* **Flash 绝不能发 `thinking`**：`disabled` 会被 HTTP 400 拒，`off` 被静默忽略。
-  档位只能走 `output_config.effort`。
-
-**实现状态**：已接入请求体（`minimax/chat.rs` 的 `thinking_fields`），
-落点由每轮拉取的目录 `models[<model>].thinking_config.mode` 分流：
-`forced_on` → 只发 `output_config.effort`；其余（含目录拉取失败）→ 只发 `thinking.type`。
-
-**配置档位 → 上游档位：就近映射**（`MinimaxReasoningEffort::nearest_effort`）：
-
-配置文件**只能**填 `low`/`medium`/`high`/`xhigh`/`max` 五档（写其它值会报错）。
-上游档位集合由目录 `effort_options` 决定，**不硬编码**，故需要「就近」：
-
-1. 上游表里有同名档位 → 直接用（当前目录五档齐全，全部命中同名）；
-2. 否则按「五档序号距离」挑最近的，**距离相同取较低档**（更省 token）；
-3. 上游表里没有任何可识别档位名 → 回退到本档位的标准名；
-4. `default` **不参与**距离计算——它表示「让上游自己决定」，与本档位不是同维度。
-
-**不提供「关闭思考」档位**：上游对 Flash 无「关」档位（`disabled` 会被 400 拒），
-M3 的 `disabled` 又会让模型完全不思考、退化明显，故配置层不暴露该选项。
-
-M3（`switchable`）无档位，`low`~`max` 五档一律映射为 `thinking.type=adaptive`。
-
-**实测验证**（2026-11-17，固定概率题，`max_tokens=3000`，每档 3 次，
-读 `usage.completion_tokens_details.reasoning_tokens`）：
-
-| 配置档位 | M3.1-Flash thinking_tokens | 说明 |
-|-|-|-|
-| `low` | 100 / 105 / 102 | 基线 |
-| `medium` | 100 / 131 / 143 | 明显更高 |
-| `high` | 215 / 98 / 148 | 相邻档重叠（§5.2 已知现象）|
-| `xhigh` | 222 / 235 / 123 | |
-| `max` | 146 / 345 / 272 | 最高 |
-
-单调趋势成立（均值 102 → 125 → 154 → 193 → 254）。M3 在 `low` 与 `max` 下
-thinking_tokens 均在 140~370 区间、无档位差异，符合「M3 只有开/关」的结论。
-
-注意 `nearest_effort` 的判定只依赖目录 `effort_options` 的**字符串**，
-若上游将来改名（如把 `xhigh` 改为 `x-high`），会退化到第 3 条规则（回退标准名），
-此时发出去的档位名可能不在上游表里 —— 需要在目录变更时同步 `rank_of_upstream`。
-
-## 6. 余额获取
-
-### 6.1 端点（已实现）
+### 5.1 端点（已实现）
 
 ```text
 POST https://agent.minimax.cn/matrix/api/v1/commerce/get_membership_info
@@ -864,7 +853,7 @@ Authorization: Bearer <access_token>
 `get_membership_info` 与 `get_user_extra_info` 两个端点响应里都带同名
 `op_credit_summary`，取其一即可。
 
-### 6.2 实测（2026-11-17，testdata 账号）
+### 5.2 实测（2026-11-17，testdata 账号）
 
 ```json
 {"plan_type":1,"plan_name":"","has_token_plan":false,
@@ -881,7 +870,7 @@ Authorization: Bearer <access_token>
 * `opcredit_balance` / `total_remains_credit` 在本账号上都是 `0`，与真实余额不符
   —— **只能用 `op_credit_summary`**。
 
-### 6.3 必需项（逐个删测）
+### 5.3 必需项（逐个删测）
 
 | 项 | 必需 | 证据 |
 |-|-|-|
@@ -897,7 +886,7 @@ Authorization: Bearer <access_token>
 > `user/info` → `get_user_extra_info` → `get_membership_info` 三级依赖，
 > 那是照抄源码推断、**未实测**。实测后简化为一次直连请求，签名头与前置全部不需要。
 
-### 6.4 Token Plan 额度（不实现）
+### 5.4 Token Plan 额度（不实现）
 
 `GET https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains`
 是 **Token Plan 订阅**的 5 小时/周窗口额度，与积分余额是两回事。
@@ -912,7 +901,7 @@ Authorization: Bearer <access_token>
 `packages/tui/src/account/matrix-account-client.ts` 的 `TOKEN_PLAN_REMAINS_PATH`，
 `[未验证]`（本账号无订阅，无法采集真实响应）。
 
-### 6.5 本实现的处理（`ofm-server`）
+### 5.5 本实现的处理（`ofm-server`）
 
 `src/providers/minimax/balance.rs`：一次 `POST get_membership_info`，
 取 `op_credit_summary.total_remaining_amount`，回退 `opcredit_balance`；
@@ -920,9 +909,10 @@ Authorization: Bearer <access_token>
 `Provider::balance` 接入后，`ofm-server status minimax` 显示
 `余额: 8437.456`，`claim.log` 的 `balance` 字段也有值。
 
-## 7. 签到协议（每日签到）
+## 6. 签到协议（每日签到）
 
-### 7.1 端点
+
+### 6.1 端点
 
 从 TUI 源码取得，`[源码 packages/tui/src/checkin/http-gateway.ts]`：
 
@@ -941,7 +931,7 @@ Authorization: Bearer <access_token>
 > （只搜了 `checkin`/`sign_in` 等英文，而实现里的路径是 `signin` 且中文文案在
 > CHANGELOG 里）。已更正。
 
-### 7.2 必需参数（实测逐个删测）
+### 6.2 必需参数（实测逐个删测）
 
 | 项 | 必需 | 说明 |
 |-|-|-|
@@ -955,7 +945,7 @@ Authorization: Bearer <access_token>
 `timezone_offset` 的取值不影响返回哪一天（`0` / `-28800` / `28800` 结果相同），
 只要求是个合法值；本实现固定 `28800`。
 
-### 7.3 响应
+### 6.3 响应
 
 `GET status` `[实测 2026-11-17]`：
 
@@ -985,7 +975,7 @@ Authorization: Bearer <access_token>
 | `days[].points` | 当日积分，**已含 `bonus_points`**，不要相加 |
 | `claim_result` | `1` 本次领取成功 / `2` 今日已领（**幂等，不是错误**） |
 
-### 7.4 本实现的处理（`ofm-server`）
+### 6.4 本实现的处理（`ofm-server`）
 
 `src/providers/minimax/claim.rs`：
 
@@ -1000,19 +990,20 @@ Authorization: Bearer <access_token>
 * 连续天数算法与客户端 `getCurrentSigninStreak` 一致：今日已领从今日起算，
   今日可领从**昨天**起算，遇到非 `3` 即停。
 
-`balance` 仍返回 `None`（见 §6），故 `ClaimReport.balance` 恒为空，
+`balance` 仍返回 `None`（见 §3.9），故 `ClaimReport.balance` 恒为空，
 `claim.log` 里只有 `delta` 有值。
 
-### 7.5 未验证
+### 6.5 未验证
 
 * 实际「首次领取成功」(`claim_result == 1`) 未触发过 —— 测试账号今日已签，
   只验证了幂等路径 (`claim_result == 2`)。分支逻辑有单测覆盖
   （`claim.rs` 的 `领取成功报告含天数与积分`）。
 * `scene` 其它取值（首次 / 已完成 / 异常）下的面板形状未采集。
 
-## 8. 上游异常响应
+## 7. 上游异常响应
 
-### 8.1 OAuth
+
+### 7.1 OAuth
 
 标准 OAuth 2.0 错误体（HTTP 非 2xx + 表单 POST）`[抓包]`：
 
@@ -1026,7 +1017,7 @@ Authorization: Bearer <access_token>
 两套都按 §1.5 的语义分类（`Pending`/`SlowDown`/`Denied`/`Expired`），
 所以两套并行存在也不影响。`slow_down` 按 OAuth 规范将轮询间隔 +5s。
 
-### 8.2 对话 `/messages`
+### 7.2 对话 `/messages`
 
 * HTTP 401 → 刷新令牌后重试一次 `[源码 auth-core.ts]`。
   `[实测]` 本实现进入 30s 刷新窗口时**预先续期**（`access_token()`），
@@ -1042,7 +1033,7 @@ Authorization: Bearer <access_token>
 * 流内**无** `event: error` 样本（本次全部 200）；解析器仍保留该分支，
   按 `error.type` 分类后 `Event::Error` 转发。
 
-### 8.3 模型目录
+### 7.3 模型目录
 
 响应无业务码信封（直接 `{version, ttlSeconds, providers}`），
 HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `[源码 list-models]`。
@@ -1061,7 +1052,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 旧 AT 立即 401，而 `expires_at` 仍指向未来），故 `chat` 对 401 做一次刷新重试。
 刷新也失败（即 RT 已失效）时才映射为下游 401。
 
-### 8.4 账号中心（登录/登出链）
+### 7.4 账号中心（登录/登出链）
 
 两套错误形状并存 `[抓包]`：
 
@@ -1074,7 +1065,8 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 `/oauth2/login` 成功时又是另一形状：`{code:0, msg:"ok", data:{…}}`（无 `statusInfo`）。
 → 解析时两种形状都要兼容；`code`/`statusInfo.code` 任一非 0 即失败。
 
-## 9. 未验证清单
+## 8. 未验证清单
+
 
 ### 已由本实现实测确认（2026-11-17）
 
@@ -1101,10 +1093,10 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 * [x] M3.1-Flash 发 `thinking:{"type":"disabled"}` → **HTTP 400 被拒**
   （印证 `mode: forced_on`，只能走 `output_config.effort`）
 * [x] `tool_result.content` 给字符串可用
-* [x] 错误响应体形状（HTTP 400，见 §8.2）
+* [x] 错误响应体形状（HTTP 400，见 §7.2）
 * [x] 端到端：`/v1/chat/completions` 流式/非流式、工具调用、多轮工具回传、
   `reasoning_content`、usage 全部经 `ofm-server` 打通
-* [x] **上游思考强度字段的真实接受范围**（§5.2）：M3 只认 `thinking.type` 的
+* [x] **上游思考强度字段的真实接受范围**（§3.9.2）：M3 只认 `thinking.type` 的
   `adaptive`/`disabled`，`on`/`off`/`enabled` 与 `budget_tokens`、`output_config.effort`
   全部无效；Flash 只认 `output_config.effort`，`effort` 单调生效（low≈65 → max≈218
   thinking_tokens），`thinking.type=disabled` 会被 400 拒
@@ -1117,7 +1109,7 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 待验：
 
 * [ ] 刷新令牌实测（§2，仅源码定论；本次 access_token 有效期内未触发）
-* [ ] 目录接口在令牌失效时的确切状态码与错误体（§8.3）
+* [ ] 目录接口在令牌失效时的确切状态码与错误体（§7.3）
 * [ ] `temperature`/`top_p`/`stop_sequences`/`metadata` 上游是否接受
   （官方从不发送 ≠ 不支持；`tool_choice` 已验证支持）
 * [ ] 流内 `event: error` 的实际形状（本次全部 200，无非 2xx 样本）
@@ -1129,13 +1121,14 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 * [ ] 图片/视频输入实测（`modalities` 声明支持，抓包 26 次未出现 `image` 块）
 * [ ] `context_window_options` 里 1000000 的切换方式（请求字段还是目录变体）
 * [ ] 海外 `region=en` 的域名与参数
-* [x] 余额端点（§6）：`POST /matrix/api/v1/commerce/get_membership_info`，
+* [x] 余额端点（§3.9）：`POST /matrix/api/v1/commerce/get_membership_info`，
   仅需 `Authorization` + body `{}`；余额取 `op_credit_summary.total_remaining_amount`
   （字符串）；已实现并实测（8437.456，与 UI 显示一致）
-* [x] 签到端点与必需参数（§7）：`/minimax-cloud/api/v1/signin/{status,claim}`，
+* [x] 签到端点与必需参数（§6）：`/minimax-cloud/api/v1/signin/{status,claim}`，
   仅需 `timezone_offset` + `Authorization`；已实现并实测（今日已签幂等路径）
 
-## 10. 参考文件
+## 9. 参考文件
+
 
 | 文件 | 说明 |
 |-|-|
@@ -1157,7 +1150,8 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | `test/capture_output/minimax_requests.jsonl` | 抓包原文（61 条）|
 | `test/minimax_capture.py` | 抓包脚本（**注意**：只保存 JSON 响应体，SSE 流未保存）|
 
-## 11. 实现顺序与要点
+## 10. 实现顺序与要点
+
 
 按 `MAINTAIN.md` 顺序：
 
@@ -1166,11 +1160,11 @@ HTTP 非 200 即失败；`providers` 为空/缺 `models` 视为目录不可用 `
 | 1 | 登录（设备码 + 轮询）写 `credential.toml` | §1.1/§1.2 | ✅ 已实现（`minimax/auth.rs`）|
 | 2 | 模型列表 `GET /v1/models?region=cn&buildEnv=prod` | §4 | ✅ 已实现（`minimax/models.rs`）|
 | 3 | 对话转 Messages + SSE 回转 CC | §3.1–§3.6/§3.8 | ✅ 已实现（`minimax/chat.rs` + `minimax/stream.rs`），端到端实测通过 |
-| 4 | 思考强度映射（按模型分两个落点）| §5 | ✅ 已实现：目录 `thinking_config.mode` 分流落点 + 配置五档就近映射上游档位（§5.4）|
+| 4 | 思考强度映射（按模型分两个落点）| §3.9 | ⚠️ **不实现**：请求体不发送任何思考强度字段，保持上游默认思考行为（§3.9.4）|
 | 5 | 令牌续期 `refresh_token` | §2 | ✅ 已实现（`auth::refresh` + `Provider::refresh` + 30s 窗口被动续期 + 401 刷新重试），端到端实测通过（§2 实测结论）|
-| 6 | 签到 `GET /signin/status` + `POST /signin/claim` | §7 | ✅ 已实现（`minimax/claim.rs`），已实测（幂等路径；首次领取未触发）|
+| 6 | 签到 `GET /signin/status` + `POST /signin/claim` | §6 | ✅ 已实现（`minimax/claim.rs`），已实测（幂等路径；首次领取未触发）|
 
-余额：✅ 已实现（`minimax/balance.rs`，§6）
+余额：✅ 已实现（`minimax/balance.rs`，§3.9）
 Token Plan 窗口额度：不实现（本账号无订阅，上游回 `no active token plan subscription`）。
 
 实现代码：`src/providers/minimax/`（`api`/`auth`/`credential`/`models`/`chat`/`stream`/`claim`/`balance`/`mod`）。
@@ -1195,4 +1189,4 @@ Token Plan 窗口额度：不实现（本账号无订阅，上游回 `no active 
   每轮对话会拉一次目录来判定，失败降级不影响对话本身。
 * **`prompt_tokens` 必须算 `input_tokens + cache_read_input_tokens`**（§3.6 关键陷阱）
 * 思考字段**绝不能混发**：M3 会静默忽略 `output_config`，Flash 会用 400 拒绝 `thinking.type=disabled`
-* M3 的 `on`/`off` 是官方客户端内部字面量，**不是**上游字段值；发到上游等于没发（§5.2）
+* M3 的 `on`/`off` 是官方客户端内部字面量，**不是**上游字段值；发到上游等于没发（§3.9.2）

@@ -13,7 +13,6 @@
 use base64::Engine;
 use serde::Serialize;
 
-use crate::config::MinimaxReasoningEffort;
 use crate::core::provider::{ChatRequest, Message, Part, Role, ToolChoice};
 use crate::core::text::truncate_chars;
 
@@ -51,12 +50,6 @@ pub struct ChatBody {
     pub tools: Vec<UpTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<UpToolChoice>,
-    /// 思考落点之一：M3（`switchable`）用 `thinking`（§5.1）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Thinking>,
-    /// 思考落点之二：M3.1-Flash（`forced_on`）用 `output_config.effort`（§5.1）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_config: Option<OutputConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,17 +57,6 @@ pub struct UpTextBlock {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub text: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Thinking {
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-pub struct OutputConfig {
-    pub effort: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,22 +124,12 @@ pub enum UpToolChoice {
 }
 
 impl ChatBody {
-    /// `reasoning_effort` 与模型形态共同决定思考字段落点。
+    /// **不发送**任何思考强度字段：保持上游默认状态。
     ///
-    /// * `forced_on`（M3.1-Flash）：档位**就近映射**到目录的 `effort_options`，
-    ///   只发 `output_config.effort`，**不发** `thinking`
-    ///   （该模型发 `thinking.type=disabled` 会被 400 拒绝，实测）。
-    /// * `switchable`（M3）：五档全部等价于开，只发 `thinking.type=adaptive`。
-    ///
-    /// 模型形态从目录里查不到时按 `switchable` 处理：明确发 `thinking.type`
-    /// 比猜测 `effort` 更安全（发错档位值会被 400 拒）。
-    pub fn build(
-        req: &ChatRequest,
-        effort: MinimaxReasoningEffort,
-        thinking: &ThinkingShape,
-    ) -> Self {
+    /// 上游的思考落点（`thinking` / `output_config.effort`）随模型形态而异，
+    /// 一律不发即由上游自行决定（§5）。
+    pub fn build(req: &ChatRequest) -> Self {
         let (system, messages) = split_messages(&req.messages);
-        let (thinking_field, output_config) = thinking_fields(effort, thinking);
         Self {
             model: req.model.clone(),
             max_tokens: MAX_TOKENS,
@@ -178,41 +150,8 @@ impl ChatBody {
                 })
                 .collect(),
             tool_choice: tool_choice(req),
-            thinking: thinking_field,
-            output_config,
         }
     }
-}
-
-/// 模型在目录里的思考形态（§5.1）。
-///
-/// 目录拉不到或模型不在目录时用 [`ThinkingShape::default`]（按 `switchable` 处理）。
-#[derive(Debug, Clone, Default)]
-pub struct ThinkingShape {
-    /// `thinking_config.mode`：`switchable` | `forced_on` | 空（未知）。
-    pub mode: String,
-    /// 目录下发的可选档位（只有 `forced_on` 模型有），§5.2。
-    pub effort_options: Vec<String>,
-}
-
-/// 思考字段落点（§5.1/§5.4）。
-///
-/// 返回 `(thinking, output_config)`，二者恰好一个为 `Some`。
-fn thinking_fields(
-    effort: MinimaxReasoningEffort,
-    shape: &ThinkingShape,
-) -> (Option<Thinking>, Option<OutputConfig>) {
-    if shape.mode == "forced_on" {
-        // M3.1-Flash：档位就近映射到目录档位表（§5.2）。
-        return (
-            None,
-            Some(OutputConfig {
-                effort: effort.nearest_effort(&shape.effort_options),
-            }),
-        );
-    }
-    // M3（switchable）：无档位，五档一律等价于开思考。
-    (Some(Thinking { kind: "adaptive" }), None)
 }
 
 /// `tool_choice` 映射（CC 四值 → Anthropic 四型）。
@@ -421,23 +360,8 @@ mod tests {
         }
     }
 
-    /// 构造思考形态。`mode` 为 `""` 表示目录拉取失败/模型不在目录。
-    fn shape(mode: &str, options: &[&str]) -> ThinkingShape {
-        ThinkingShape {
-            mode: mode.to_string(),
-            effort_options: options.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    /// 上游实际下发的档位表（§5.2）。
-    const FLASH_OPTIONS: &[&str] = &["default", "low", "medium", "high", "xhigh", "max"];
-
-    fn body(req: &ChatRequest, effort: MinimaxReasoningEffort, mode: &str) -> serde_json::Value {
-        let s = match mode {
-            "forced_on" => shape(mode, FLASH_OPTIONS),
-            other => shape(other, &[]),
-        };
-        serde_json::to_value(ChatBody::build(req, effort, &s)).unwrap()
+    fn body(req: &ChatRequest) -> serde_json::Value {
+        serde_json::to_value(ChatBody::build(req)).unwrap()
     }
 
     fn req(messages: Vec<Message>) -> ChatRequest {
@@ -452,11 +376,7 @@ mod tests {
     /// 上游恒流式、路径多一级 `llm/v1`、max_tokens 给满。
     #[test]
     fn 基本形态() {
-        let v = body(
-            &req(vec![msg(Role::User, "你好")]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![msg(Role::User, "你好")]));
         assert_eq!(v["model"], "MiniMax-M3");
         assert_eq!(v["stream"], true);
         assert_eq!(v["max_tokens"], 128000);
@@ -466,15 +386,11 @@ mod tests {
     /// system 消息**抽出**成顶层数组，且恰好 1 个 text 块（§3.2 强约束）。
     #[test]
     fn system_抽出且合并成单块() {
-        let v = body(
-            &req(vec![
-                msg(Role::System, "规则一"),
-                msg(Role::User, "hi"),
-                msg(Role::System, "规则二"),
-            ]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![
+            msg(Role::System, "规则一"),
+            msg(Role::User, "hi"),
+            msg(Role::System, "规则二"),
+        ]));
         let sys = v["system"].as_array().unwrap();
         assert_eq!(sys.len(), 1);
         assert_eq!(sys[0]["type"], "text");
@@ -489,22 +405,14 @@ mod tests {
     /// 无 system 时**不发**该字段（不是空数组，§3.2）。
     #[test]
     fn 无system时不发字段() {
-        let v = body(
-            &req(vec![msg(Role::User, "hi")]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![msg(Role::User, "hi")]));
         assert!(v.get("system").is_none());
     }
 
     /// 用户消息的内容必须是**数组**（§3.2 主流形态）。
     #[test]
     fn 内容恒为数组() {
-        let v = body(
-            &req(vec![msg(Role::User, "hi")]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![msg(Role::User, "hi")]));
         let c = &v["messages"][0]["content"];
         assert!(c.is_array());
         assert_eq!(c[0]["type"], "text");
@@ -514,21 +422,17 @@ mod tests {
     /// assistant 的 tool_calls → `tool_use` 块，arguments 字符串变对象。
     #[test]
     fn 工具调用转tool_use() {
-        let v = body(
-            &req(vec![Message {
-                role: Role::Assistant,
-                parts: vec![],
-                tool_calls: vec![ToolCall {
-                    id: "call_1".into(),
-                    name: "get_weather".into(),
-                    arguments: r#"{"city":"北京"}"#.into(),
-                }],
-                tool_call_id: None,
-                tool_name: None,
-            }]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![Message {
+            role: Role::Assistant,
+            parts: vec![],
+            tool_calls: vec![ToolCall {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"city":"北京"}"#.into(),
+            }],
+            tool_call_id: None,
+            tool_name: None,
+        }]));
         let blk = &v["messages"][0]["content"][0];
         assert_eq!(blk["type"], "tool_use");
         assert_eq!(blk["id"], "call_1");
@@ -540,17 +444,13 @@ mod tests {
     /// `role:tool` → `role:user` + `tool_result`，content 是**字符串**。
     #[test]
     fn 工具结果转user加tool_result() {
-        let v = body(
-            &req(vec![Message {
-                role: Role::Tool,
-                parts: vec![Part::Text("晴 25 度".into())],
-                tool_calls: vec![],
-                tool_call_id: Some("call_1".into()),
-                tool_name: Some("get_weather".into()),
-            }]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![Message {
+            role: Role::Tool,
+            parts: vec![Part::Text("晴 25 度".into())],
+            tool_calls: vec![],
+            tool_call_id: Some("call_1".into()),
+            tool_name: Some("get_weather".into()),
+        }]));
         let m = &v["messages"][0];
         assert_eq!(m["role"], "user");
         let blk = &m["content"][0];
@@ -572,11 +472,7 @@ mod tests {
             tool_call_id: Some(id.into()),
             tool_name: None,
         };
-        let v = body(
-            &req(vec![tool("call_1", "a"), tool("call_2", "b")]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![tool("call_1", "a"), tool("call_2", "b")]));
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1, "两条工具结果必须合并");
         assert_eq!(msgs[0]["content"].as_array().unwrap().len(), 2);
@@ -585,20 +481,16 @@ mod tests {
     /// data URL 图片 → base64 source，media_type 从 URL 取。
     #[test]
     fn 图片转base64块() {
-        let v = body(
-            &req(vec![Message {
-                role: Role::User,
-                parts: vec![Part::Image {
-                    url: "data:image/png;base64,QUJD".into(),
-                    detail: Some("high".into()),
-                }],
-                tool_calls: vec![],
-                tool_call_id: None,
-                tool_name: None,
-            }]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![Message {
+            role: Role::User,
+            parts: vec![Part::Image {
+                url: "data:image/png;base64,QUJD".into(),
+                detail: Some("high".into()),
+            }],
+            tool_calls: vec![],
+            tool_call_id: None,
+            tool_name: None,
+        }]));
         let c = v["messages"][0]["content"].as_array().unwrap();
         // 只有图 → 先补占位文本（§3.2）
         assert_eq!(c[0]["type"], "text");
@@ -612,23 +504,19 @@ mod tests {
     /// 外链图片被丢弃（上游无 url 来源类型），且不 panic。
     #[test]
     fn 外链图片被丢弃() {
-        let v = body(
-            &req(vec![Message {
-                role: Role::User,
-                parts: vec![
-                    Part::Text("看图".into()),
-                    Part::Image {
-                        url: "https://example.com/a.png".into(),
-                        detail: None,
-                    },
-                ],
-                tool_calls: vec![],
-                tool_call_id: None,
-                tool_name: None,
-            }]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![Message {
+            role: Role::User,
+            parts: vec![
+                Part::Text("看图".into()),
+                Part::Image {
+                    url: "https://example.com/a.png".into(),
+                    detail: None,
+                },
+            ],
+            tool_calls: vec![],
+            tool_call_id: None,
+            tool_name: None,
+        }]));
         let c = v["messages"][0]["content"].as_array().unwrap();
         assert_eq!(c.len(), 1, "外链图应被丢弃，只留文本");
         assert_eq!(c[0]["type"], "text");
@@ -637,23 +525,19 @@ mod tests {
     /// 非法 base64 的 data URL 被丢弃。
     #[test]
     fn 非法base64被丢弃() {
-        let v = body(
-            &req(vec![Message {
-                role: Role::User,
-                parts: vec![
-                    Part::Text("看图".into()),
-                    Part::Image {
-                        url: "data:image/png;base64,!!!不是base64!!!".into(),
-                        detail: None,
-                    },
-                ],
-                tool_calls: vec![],
-                tool_call_id: None,
-                tool_name: None,
-            }]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![Message {
+            role: Role::User,
+            parts: vec![
+                Part::Text("看图".into()),
+                Part::Image {
+                    url: "data:image/png;base64,!!!不是base64!!!".into(),
+                    detail: None,
+                },
+            ],
+            tool_calls: vec![],
+            tool_call_id: None,
+            tool_name: None,
+        }]));
         assert_eq!(v["messages"][0]["content"].as_array().unwrap().len(), 1);
     }
 
@@ -677,7 +561,7 @@ mod tests {
                 "properties": {"city": {"type": "string"}}
             })),
         }];
-        let v = body(&r, MinimaxReasoningEffort::Low, "switchable");
+        let v = body(&r);
         let t = &v["tools"][0];
         assert_eq!(t["name"], "get_weather");
         assert_eq!(t["eager_input_streaming"], true);
@@ -695,7 +579,7 @@ mod tests {
             description: None,
             parameters: None,
         }];
-        let v = body(&r, MinimaxReasoningEffort::Low, "switchable");
+        let v = body(&r);
         assert!(v["tools"][0]["input_schema"].is_object());
         assert_eq!(v["tools"][0]["input_schema"]["type"], "object");
     }
@@ -720,7 +604,7 @@ mod tests {
         ];
         for (choice, want) in cases {
             r.tool_choice = choice;
-            let v = body(&r, MinimaxReasoningEffort::Low, "switchable");
+            let v = body(&r);
             assert_eq!(v["tool_choice"], want);
         }
     }
@@ -730,127 +614,17 @@ mod tests {
     fn 无工具不发tool_choice() {
         let mut r = req(vec![msg(Role::User, "hi")]);
         r.tool_choice = ToolChoice::Required;
-        let v = body(&r, MinimaxReasoningEffort::Low, "switchable");
+        let v = body(&r);
         assert!(v.get("tool_choice").is_none());
     }
 
-    /// M3（switchable）：五档全部等价于开思考，不发 output_config。
+    /// **不发送**任何思考强度字段：保持上游默认状态。
     #[test]
-    fn m3五档都开思考() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        for effort in MinimaxReasoningEffort::ALL {
-            let v = body(&r, effort, "switchable");
-            assert_eq!(v["thinking"]["type"], "adaptive", "{effort:?} 应当开思考");
-            assert!(
-                v.get("output_config").is_none(),
-                "{effort:?} 不应发 output_config"
-            );
-        }
-    }
-
-    /// M3.1-Flash（forced_on）：只发 output_config.effort，**绝不发** thinking。
-    ///
-    /// 实测该模型发 `thinking.type=disabled` 会被 400 拒绝（本次实测）。
-    #[test]
-    fn flash只用output_config() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        let v = body(&r, MinimaxReasoningEffort::Max, "forced_on");
-        assert_eq!(v["output_config"]["effort"], "max");
-        assert!(v.get("thinking").is_none(), "forced_on 模型不能发 thinking");
-    }
-
-    /// Flash 恒发 output_config、恒不发 thinking——即使目录档位表是空的。
-    #[test]
-    fn flash恒发output_config() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        let empty = shape("forced_on", &[]);
-        for effort in MinimaxReasoningEffort::ALL {
-            let v = serde_json::to_value(ChatBody::build(&r, effort, &empty)).unwrap();
-            assert_eq!(
-                v["output_config"]["effort"],
-                effort.effort_value(),
-                "{effort:?} 档位表为空时回退标准名"
-            );
-            assert!(v.get("thinking").is_none(), "forced_on 模型不能发 thinking");
-        }
-    }
-
-    /// 就近映射：上游档位表完整时，每档命中同名档位。
-    #[test]
-    fn flash档位同名命中的() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        let opts = shape("forced_on", FLASH_OPTIONS);
-        for (effort, want) in [
-            (MinimaxReasoningEffort::Low, "low"),
-            (MinimaxReasoningEffort::Medium, "medium"),
-            (MinimaxReasoningEffort::High, "high"),
-            (MinimaxReasoningEffort::Xhigh, "xhigh"),
-            (MinimaxReasoningEffort::Max, "max"),
-        ] {
-            let v = serde_json::to_value(ChatBody::build(&r, effort, &opts)).unwrap();
-            assert_eq!(
-                v["output_config"]["effort"], want,
-                "{effort:?} 应当发 {want}"
-            );
-        }
-    }
-
-    /// 就近映射：上游档位表缺档时选最近的一档。
-    #[test]
-    fn flash档位就近映射的() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        // 只有 low / high：medium 距离 0 和 2 各 1，取较低档 low
-        let sparse = shape("forced_on", &["low", "high"]);
-        let cases = [
-            (MinimaxReasoningEffort::Low, "low"),
-            (MinimaxReasoningEffort::Medium, "low"),
-            (MinimaxReasoningEffort::High, "high"),
-            (MinimaxReasoningEffort::Xhigh, "high"),
-            (MinimaxReasoningEffort::Max, "high"),
-        ];
-        for (effort, want) in cases {
-            let v = serde_json::to_value(ChatBody::build(&r, effort, &sparse)).unwrap();
-            assert_eq!(
-                v["output_config"]["effort"], want,
-                "{effort:?} 应当就近到 {want}"
-            );
-        }
-    }
-
-    /// 就近映射：上游档位表里只有 `default`（不可识别档位）时回退到标准名。
-    #[test]
-    fn flash档位表不可识别时回退的() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        let only_default = shape("forced_on", &["default"]);
-        let v = serde_json::to_value(ChatBody::build(
-            &r,
-            MinimaxReasoningEffort::Xhigh,
-            &only_default,
-        ))
-        .unwrap();
-        assert_eq!(v["output_config"]["effort"], "xhigh");
-    }
-
-    /// 就近映射：`default` 不参与距离计算（它是「让上游自己决定」，不是档位）。
-    #[test]
-    fn flash的default不参与距离计算() {
-        let opts: Vec<String> = ["default", "low", "max"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        for effort in MinimaxReasoningEffort::ALL {
-            let got = effort.nearest_effort(&opts);
-            assert_ne!(got, "default", "{effort:?} 不应映射到 default");
-        }
-    }
-
-    /// 目录查不到形态时按 switchable 处理（发 thinking 比猜 effort 安全）。
-    #[test]
-    fn 未知形态按switchable() {
-        let r = req(vec![msg(Role::User, "hi")]);
-        let v = body(&r, MinimaxReasoningEffort::Low, "");
-        assert_eq!(v["thinking"]["type"], "adaptive");
+    fn 不发送思考强度字段() {
+        let v = body(&req(vec![msg(Role::User, "hi")]));
+        assert!(v.get("thinking").is_none());
         assert!(v.get("output_config").is_none());
+        assert!(v.get("reasoning_effort").is_none());
     }
 
     /// 坏的工具参数字符串按空对象处理，不 panic。
@@ -865,20 +639,16 @@ mod tests {
     /// 空内容的 user 消息被丢弃（Anthropic 不接受空 content 数组）。
     #[test]
     fn 空内容消息被丢弃() {
-        let v = body(
-            &req(vec![
-                Message {
-                    role: Role::User,
-                    parts: vec![],
-                    tool_calls: vec![],
-                    tool_call_id: None,
-                    tool_name: None,
-                },
-                msg(Role::User, "hi"),
-            ]),
-            MinimaxReasoningEffort::Low,
-            "switchable",
-        );
+        let v = body(&req(vec![
+            Message {
+                role: Role::User,
+                parts: vec![],
+                tool_calls: vec![],
+                tool_call_id: None,
+                tool_name: None,
+            },
+            msg(Role::User, "hi"),
+        ]));
         assert_eq!(v["messages"].as_array().unwrap().len(), 1);
     }
 }

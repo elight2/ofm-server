@@ -90,7 +90,7 @@ impl ErrorFrame {
     }
 }
 
-/// 错误码 → 语义分类（§5.1）。
+/// 错误码 → 语义分类（§7.1）。
 ///
 /// 仅列出已实测的码，其余按 `Api`（→502）处理。
 fn classify(code: Option<&str>, message: &str) -> ErrorKind {

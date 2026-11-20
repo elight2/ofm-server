@@ -10,7 +10,7 @@
 //! * 登录只能半自动：设备码只是第一步，账号确认页需要微信扫码 + 绑定手机号，
 //!   我方只打印 `user_code` 与确认链接并轮询（§0 出入 4）；
 //! * 上游是 anthropic-messages 而非 Chat Completions（§3）；
-//! * 签到在 `/minimax-cloud/api/v1/signin/{status,claim}`（§7）。
+//! * 签到在 `/minimax-cloud/api/v1/signin/{status,claim}`（§5）。
 
 pub mod api;
 pub mod auth;
@@ -27,7 +27,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::config::MinimaxReasoningEffort;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
@@ -44,18 +43,15 @@ pub struct MinimaxProvider {
     models_client: reqwest::Client,
     /// 续期串行，避免并发刷新导致 refresh_token 轮换冲突。
     refresh_lock: Arc<Mutex<()>>,
-    /// 思考强度（来自 `[minimax] reasoning_effort`）。
-    effort: MinimaxReasoningEffort,
 }
 
 impl MinimaxProvider {
-    pub fn new(root: PathBuf, effort: MinimaxReasoningEffort) -> anyhow::Result<Self> {
+    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             root,
             client: api::client()?,
             models_client: api::models_client()?,
             refresh_lock: Arc::new(Mutex::new(())),
-            effort,
         })
     }
 
@@ -132,42 +128,6 @@ impl MinimaxProvider {
             .send()
             .await?)
     }
-
-    /// 查该模型在目录里的思考形态（§5.1/§5.2）。
-    ///
-    /// 目录拉不到或模型不在目录时返回默认形态（按 `switchable` 处理）——
-    /// 明确发 `thinking.type` 比猜 `effort` 安全（档位值错了会被 400 拒）。
-    async fn thinking_mode(&self, token: &str, model: &str) -> chat::ThinkingShape {
-        let url = format!(
-            "{}{}?{}",
-            api::AGENT_HOST,
-            api::MODELS_PATH,
-            api::MODELS_QUERY
-        );
-        match api::get_json::<models::Catalog>(&self.models_client, &url, token).await {
-            Ok(cat) => {
-                let Some(entry) = cat
-                    .providers
-                    .first()
-                    .and_then(|p| p.config.models.get(model))
-                else {
-                    return chat::ThinkingShape::default();
-                };
-                chat::ThinkingShape {
-                    mode: entry
-                        .thinking_config
-                        .as_ref()
-                        .and_then(|t| t.mode.clone())
-                        .unwrap_or_default(),
-                    effort_options: entry.effort_options.clone().unwrap_or_default(),
-                }
-            }
-            Err(e) => {
-                tracing::warn!("[{ID}] 拉取目录以判定思考形态失败（按 switchable 处理）: {e}");
-                chat::ThinkingShape::default()
-            }
-        }
-    }
 }
 
 #[async_trait]
@@ -212,9 +172,7 @@ impl Provider for MinimaxProvider {
     /// 旧 AT 立即 401，而磁盘上的 `expires_at` 仍指向未来），故不能只靠时间窗。
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
         let token = self.access_token().await?;
-        // 思考落点与档位由目录里的思考配置决定（§5.1/§5.2）。
-        let shape = self.thinking_mode(&token, &req.model).await;
-        let body = chat::ChatBody::build(&req, self.effort, &shape);
+        let body = chat::ChatBody::build(&req);
 
         // 自己序列化并 .body()：避免 .json() 追加第二个 content-type 头。
         let payload = serde_json::to_vec(&body)
@@ -250,7 +208,7 @@ impl Provider for MinimaxProvider {
         }))
     }
 
-    /// 每日签到（§7）。
+    /// 每日签到（§5）。
     ///
     /// 端点 `/minimax-cloud/api/v1/signin/{status,claim}`，来自 TUI 源码
     /// `packages/tui/src/checkin/http-gateway.ts`。
@@ -265,7 +223,7 @@ impl Provider for MinimaxProvider {
         claim::claim(&self.client, &cred).await
     }
 
-    /// 余额：取 `op_credit_summary.total_remaining_amount`（§6）。
+    /// 余额：取 `op_credit_summary.total_remaining_amount`（§5）。
     async fn balance(&self) -> Result<Option<f64>, ProviderError> {
         let token = self.access_token().await?;
         let mut cred = self.credential()?;

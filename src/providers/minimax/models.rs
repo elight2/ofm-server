@@ -6,7 +6,8 @@
 //! * 模型 id 用 `config.models` 的 **key**（不是 `name`），顺序用 `model_order`；
 //! * `whitelist` 含 `models` 里没有的 M2.7，**不用于列表**；
 //! * `effort_options` / `default_effort` 是思考档位来源（M3.1-Flash 有，M3 无），
-//!   后续 §5 思考强度映射要用，这里一并解析出来。
+//!   这些字段是上游目录原样返回的元数据，本服务**不发送**任何思考强度字段，
+//!   这里一并解析出来仅为兼容解析。
 
 use std::collections::BTreeMap;
 
@@ -78,11 +79,11 @@ pub struct ModelEntry {
     #[serde(default)]
     #[allow(dead_code)]
     pub modalities: Option<Modalities>,
-    /// `switchable`（M3）/ `forced_on`（M3.1-Flash），§5.1。
+    /// `switchable`（M3）/ `forced_on`（M3.1-Flash），上游目录原样返回。
     #[serde(default)]
     #[allow(dead_code)]
     pub thinking_config: Option<ThinkingConfig>,
-    /// 可选思考档位（只有 M3.1-Flash 下发），§5.2。
+    /// 可选思考档位（只有 M3.1-Flash 下发），上游目录原样返回。
     #[serde(default)]
     #[allow(dead_code)]
     pub effort_options: Option<Vec<String>>,
@@ -263,7 +264,7 @@ mod tests {
         assert!(to_models(&parse(r#"{"version":"1.0"}"#)).is_empty());
     }
 
-    /// 思考档位与开关形态是 §5 的输入，必须能解析出来。
+    /// 思考档位与开关形态是上游目录原样返回的元数据，必须能解析出来。
     #[test]
     fn 解析思考配置() {
         let c = parse(REAL);

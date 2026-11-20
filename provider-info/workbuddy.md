@@ -8,6 +8,7 @@
 > 标注：`[打包JS]` = 解包 JS 直接证据；`[未验证]` = 推断。
 
 ## 0. 总结
+
 * 客户端版本：5.11.3（`product.json` 内 `genieVersion` 同版本）
 
 * WorkBuddy 中国版是 Electron 客户端，核心业务在 `@genie/agent-harness`（CodeBuddy 系 harness）里，
@@ -15,7 +16,7 @@
 * 对话走**标准 OpenAI Chat Completions**：`POST {endpoint}/v2/chat/completions`，SSE 为纯 `data:` 帧。
 * 登录走 **account-scoped-external-link**（浏览器授权 + 客户端轮询换 token），
   凭据为 `accessToken` / `refreshToken`（Bearer）。
-* 客户端形态与官方的主要差异见 §0.3。
+* 客户端形态与官方的主要差异见「本协议与官方客户端的出入」。
 
 ### 本协议不支持, 但 Chat Completions 有的功能
 
@@ -47,6 +48,9 @@
    对话侧有 `code=11128`（渠道校验，疑似校验 UA/来源）`[打包JS]`。
 6. **深思考**：deepseek 系模型必须显式带 `reasoning_effort` 才出思考内容，
    `thinking:{type:"enabled"}` 单独**无效**（此结论来自旧插件实测 `[未验证]` 对本次中国版）。
+7. **不发送思考强度字段**：请求体不带 `reasoning_effort`，也不带 `thinking`；
+   由上游自行决定思考行为（保持上游默认状态）。官方客户端会按模型目录的
+   `reasoning.supportedEfforts` 计算档位并发送（§3.9），本协议不实现该层。
 
 ### 域名 `[打包JS：product.json / harness 常量]`
 
@@ -60,6 +64,7 @@
 | `*.sso.copilot.tencent.com` / `tencent.sso.copilot.tencent.com` | SSO 域（登录页可能跳转过去） |
 
 ## 1. 登录方式
+
 
 类型 `account-scoped-external-link`，`prefixPath = "/plugin"`，平台 `workbuddy`
 （`product.json.authentication.attributes`）`[打包JS]`。
@@ -124,6 +129,7 @@
 
 ## 2. 令牌续期方式
 
+
 ```text
 POST https://www.workbuddy.cn/v2/plugin/auth/token/refresh
 Headers:
@@ -142,6 +148,7 @@ Body: {}
 * 对话侧 401 时 harness 会先 refresh 再重放一次请求 `[打包JS]`（VLM upstream 同款逻辑）。
 
 ## 3. Chat Completions 映射
+
 
 ### 3.1 端点与基础头
 
@@ -183,10 +190,10 @@ Accept: text/event-stream
 
 额外/需注意：
 
-* `reasoning_effort`：见 §5。
+* `reasoning_effort`：见 §3.9。**本协议不发送**。
 * `thinking`：deepseek 系模型官方会带 `thinking:{type:"enabled"}`；关闭思考时带
   `thinking:{type:"disabled"}` 并删除 `reasoning_effort`（harness `ThinkingFormatTranslatorRule`
-  的 `deepseek` 分支）`[打包JS]`。
+  的 `deepseek` 分支）`[打包JS]`。**本协议不发送**。
 * `prompt_cache_key`：`{会话 id}`。缺省时前缀缓存不命中；带同 key 可复用前缀缓存 `[未验证（旧插件实测）]`。
 * 图片：`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`，
   仅 `supportsImages=true` 的模型可发。
@@ -225,62 +232,10 @@ data: [DONE]
   `reasoningTokens` / `thought_tokens`）`[打包JS]`。
 * 工具调用后续分片里 `id`/`name` 可能为空串（等价缺失），解析时不可覆盖已累积值。
 
-## 4. models 端点映射
+### 3.9 思考强度（上游能力参考，本协议不发送）
 
-### 4.1 上游模型目录
-
-主源（实测可用）：
-
-```text
-GET https://www.workbuddy.cn/v2/enterprises/personal/models
-（headers 需带 User-Agent: WorkBuddy/5.11.3，否则返回 code=12403）
-→ {"code":0,"data":{
-     "models":[ { id, name, credits, vendor, iconUrl,
-                 maxInputTokens, maxOutputTokens, maxAllowedSize,
-                 supportsToolCall, supportsImages, supportsReasoning,
-                 onlyReasoning, temperature,
-                 reasoning:{ effort|defaultEffort, supportedEfforts[],
-                             canDisableThinking, summary } , ... } ],
-     "agents":[ { name:"cli", models:[ { id, ... } ] , ...} ],
-     "availableModels":[...] , ...
-   }}
-```
-
-备源：
-
-```text
-GET https://www.workbuddy.cn/v3/config
-（headers: Connection: close，超时 5s；失败可重试）
-```
-
-* `data.models[]` 含全部模型（对话、图像、视频、补全等）`[打包JS]`。
-* `data.agents[].models[]` 给出各 agent（`cli`/`craft`）可选模型子集 `[打包JS]`。
-  **`name == "cli"` 的 agent 的 `models[]` 才是对话侧真正可调用的清单**（实测：
-  该 agent 列出 16 个模型，逐个调用 `/v2/chat/completions` 均返回正常 SSE；
-  而 `data.models[]` 里另有图像/视频/补全类条目，调用会返回 `code=11102`）。
-* 旧目录 `/v3/config` 曾列出 39 个模型，其中部分（如 `glm-4.6`）在对话端点返回
-  `code=11102`，因此不能直接全量暴露。
-* `product.json` 里另有一份**内置兜底目录**（58 条，含 `default`/`auto`/图像/视频/补全类模型），
-  远端不可用时官方回退用它 `[打包JS]`。
-
-### 4.2 映射到 `/v1/models`
-
-* 只暴露 `cli` agent 的 `models[]`（或备源里等价的对话模型集合）；图像/视频/补全类
-  （`hunyuan-image-*`、`kling-*`、`codewise-*`、`hunyuan-3b` 等 `maxOutputTokens` 仅 256 或无
-  `maxInputTokens` 的条目）不映射为 chat 模型。
-* `id` → `model.id`；`name` → `model.name`；`owned_by` 固定 `workbuddy`。
-* `maxInputTokens` → 上下文窗口；`maxOutputTokens` → 默认输出上限（不发 `max_tokens` 时用它兜底）。
-* `supportsImages` → `input_modalities` 含 `image`。
-* `reasoning.supportedEfforts` → `reasoning_efforts`；`reasoning.defaultEffort` → `default_reasoning_effort`；
-  `reasoning.canDisableThinking=false` 时不暴露 `none`。
-* `credits`（如 `x0.51 credits`）是**额度描述而非倍率**，不映射为 `rate`。
-
-### 4.3 旧目录（仅作备源）
-
-`/v3/config` 的结构与 §4.1 主源一致（同样含 `models[]` 与 `agents[]`），
-仅在主源不可用时作为备源使用。
-
-## 5. reasoning_effort 字段映射
+**本协议不发送 `reasoning_effort`，也不发送 `thinking`**：请求体不含任何思考强度字段，
+由上游自行决定思考行为（保持上游默认状态）。下述内容仅记录上游的能力与官方客户端的做法。
 
 客户端的思考强度字段就是 OpenAI 的 `reasoning_effort`（字符串），另有 `reasoning:{effort:...}`
 对象形态，两者官方都读 `[打包JS]`。
@@ -336,7 +291,7 @@ GET https://www.workbuddy.cn/v3/config
 **deepseek 系特殊要求**：必须显式带 `reasoning_effort`（或 `thinking:{type:"enabled"}` + 档位），
 否则上游按不思考应答；此结论来自旧插件对官方客户端的三站点实测 `[未验证]`。
 
-### 5.1 实测结论（2026-11，模型 `glm-5.3-flash`）
+#### 3.9.1 实测结论（2026-11，模型 `glm-5.3-flash`）
 
 | 请求字段 | 思考长度（字符） | 结论 |
 |-|-|-|
@@ -356,10 +311,66 @@ GET https://www.workbuddy.cn/v3/config
 * `max` 档位的思考量级远大于 `high`，实际使用时需注意超时与额度消耗。
 * `glm-5.3-flash` 线上目录声明 `canDisableThinking: false`，故按目录钳制后
   `none` 会被丢弃（不发 `reasoning_effort`），与实测「发了也不关闭」一致。
+## 4. models 端点映射
 
-## 6. 余额获取
 
-### 6.1 个人账号（资源包汇总）
+### 4.1 上游模型目录
+
+主源（实测可用）：
+
+```text
+GET https://www.workbuddy.cn/v2/enterprises/personal/models
+（headers 需带 User-Agent: WorkBuddy/5.11.3，否则返回 code=12403）
+→ {"code":0,"data":{
+     "models":[ { id, name, credits, vendor, iconUrl,
+                 maxInputTokens, maxOutputTokens, maxAllowedSize,
+                 supportsToolCall, supportsImages, supportsReasoning,
+                 onlyReasoning, temperature,
+                 reasoning:{ effort|defaultEffort, supportedEfforts[],
+                             canDisableThinking, summary } , ... } ],
+     "agents":[ { name:"cli", models:[ { id, ... } ] , ...} ],
+     "availableModels":[...] , ...
+   }}
+```
+
+备源：
+
+```text
+GET https://www.workbuddy.cn/v3/config
+（headers: Connection: close，超时 5s；失败可重试）
+```
+
+* `data.models[]` 含全部模型（对话、图像、视频、补全等）`[打包JS]`。
+* `data.agents[].models[]` 给出各 agent（`cli`/`craft`）可选模型子集 `[打包JS]`。
+  **`name == "cli"` 的 agent 的 `models[]` 才是对话侧真正可调用的清单**（实测：
+  该 agent 列出 16 个模型，逐个调用 `/v2/chat/completions` 均返回正常 SSE；
+  而 `data.models[]` 里另有图像/视频/补全类条目，调用会返回 `code=11102`）。
+* 旧目录 `/v3/config` 曾列出 39 个模型，其中部分（如 `glm-4.6`）在对话端点返回
+  `code=11102`，因此不能直接全量暴露。
+* `product.json` 里另有一份**内置兜底目录**（58 条，含 `default`/`auto`/图像/视频/补全类模型），
+  远端不可用时官方回退用它 `[打包JS]`。
+
+### 4.2 映射到 `/v1/models`
+
+* 只暴露 `cli` agent 的 `models[]`（或备源里等价的对话模型集合）；图像/视频/补全类
+  （`hunyuan-image-*`、`kling-*`、`codewise-*`、`hunyuan-3b` 等 `maxOutputTokens` 仅 256 或无
+  `maxInputTokens` 的条目）不映射为 chat 模型。
+* `id` → `model.id`；`name` → `model.name`；`owned_by` 固定 `workbuddy`。
+* `maxInputTokens` → 上下文窗口；`maxOutputTokens` → 默认输出上限（不发 `max_tokens` 时用它兜底）。
+* `supportsImages` → `input_modalities` 含 `image`。
+* `reasoning.supportedEfforts` → `reasoning_efforts`；`reasoning.defaultEffort` → `default_reasoning_effort`；
+  `reasoning.canDisableThinking=false` 时不暴露 `none`。
+* `credits`（如 `x0.51 credits`）是**额度描述而非倍率**，不映射为 `rate`。
+
+### 4.3 旧目录（仅作备源）
+
+`/v3/config` 的结构与 §4.1 主源一致（同样含 `models[]` 与 `agents[]`），
+仅在主源不可用时作为备源使用。
+
+## 5. 余额获取
+
+
+### 5.1 个人账号（资源包汇总）
 
 ```text
 POST https://www.workbuddy.cn/billing/meter/get-user-resource-summary
@@ -389,7 +400,7 @@ POST https://www.workbuddy.cn/billing/meter/get-user-resource-summary
 `CapacitySizePrecise`/`CapacityUsedPrecise`/`CapacityRemainPrecise`、
 `CycleCapacity*`、过期时间 `DeductionEndTime`/`ExpiredTime`/`CycleEndTime` `[打包JS]`。
 
-### 6.2 企业账号
+### 5.2 企业账号
 
 ```text
 POST https://www.workbuddy.cn/v2/billing/meter/get-enterprise-user-usage
@@ -401,13 +412,14 @@ Headers: X-Enterprise-Id: <enterpriseId>
 另有一套 cloud-agent 侧调用（无 `/v2` 前缀、驼峰字段）：
 `POST /billing/meter/get-enterprise-user-usage` → `data.limitNum` `[打包JS]`。
 
-### 6.3 其它
+### 5.3 其它
 
 * 套餐/升级：`POST /v2/billing/pay/get-price`、`/v2/billing/pay/create-order`、`/v2/billing/pay/set-renew-flag` `[打包JS]`
 * 大使：`GET /v2/ambassador/status` → `{is_ambassador}` `[打包JS]`
 * 邀请码：`GET /activity/workbuddy/invitation/v2/my-code`、`.../invite-records` `[打包JS]`
 
-## 7. 签到协议
+## 6. 签到协议
+
 
 桌面端 `DesktopAccountRepo` 的 `billingPrefix = "/v2"`，`resourcePrefix = ""`；
 `postCheckin` 会附加图灵设备令牌头（见下）`[打包JS]`。
@@ -440,9 +452,10 @@ Headers: X-Enterprise-Id: <enterpriseId>
   桌面端主链路用带 `/v2` 的 `checkin-activity-status`。
 * 大使活动：`GET /v2/ambassador/status`（与签到分离）。
 
-## 8. 上游异常响应
+## 7. 上游异常响应
 
-### 8.1 形态
+
+### 7.1 形态
 
 | 场景 | 形态 |
 |-|-|
@@ -453,7 +466,7 @@ Headers: X-Enterprise-Id: <enterpriseId>
 `displayMsg` 是腾讯系特有的中英文双语文案，官方客户端优先用 `displayMsg.zh`/`displayMsg.en`
 呈现给用户 `[打包JS]`；应解析 `displayMsg`（否则只有 `msg` 原文）。
 
-### 8.2 错误码（客户端内置文案表 `[打包JS]`）
+### 7.2 错误码（客户端内置文案表 `[打包JS]`）
 
 | code | 官方文案（en） | 建议归类 |
 |-|-|-|
@@ -465,20 +478,20 @@ Headers: X-Enterprise-Id: <enterpriseId>
 | `400` | 参数错误 | InvalidRequest |
 | `5xx` | 服务端错误 | Upstream |
 
-### 8.3 流内错误帧的判据
+### 7.3 流内错误帧的判据
 
 SSE 帧**没有 `choices`** 且带 `code`/`msg` 时视为错误帧（`11140`/`11128` 等）`[打包JS]`；
 有 `choices` 的帧即使正文出现「审核」等字样也不是错误帧。官方对 `11128` 直接抛错，
 对 `11140` 标记账号冷却并抛错 `[打包JS]`。
 
-### 8.4 上下文超限
+### 7.4 上下文超限
 
 上游会以 `displayMsg` 文案表达「请求超出模型上下文限制」，官方通过
 `CONTEXT_WINDOW_EXCEEDED_CODE` + 文案正则双重判定（正则要求出现
 `context` / `for this model` / `maximum context` 等字样）`[打包JS]`。
 应结合 `/v3/config` 的 `maxInputTokens` 做本地预检。
 
-### 8.5 认证失效的处理顺序
+### 7.5 认证失效的处理顺序
 
 1. 对话返回 401/403 → 先 `POST /v2/plugin/auth/token/refresh`；
 2. 刷新成功 → 重放一次请求；
