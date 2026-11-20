@@ -25,7 +25,8 @@ pub const DEFAULT_CONFIG_STR: &str = include_str!("../config.example.toml");
 ///
 /// 同 [`DEFAULT_CONFIG_STR`]：文件是**默认提示词的唯一真相**，运行目录下没有
 /// `<root>/prompts/<供应商id>.md` 时用它，代码里不重复写一份常量。
-/// 每个供应商各有一份，互不影响；未列出的供应商没有默认提示词（`None`，即不注入）。
+/// 每个内置供应商各有一份，互不影响；文件内容为空白表示「该供应商默认提示词
+/// 为空」（不注入），是合法状态，不是漏写。未列出的供应商返回 `None`。
 pub fn default_prompt(provider: &str) -> Option<&'static str> {
     let text = match provider {
         crate::providers::trae::ID => include_str!("../default-prompts/trae.md"),
@@ -33,6 +34,7 @@ pub fn default_prompt(provider: &str) -> Option<&'static str> {
         crate::providers::codearts::ID => include_str!("../default-prompts/codearts.md"),
         crate::providers::minimax::ID => include_str!("../default-prompts/minimax.md"),
         crate::providers::loomy::ID => include_str!("../default-prompts/loomy.md"),
+        crate::providers::workbuddy::ID => include_str!("../default-prompts/workbuddy.md"),
         _ => return None,
     };
     Some(text)

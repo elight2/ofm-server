@@ -10,7 +10,8 @@
 //!    （= 仓库 `default-prompts/<供应商id>.md`，每家一份）。
 //!
 //! 默认内容**不硬编码在代码里**，只有那些 Markdown 文件是真相；
-//! 没有默认文件的供应商不注入任何内容。
+//! 没有默认文件的供应商不注入任何内容，默认文件内容为空白同样不注入
+//! （空白 = 该供应商不需要修正提示词）。
 //! 自定义文件存在但内容为空白时，视为「把默认提示词显式覆盖为空」，即**不注入**——
 //! 这是关掉某家默认提示词的开关。
 
@@ -273,12 +274,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 内嵌默认内容非空白（否则「回退默认」等于没注入），且每个内置供应商都有。
+    /// 内嵌默认全部来自 `default-prompts/*.md`：每个内置供应商都有一份，
+    /// 空白文件表示「默认提示词为空」（不注入），是合法状态。
     #[test]
-    fn 默认提示词非空白() {
-        for id in ["trae", "raccoon", "codearts", "minimax"] {
-            let text = config::default_prompt(id).unwrap_or_else(|| panic!("{id} 缺默认提示词"));
-            assert!(!text.trim().is_empty(), "{id} 默认提示词为空白");
+    fn 默认提示词来自文件() {
+        let ids = [
+            crate::providers::trae::ID,
+            crate::providers::raccoon::ID,
+            crate::providers::codearts::ID,
+            crate::providers::minimax::ID,
+            crate::providers::loomy::ID,
+            crate::providers::workbuddy::ID,
+        ];
+        for id in ids {
+            let text =
+                config::default_prompt(id).unwrap_or_else(|| panic!("{id} 缺默认提示词文件"));
+            // 空白文件 = 默认提示词为空 ⇒ 不注入；非空白则原样注入。
+            let want = if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.to_string())
+            };
+            assert_eq!(default_for(id), want, "{id}");
         }
     }
 
