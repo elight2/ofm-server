@@ -173,12 +173,50 @@ fn refresh_error(e: HttpError) -> ProviderError {
             if *status == 401
                 || body.contains("invalid_grant")
                 || body.contains("invalid_token")
-                || body.contains("expired") =>
+                || body.contains("expired")
+                // 华为 STS 的失效形态（§2.1），不带 OAuth 标准码。
+                || body.contains("STS5.1806")
+                || body.contains("invalid refresh token") =>
         {
             ProviderError::Unauthorized(format!(
                 "refresh_token 已失效（{e}），请重新运行 `ofm-server login {ID}`"
             ))
         }
         _ => ProviderError::Other(format!("续期失败: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `STS5.1806` 必须映射成「请重新登录」，落到 `Other` 会让用户以为
+    /// 是网络或 client_id 配置问题。
+    #[test]
+    fn sts_invalid_refresh_token_maps_to_unauthorized() {
+        let cases = [
+            r#"{"error_code":"STS5.1806","error_msg":"invalid refresh token: 'the refresh token has been used'"}"#,
+            r#"{"error_code":"STS5.1806","error_msg":"invalid refresh token: 'invalid client id: codearts-snap'"}"#,
+        ];
+        for body in cases {
+            let e = refresh_error(HttpError::Status {
+                status: 400,
+                body: body.to_string(),
+            });
+            assert!(
+                matches!(e, ProviderError::Unauthorized(_)),
+                "{body} → {e:?}"
+            );
+        }
+    }
+
+    /// 其它 4xx 不该冒充「凭证失效」。
+    #[test]
+    fn other_client_errors_stay_other() {
+        let e = refresh_error(HttpError::Status {
+            status: 400,
+            body: r#"{"error":"invalid_request"}"#.into(),
+        });
+        assert!(matches!(e, ProviderError::Other(_)), "实际: {e:?}");
     }
 }

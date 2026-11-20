@@ -65,6 +65,12 @@ pub struct ErrorFrame {
     pub code: Option<serde_json::Value>,
     #[serde(default)]
     pub message: Option<String>,
+    /// 上游附加信息，字符串形式的 JSON（如 `{"plan":5}`）。
+    ///
+    /// 实测 `code:1005` + 空 `message` + `extra:{"plan":5}` = **账号套餐不含该模型**，
+    /// 此时 `message` 为空，不带出 `extra` 的话下游只会看到「未给出消息」。
+    #[serde(default)]
+    pub extra: Option<String>,
 }
 
 impl ErrorFrame {
@@ -76,7 +82,9 @@ impl ErrorFrame {
         let raw = self.message.clone().unwrap_or_default();
         Event::Error(UpstreamError {
             kind: classify(code.as_deref(), &raw),
-            message: trim_message(&raw),
+            message: trim_message(&raw)
+                .or_else(|| plan_hint(self.extra.as_deref()))
+                .unwrap_or_else(|| "上游返回错误但未给出消息".to_string()),
             code,
         })
     }
@@ -106,13 +114,22 @@ fn classify(code: Option<&str>, message: &str) -> ErrorKind {
 }
 
 /// `message` 只取首行，避免把整段堆栈塞给下游。
-fn trim_message(raw: &str) -> String {
+///
+/// 返回 `None` 表示上游没给可读文案，由调用方决定用什么兜底。
+fn trim_message(raw: &str) -> Option<String> {
     let first = raw.lines().next().unwrap_or("").trim();
-    if first.is_empty() {
-        "上游返回错误但未给出消息".to_string()
-    } else {
-        first.to_string()
-    }
+    (!first.is_empty()).then(|| first.to_string())
+}
+
+/// `extra` 里的套餐信息 → 可读提示。
+///
+/// 上游用 `{"plan":5}` 表示套餐等级不足（`code:1005` 且 `message` 为空）。
+/// 原样透传 `extra` 对下游没意义，转成一句能看懂的说明。
+fn plan_hint(extra: Option<&str>) -> Option<String> {
+    let extra = extra?;
+    let v: serde_json::Value = serde_json::from_str(extra).ok()?;
+    v.get("plan")
+        .map(|p| format!("上游拒绝：当前账号套餐不含该模型（plan={p}）"))
 }
 
 /// 本轮的解析状态（`done` 需要知道是否出现过工具调用）。
@@ -365,6 +382,35 @@ mod tests {
         );
         match evs.as_slice() {
             [Event::Error(e)] => assert_eq!(e.message, "bad request"),
+            other => panic!("意外的解析结果: {other:?}"),
+        }
+    }
+
+    /// 上游 `code:1005` + 空 `message` + `extra:{"plan":5}` 是套餐限制，
+    /// 必须把 `plan` 翻成人能看懂的话，否则下游只看到「未给出消息」。
+    #[test]
+    fn error_empty_message_falls_back_to_plan() {
+        let mut p = FrameParser::new();
+        let evs = p.parse(
+            "error",
+            r#"{"code":1005,"message":"","extra":"{\"plan\":5}"}"#,
+        );
+        match evs.as_slice() {
+            [Event::Error(e)] => {
+                assert_eq!(e.code.as_deref(), Some("1005"));
+                assert!(e.message.contains("套餐"), "实际: {}", e.message);
+            }
+            other => panic!("意外的解析结果: {other:?}"),
+        }
+    }
+
+    /// 既无 `message` 也无 `extra` 时仍要有可读兜底。
+    #[test]
+    fn error_no_message_no_extra_has_fallback() {
+        let mut p = FrameParser::new();
+        let evs = p.parse("error", r#"{"code":4011}"#);
+        match evs.as_slice() {
+            [Event::Error(e)] => assert!(!e.message.is_empty()),
             other => panic!("意外的解析结果: {other:?}"),
         }
     }

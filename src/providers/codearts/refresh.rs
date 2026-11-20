@@ -19,13 +19,20 @@ use super::auth::{self, TokenResponse};
 use super::credential::Credential;
 use super::dpop;
 
-/// 服务端返回 `invalid_grant` 一类「refresh token 不可用」的 OAuth 错误码。
+/// 服务端返回的「refresh token 不可用」错误标识。
+///
+/// 华为 STS 实际用的是 `{"error_code":"STS5.1806","error_msg":"invalid refresh
+/// token: '<原因>'"}`，**不含** OAuth 标准的 `invalid_grant`；只认标准码会让
+/// 失效令牌被误判为可重试，进而回退 kernel 形态、最终报出误导性的
+/// `invalid client id`（§2.1）。
 const INVALID_GRANT: &[&str] = &[
     "invalid_grant",
     "invalid_token",
     "expired_token",
     "refresh_token_expired",
     "refresh_token_invalid",
+    "STS5.1806",
+    "invalid refresh token",
 ];
 
 /// 续期并返回新凭证（调用方负责落盘）。
@@ -154,6 +161,22 @@ mod tests {
             body: r#"{"error":"invalid_grant","error_description":"refresh token expired"}"#.into(),
         };
         assert!(!is_retryable(&err));
+    }
+
+    /// 华为 STS 的失效形态不带 OAuth 标准码，必须同样判为不可重试，
+    /// 否则会白白回退 kernel 形态并报出误导性的 `invalid client id`。
+    #[test]
+    fn huawei_sts_invalid_refresh_token_is_not_retried() {
+        let used = HttpError::Status {
+            status: 400,
+            body: r#"{"error_code":"STS5.1806","error_msg":"invalid refresh token: 'the refresh token has been used'"}"#.into(),
+        };
+        assert!(!is_retryable(&used), "已用过的令牌不应重试");
+        let mismatch = HttpError::Status {
+            status: 400,
+            body: r#"{"error_code":"STS5.1806","error_msg":"invalid refresh token: 'invalid client id: codearts-snap'"}"#.into(),
+        };
+        assert!(!is_retryable(&mismatch));
     }
 
     #[test]
