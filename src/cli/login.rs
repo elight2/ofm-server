@@ -39,27 +39,60 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
 
 /// 用系统默认浏览器打开 URL。
 ///
-/// Windows 走 `cmd /C start "" <url>`（不为此引入 winapi 依赖），但**必须自己给
-/// URL 加引号**：`start` 会按 `&` / `|` / `^` 重新切分收到的命令行，而授权 URL 的
-/// 参数就是用 `&` 连接的。
+/// Windows 走 `cmd /C start "" <url>`（不为此引入 winapi 依赖）。这里有两个陷阱，
+/// 都必须用 `raw_arg` 自行拼命令行才能同时躲开：
 ///
-/// 而 `std::process::Command` 在 Windows 上只给「含空白或引号」的参数加引号——
-/// 本项目拼出的授权 URL 已把空格编码为 `%20`，不含这两类字符，于是 URL 以裸形态
-/// 交给 `cmd`，`&` 被当作命令分隔符：浏览器只打开第一个 `&` 之前的截断 URL，
-/// 其余片段被逐条当作命令执行（报错被丢弃），其中末段的
-/// `http://127.0.0.1:<回调端口>/<回调路径>` 还会额外弹出一个访问本地回调端口的
-/// 标签页——Windows 上「浏览器最后一步卡在连接」即由此产生。
+/// 1. `start` 会按 `&` / `|` / `^` 重新切分收到的命令行，而授权 URL 的参数就是用
+///    `&` 连接的。必须先给它加上引号，否则浏览器只打开第一个 `&` 之前的截断 URL，
+///    其余片段被逐条当命令执行（报错被丢弃），其中末段的
+///    `http://127.0.0.1:<回调端口>/<回调路径>` 还会额外弹出一个访问本地回调端口的
+///    标签页（历史症状：「浏览器最后一步卡在连接」）。
+/// 2. 但**不能**把加了引号的字符串当成普通 `.arg()` 传：`.arg()` 走 Rust 的 Windows
+///    参数转义，引号会被再转义成 `\"`。而 `std::process::Command` 平时只给「含空白
+///    或引号」的参数加引号，本项目拼出的 URL 把空格编码为 `%20`，本来不触发，一旦
+///    手工加引号反而触发二次转义，`cmd` 收到 `"https://…"`（带字面反斜杠），报
+///    「Windows 找不到文件 xxx」。
 ///
-/// 显式加引号后，`cmd` 把整串当成 `start` 的第二个参数（第一个是空标题），不再切分。
+/// 故用 `raw_arg` 原样传 `/C start "" "<url>"`：引号只出现在我们亲手拼的串里，
+/// 不再经 `.arg()` 的转义。已用 wine 验证 `cmd` 收到的 URL 与输入逐字节相同
+/// （`%20`/`%3A`/`%2F` 均未被展开）。
 pub fn open_browser(url: &str) -> anyhow::Result<()> {
     if cfg!(target_os = "windows") {
-        let quoted = format!("\"{url}\"");
-        return spawn_first(&[("cmd", &["/C", "start", "", quoted.as_str()])]);
+        return open_browser_windows(url);
     }
     if cfg!(target_os = "macos") {
         return spawn_first(&[("open", &[url])]);
     }
     spawn_first(&[("xdg-open", &[url])])
+}
+
+/// `cmd /C` 后接的命令行（`start` + 空标题 + 加引号的 URL）。
+///
+/// 单独成函以便测试锁住拼接形状；见 [`open_browser`] 的两个陷阱说明。
+/// 非 Windows 平台只用测试引用，故允许 dead_code。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_start_cmdline(url: &str) -> String {
+    format!("/C start \"\" \"{url}\"")
+}
+
+/// Windows 的 `start` 启动器：见 [`open_browser`] 的两个陷阱说明。
+#[cfg(windows)]
+fn open_browser_windows(url: &str) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    std::process::Command::new("cmd")
+        .raw_arg(windows_start_cmdline(url))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("启动浏览器失败: {e}"))
+}
+
+/// 非 Windows 平台的占位，保证 `cfg!(target_os = "windows")` 分支在其它平台上也能编译。
+#[cfg(not(windows))]
+fn open_browser_windows(_url: &str) -> anyhow::Result<()> {
+    anyhow::bail!("内部错误：Windows 分支在非 Windows 平台上被调用")
 }
 
 /// 依次尝试候选命令，`NotFound` 时继续下一个。
@@ -248,6 +281,26 @@ mod tests {
         assert!(resp.contains("登录完成"), "响应: {resp}");
 
         drop(hang);
+    }
+
+    /// Windows 的 `start` 命令行必须用 `raw_arg` 原样拼、引号只出现一层。
+    ///
+    /// 回归点：曾把手动加引号的 URL 当普通 `.arg()` 传，Rust 二次转义成 `\"`，
+    /// cmd 得到带字面反斜杠引号的无效路径，报「Windows 找不到文件 xxx」。
+    #[test]
+    fn windows_start命令行只有一层引号() {
+        let url = "https://www.trae.cn/authorization?login_version=1&auth_from=trae\
+&x_os_version=Arch%20Linux&code_challenge=abc";
+        let line = super::windows_start_cmdline(url);
+        // 必须恰好是 `/C start "" "<url>"`，且 `&` 落在引号内。
+        assert_eq!(line, format!("/C start \"\" \"{url}\""));
+        // 关键：不得出现 `\"`（Rust 二次转义后的形态）。
+        assert!(!line.contains("\\\""), "命令行里出现反斜杠转义引号: {line}");
+        // `&` 全部落在引号内：去掉包住 URL 的那对引号后，内容应与 URL 完全相同。
+        assert!(
+            line.ends_with(&format!("\"{url}\"")),
+            "URL 未被引号完整包住: {line}"
+        );
     }
 
     /// 回调端口在开浏览器前就应处于监听状态。
