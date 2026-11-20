@@ -4,32 +4,15 @@
 
 use serde_json::Value;
 
-use crate::core::provider::{ChatRequest, Message, Part, Role, ToolChoice};
 use crate::config::LoomyReasoningEffort;
+use crate::core::provider::{ChatRequest, Part, Role};
 
-/// 对话请求体。
-pub struct ChatBody {
-    pub model: String,
-    pub messages: Vec<Message>,
-    pub temperature: f64,
-    pub max_tokens: u32,
-    pub stream: bool,
-    pub reasoning_effort: Option<String>,
-    pub tools: Vec<ToolSpec>,
-    pub tool_choice: Option<Value>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolSpec {
-    pub name: String,
-    pub description: Option<String>,
-    pub parameters: Option<Value>,
-}
-
-impl ChatBody {
-    /// 从 [`ChatRequest`] 构造。
-    pub fn build(req: &ChatRequest, effort: LoomyReasoningEffort) -> Value {
-        let messages: Vec<Value> = req.messages.iter().map(|m| {
+/// 由 [`ChatRequest`] 构造上游请求体（OpenAI 兼容）。
+pub fn build_body(req: &ChatRequest, effort: LoomyReasoningEffort) -> Value {
+    let messages: Vec<Value> = req
+        .messages
+        .iter()
+        .map(|m| {
             let role = match m.role {
                 Role::System => "system",
                 Role::User => "user",
@@ -38,12 +21,14 @@ impl ChatBody {
             };
             let content = if m.role == Role::Tool {
                 // tool 消息的 content 是工具结果字符串
-                m.tool_calls.first()
+                m.tool_calls
+                    .first()
                     .map(|tc| format!("{{\"name\":\"{}\",\"result\":{}}}", tc.name, tc.arguments))
                     .unwrap_or_default()
             } else {
                 // 普通消息：拼接文本部分
-                m.parts.iter()
+                m.parts
+                    .iter()
                     .filter_map(|p| match p {
                         Part::Text(t) => Some(t.clone()),
                         Part::Image { url, .. } => Some(format!("[图片: {url}]", url = url)),
@@ -58,16 +43,20 @@ impl ChatBody {
             });
 
             if !m.tool_calls.is_empty() {
-                let tool_calls: Vec<Value> = m.tool_calls.iter().map(|tc| {
-                    serde_json::json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": tc.arguments,
-                        }
+                let tool_calls: Vec<Value> = m
+                    .tool_calls
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            }
+                        })
                     })
-                }).collect();
+                    .collect();
                 obj["tool_calls"] = Value::Array(tool_calls);
             }
             if let Some(tool_call_id) = &m.tool_call_id {
@@ -75,32 +64,36 @@ impl ChatBody {
             }
 
             obj
-        }).collect();
+        })
+        .collect();
 
-        let mut body = serde_json::json!({
-            "model": req.model,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "stream": false,
-        });
+    let mut body = serde_json::json!({
+        "model": req.model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "stream": false,
+    });
 
-        // 思考强度
-        match effort {
-            LoomyReasoningEffort::Low => {
-                body["reasoning_effort"] = Value::String("low".to_string());
-            }
-            LoomyReasoningEffort::Medium => {
-                body["reasoning_effort"] = Value::String("medium".to_string());
-            }
-            LoomyReasoningEffort::High => {
-                body["reasoning_effort"] = Value::String("high".to_string());
-            }
+    // 思考强度
+    match effort {
+        LoomyReasoningEffort::Low => {
+            body["reasoning_effort"] = Value::String("low".to_string());
         }
+        LoomyReasoningEffort::Medium => {
+            body["reasoning_effort"] = Value::String("medium".to_string());
+        }
+        LoomyReasoningEffort::High => {
+            body["reasoning_effort"] = Value::String("high".to_string());
+        }
+    }
 
-        // 工具
-        if !req.tools.is_empty() {
-            let tools: Vec<Value> = req.tools.iter().map(|t| {
+    // 工具
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
                 serde_json::json!({
                     "type": "function",
                     "function": {
@@ -109,17 +102,17 @@ impl ChatBody {
                         "parameters": t.parameters.clone().unwrap_or(Value::Null),
                     }
                 })
-            }).collect();
-            body["tools"] = Value::Array(tools);
+            })
+            .collect();
+        body["tools"] = Value::Array(tools);
 
-            // tool_choice
-            if let Some(v) = req.tool_choice.to_json() {
-                body["tool_choice"] = v;
-            }
+        // tool_choice
+        if let Some(v) = req.tool_choice.to_json() {
+            body["tool_choice"] = v;
         }
-
-        body
     }
+
+    body
 }
 
 /// 响应解析器。
@@ -144,7 +137,8 @@ impl ResponseParser {
         };
 
         if let Some(error) = json.get("error") {
-            let msg = error.get("message")
+            let msg = error
+                .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             return vec![crate::core::events::Event::Error(
@@ -152,17 +146,17 @@ impl ResponseParser {
                     code: None,
                     message: msg.to_string(),
                     kind: crate::core::events::ErrorKind::Api,
-                }
+                },
             )];
         }
 
-        let choice = json.get("choices")
+        let choice = json
+            .get("choices")
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first());
 
         if let Some(choice) = choice {
-            let message = choice.get("message")
-                .and_then(|m| m.as_object());
+            let message = choice.get("message").and_then(|m| m.as_object());
 
             if let Some(msg) = message {
                 if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
@@ -175,10 +169,12 @@ impl ResponseParser {
                     for (idx, tc) in tool_calls.iter().enumerate() {
                         let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let func = tc.get("function").and_then(|f| f.as_object());
-                        let name = func.and_then(|f| f.get("name"))
+                        let name = func
+                            .and_then(|f| f.get("name"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let args = func.and_then(|f| f.get("arguments"))
+                        let args = func
+                            .and_then(|f| f.get("arguments"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
 
@@ -188,7 +184,7 @@ impl ResponseParser {
                                 id: Some(id.to_string()),
                                 name: Some(name.to_string()),
                                 arguments: Some(args.to_string()),
-                            }
+                            },
                         ));
                     }
                     return events;

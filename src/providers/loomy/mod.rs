@@ -3,23 +3,23 @@
 //! 已实现：登录（`auth`）、模型列表（`catalog`）、对话（`chat`）。
 //! 协议实况见 `provider-info/loomy.md`。
 
+pub mod account;
 pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod chat;
+pub mod sign;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 
 use crate::config::LoomyReasoningEffort;
 use crate::core::claim::{ClaimDetail, ClaimOutcome, SkipReason};
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 
-use api::{HttpError, VERSION};
+use api::VERSION;
 use credential::Credential;
 
 pub mod credential;
@@ -43,14 +43,6 @@ impl LoomyProvider {
         }
     }
 
-    /// 凭证到期时间。
-    fn credential_expire_at(&self) -> Option<i64> {
-        Credential::load(&self.root)
-            .ok()
-            .flatten()
-            .and_then(|c| c.token_expire_at)
-    }
-
     fn credential(&self) -> Result<Credential, ProviderError> {
         match Credential::load(&self.root) {
             Ok(Some(c)) => Ok(c),
@@ -62,21 +54,29 @@ impl LoomyProvider {
         }
     }
 
-    /// 取可用 token。
+    /// 取可用 session。
+    ///
+    /// 讯飞账号登录态 14 天有效且无法续期，过期只能重新登录，故这里先本地判过期，
+    /// 免得把注定失败的请求打到上游。
     async fn access_token(&self) -> Result<String, ProviderError> {
         let cred = self.credential()?;
-        Ok(cred.token.clone())
+        if cred.is_expired() {
+            return Err(ProviderError::Unauthorized(format!(
+                "登录态已过期，请重新运行 `ofm-server login {ID}`"
+            )));
+        }
+        Ok(cred.session.clone())
     }
 
     /// 请求模型目录。
     async fn fetch_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let cred = self.credential()?;
         let token = self.access_token().await?;
-        let url = format!("{}/models", cred.base_url.trim_end_matches('/'));
+        let url = format!("{}/models", api::MODEL_BASE_URL);
 
         let mut http = self.client.get(&url);
-        http = http.header("Authorization", format!("Bearer {}", token));
-        http = http.header("Accept", "application/json");
+        for (k, v) in self.auth_headers(&token) {
+            http = http.header(k, v);
+        }
 
         let resp = http.send().await?;
         let status = resp.status();
@@ -95,13 +95,27 @@ impl LoomyProvider {
         Ok(models)
     }
 
-    /// 对话请求头。
-    fn chat_headers(&self, token: &str) -> Vec<(&'static str, String)> {
+    /// 鉴权头：`Authorization: Bearer` + `token`，两者都发登录态。
+    fn auth_headers(&self, token: &str) -> Vec<(&'static str, String)> {
         vec![
-            ("Authorization", format!("Bearer {}", token)),
-            ("Content-Type", "application/json".to_string()),
+            ("Authorization", format!("Bearer {token}")),
+            ("token", token.to_string()),
             ("Accept", "application/json".to_string()),
         ]
+    }
+
+    /// 对话请求头。
+    ///
+    /// 除鉴权外还要带 `traceparent` 与客户端版本头：缺失 `traceparent` 时
+    /// 上游 `chat/completions` 会挂住直到超时（`provider-info/loomy.md` §3.4）。
+    fn chat_headers(&self, token: &str) -> Vec<(&'static str, String)> {
+        let mut headers = self.auth_headers(token);
+        headers.push(("Content-Type", "application/json".to_string()));
+        headers.push(("traceparent", sign::traceparent()));
+        headers.push(("ChatId", sign::trace_id()));
+        headers.push(("MsgId", format_msg_id()));
+        headers.push(("loomy-version", VERSION.to_string()));
+        headers
     }
 }
 
@@ -109,6 +123,14 @@ impl LoomyProvider {
 impl Provider for LoomyProvider {
     fn id(&self) -> &'static str {
         ID
+    }
+
+    /// 登录态到期时间。
+    fn credential_expire_at(&self) -> Option<i64> {
+        Credential::load(&self.root)
+            .ok()
+            .flatten()
+            .and_then(|c| c.expire_at)
     }
 
     /// 拉取上游模型目录。
@@ -129,10 +151,9 @@ impl Provider for LoomyProvider {
 
     /// 对话。
     async fn chat(&self, req: ChatRequest) -> Result<EventStream, ProviderError> {
-        let cred = self.credential()?;
         let token = self.access_token().await?;
-        let body = chat::ChatBody::build(&req, self.effort);
-        let url = format!("{}/chat/completions", cred.base_url.trim_end_matches('/'));
+        let body = chat::build_body(&req, self.effort);
+        let url = format!("{}/chat/completions", api::MODEL_BASE_URL);
 
         let headers = self.chat_headers(&token);
         let payload = serde_json::to_vec(&body)
@@ -156,36 +177,24 @@ impl Provider for LoomyProvider {
         }))
     }
 
-    /// 主动刷新令牌。
+    /// 主动刷新登录态。
     ///
-    /// Loomy 的 API Key 通常长期有效，无需刷新。
-    /// 如 API Key 已过期，用户需重新登录。
+    /// 讯飞账号不提供续期令牌：`session` 有效期 14 天，过期只能重新登录
+    /// （`ofm-server login loomy`）。
     async fn refresh(&self) -> Result<String, ProviderError> {
-        let cred = self.credential()?;
-        let new = auth::refresh(&self.client, &cred)
-            .await
-            .map_err(|e| match e {
-                HttpError::Status { status: 401, .. } => {
-                    ProviderError::Unauthorized("API Key 已失效，请重新登录".to_string())
-                }
-                other => ProviderError::Other(format!("续期失败: {other}")),
-            })?;
-        new.store(&self.root)
-            .map_err(|e| ProviderError::Other(format!("保存续期凭证失败: {e}")))?;
-        Ok("续期成功（API Key 仍有效）".to_string())
+        Err(ProviderError::Unsupported(ID))
     }
 
     /// 当前余额。
     async fn balance(&self) -> Result<Option<f64>, ProviderError> {
-        let cred = self.credential()?;
         let token = self.access_token().await?;
-        let url = format!("{}/v1/balance", cred.base_url.trim_end_matches('/'));
+        let url = format!("{}/points/records", api::MODEL_BASE_URL);
 
-        let resp = self.client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
+        let mut http = self.client.get(&url);
+        for (k, v) in self.auth_headers(&token) {
+            http = http.header(k, v);
+        }
+        let resp = http.send().await?;
 
         if !resp.status().is_success() {
             return Ok(None);
@@ -200,15 +209,14 @@ impl Provider for LoomyProvider {
 
     /// 签到。
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
-        let cred = self.credential()?;
         let token = self.access_token().await?;
-        let url = format!("{}/v1/checkin", cred.base_url.trim_end_matches('/'));
+        let url = format!("{}/checkin", api::MODEL_BASE_URL);
 
-        let resp = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?;
+        let mut http = self.client.post(&url);
+        for (k, v) in self.auth_headers(&token) {
+            http = http.header(k, v);
+        }
+        let resp = http.send().await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -217,7 +225,10 @@ impl Provider for LoomyProvider {
         }
 
         let data: serde_json::Value = resp.json().await?;
-        let claimed = data.get("claimed").and_then(|v| v.as_bool()).unwrap_or(false);
+        let claimed = data
+            .get("claimed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !claimed {
             return Ok(ClaimReport {
                 outcome: ClaimOutcome::skipped(SkipReason::AlreadyClaimed, vec![]),
@@ -250,6 +261,11 @@ fn map_http_error(status: u16, body: &str) -> ProviderError {
         401 | 403 => ProviderError::Unauthorized(snippet),
         _ => ProviderError::Other(format!("上游 HTTP {status}: {snippet}")),
     }
+}
+
+/// 上游要求的消息 id（客户端用 `msg-<uuid>` 形式）。
+fn format_msg_id() -> String {
+    format!("msg-{}", sign::trace_id())
 }
 
 fn truncate(s: &str, max: usize) -> String {
