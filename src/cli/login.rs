@@ -10,8 +10,9 @@
 //! * minimax：OAuth 2.0 设备码 + PKCE，**无本地回调**，打印 `user_code`
 //!   后轮询令牌（需要用户在浏览器扫码 + 短信验证）
 //! * loomy：讯飞账号手机号 + 短信验证码（无浏览器）
+//! * workbuddy：浏览器授权 + **无本地回调**，轮询上游换令牌
 
-use crate::providers::{codearts, loomy, minimax, raccoon, trae};
+use crate::providers::{codearts, loomy, minimax, raccoon, trae, workbuddy};
 
 /// 浏览器 OAuth 登录。
 pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<()> {
@@ -21,13 +22,15 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
         codearts::ID => codearts::auth::run(root).await,
         minimax::ID => minimax::auth::run(root).await,
         loomy::ID => loomy::auth::login(root).await,
+        workbuddy::ID => workbuddy::auth::run(root).await,
         other => anyhow::bail!(
-            "未知供应商 `{other}`，可用: {}, {}, {}, {}, {}",
+            "未知供应商 `{other}`，可用: {}, {}, {}, {}, {}, {}",
             trae::ID,
             raccoon::ID,
             codearts::ID,
             minimax::ID,
-            loomy::ID
+            loomy::ID,
+            workbuddy::ID
         ),
     }
 }

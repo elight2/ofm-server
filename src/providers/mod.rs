@@ -18,6 +18,7 @@ pub mod loomy;
 pub mod minimax;
 pub mod raccoon;
 pub mod trae;
+pub mod workbuddy;
 
 use crate::config::Config;
 use crate::core::provider::Provider;
@@ -28,6 +29,7 @@ use loomy::LoomyProvider;
 use minimax::MinimaxProvider;
 use raccoon::RaccoonProvider;
 use trae::TraeProvider;
+use workbuddy::WorkBuddyProvider;
 
 /// 按配置构造全部供应商。
 ///
@@ -54,5 +56,6 @@ pub fn build_registry(root: &Path, config: &Config) -> anyhow::Result<Registry> 
         root.to_path_buf(),
         config.loomy.reasoning_effort,
     )?) as Arc<dyn Provider>);
+    registry.register(Arc::new(WorkBuddyProvider::new(root.to_path_buf())?) as Arc<dyn Provider>);
     Ok(registry)
 }
