@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use futures_util::StreamExt;
 
+pub mod auth;
 pub mod openai;
 pub mod prompt;
 
@@ -28,13 +29,20 @@ pub struct AppState {
     pub root: PathBuf,
     /// 每供应商一份对话请求节流器，见 [`crate::core::throttle`]。
     pub throttles: Arc<BTreeMap<&'static str, Throttle>>,
+    /// 下游 api key 白名单（空 = 不校验），见 [`auth`]。
+    pub api_keys: auth::ApiKeys,
 }
 
 impl AppState {
     /// 按配置为每个供应商建一份节流器（同一个 `min_interval`）。
     ///
     /// 各供应商独立计时：trae 的间隔不会拖慢 codearts。
-    pub fn new(registry: Arc<Registry>, root: PathBuf, min_interval: Duration) -> Self {
+    pub fn new(
+        registry: Arc<Registry>,
+        root: PathBuf,
+        min_interval: Duration,
+        api_keys: auth::ApiKeys,
+    ) -> Self {
         let throttles = registry
             .all()
             .map(|p| (p.id(), Throttle::new(min_interval)))
@@ -43,15 +51,24 @@ impl AppState {
             registry,
             root,
             throttles: Arc::new(throttles),
+            api_keys,
         }
     }
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    // `/health` 不校验 key（探活用），其余出口接口受 `api_keys` 保护。
+    let guarded = Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_key,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .merge(guarded)
         .with_state(state)
 }
 

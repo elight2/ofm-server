@@ -38,7 +38,20 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     }
     spawn_balance_loops(registry.clone(), balance_interval, root.clone());
 
-    let state = AppState::new(registry, root, min_request_interval);
+    let state = AppState::new(
+        registry,
+        root,
+        min_request_interval,
+        crate::server::auth::ApiKeys::from_config(config.api_keys()),
+    );
+    if state.api_keys.enabled() {
+        tracing::info!(
+            "api key 校验已开启（{} 个可用 key）",
+            config.api_keys().len()
+        );
+    } else {
+        tracing::info!("未配置 api key，不校验下游请求");
+    }
     if min_request_interval.is_zero() {
         tracing::info!("对话请求不限速");
     } else {

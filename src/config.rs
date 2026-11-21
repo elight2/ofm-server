@@ -98,6 +98,10 @@ fn default_min_request_interval() -> u64 {
     example().min_request_interval
 }
 
+fn default_api_keys() -> Vec<String> {
+    example().api_keys
+}
+
 /// 用户配置模板 = 内嵌示例文件去掉遗留键后的文本。
 ///
 /// `ofm-server config` 输出它作为用户模板。
@@ -236,6 +240,12 @@ pub struct Config {
     /// [`crate::core::throttle`]）。只影响 `/v1/chat/completions`。
     #[serde(default = "default_min_request_interval")]
     pub min_request_interval: u64,
+    /// 允许的下游 api key。**空数组表示不校验**。
+    ///
+    /// 非空时，请求须带 `Authorization: Bearer <key>`，与其中任一项完全相等
+    /// 才放行（见 [`crate::server::auth`]）。只影响出口接口，不影响定时任务。
+    #[serde(default = "default_api_keys")]
+    pub api_keys: Vec<String>,
 }
 
 impl Default for Config {
@@ -298,6 +308,11 @@ impl Config {
             });
         }
         Ok(Duration::from_millis(self.min_request_interval))
+    }
+
+    /// 校验用的 key 列表；空数组 = 不校验。
+    pub fn api_keys(&self) -> &[String] {
+        &self.api_keys
     }
 }
 
@@ -563,6 +578,20 @@ mod tests {
             c.refresh_interval().unwrap(),
             Duration::from_secs(12 * 3600)
         );
+    }
+
+    /// api key 列表：默认为空（= 不校验），非空时逐项保留。
+    #[test]
+    fn api_key列表() {
+        // 示例文件里是空数组 → 不校验
+        assert!(Config::default().api_keys().is_empty());
+
+        let c = parse("api_keys = [\"k1\", \"k2\"]\n").unwrap();
+        assert_eq!(c.api_keys(), ["k1", "k2"]);
+
+        // 旧配置没写该键 → 取默认（空）
+        let c = parse("port = 3060\n").unwrap();
+        assert!(c.api_keys().is_empty());
     }
 
     /// 写错供应商名应报错（不是被当遗留表静默接受）。
