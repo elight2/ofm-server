@@ -34,6 +34,11 @@ pub struct SseEvent {
 #[derive(Debug, Default)]
 pub struct SseDecoder {
     buf: Vec<u8>,
+    /// `buf` 里已消费到的位置。整轮解析完才一次性 `drain`，
+    /// 避免每行都搬移整个缓冲（超长行 / 逐字节拆包时是平方级开销）。
+    pos: usize,
+    /// 本轮已完成的帧（`push_into` 结束时按序并入 `out`）。
+    ready: Vec<SseEvent>,
     frame: Frame,
 }
 
@@ -42,28 +47,29 @@ impl SseDecoder {
         Self::default()
     }
 
-    /// 喂入一段字节，返回本次解析出的完整事件。
-    pub fn push(&mut self, chunk: &Bytes) -> Vec<SseEvent> {
-        let mut out = Vec::new();
+    /// 喂入一段字节，把本次解析出的完整事件**追加**到 `out`。
+    ///
+    /// 由调用方提供（并在多帧间复用）缓冲区，省掉每次分配一个 `Vec`。
+    pub fn push_into(&mut self, chunk: &Bytes, out: &mut Vec<SseEvent>) {
         self.buf.extend_from_slice(chunk);
 
         // 逐行处理（行尾可能是 \n 或 \r\n）。
-        while let Some(pos) = self.buf.iter().position(|b| *b == b'\n') {
-            let line: Vec<u8> = self.buf.drain(..=pos).collect();
-            let line = &line[..line.len() - 1];
-            let line = std::str::from_utf8(line)
-                .unwrap_or("")
-                .trim_end_matches('\r');
-
-            if line.is_empty() {
-                if let Some(ev) = self.frame.take() {
-                    out.push(ev);
-                }
-                continue;
-            }
-            self.feed_line(line);
+        while let Some(off) = self.buf[self.pos..].iter().position(|b| *b == b'\n') {
+            let end = self.pos + off;
+            let start = self.pos;
+            self.pos = end + 1;
+            // 单行极少超长，拷贝一行比按字节就地解析更简单（只一次分配）。
+            let line = self.buf[start..end].to_vec();
+            self.feed_line(&line);
         }
-        // 上游偶有不以空行结尾，流结束时需 flush。
+        out.append(&mut self.ready);
+        self.compact();
+    }
+    /// 喂入一段字节，返回本次解析出的完整事件（测试与一次性解析用）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn push(&mut self, chunk: &Bytes) -> Vec<SseEvent> {
+        let mut out = Vec::new();
+        self.push_into(chunk, &mut out);
         out
     }
 
@@ -72,19 +78,41 @@ impl SseDecoder {
     /// 上游偶有不以空行结尾，甚至最后一行没有 `\n`：须先把缓冲里剩下的
     /// 半行按行处理一遍，否则该字段会被静默丢弃。
     pub fn finish(&mut self) -> Option<SseEvent> {
-        if !self.buf.is_empty() {
-            let rest = std::mem::take(&mut self.buf);
-            let line = std::str::from_utf8(&rest)
-                .unwrap_or("")
-                .trim_end_matches('\r');
-            self.feed_line(line);
+        debug_assert!(self.ready.is_empty(), "finish 前应先取走已完成的帧");
+        if self.pos < self.buf.len() {
+            let line = self.buf[self.pos..].to_vec();
+            self.pos = self.buf.len();
+            self.feed_line(&line);
         }
+        self.ready.clear();
         self.frame.take()
     }
 
+    /// 丢掉已消费的前缀（只在整轮解析结束后做一次）。
+    fn compact(&mut self) {
+        if self.pos == 0 {
+            return;
+        }
+        if self.pos == self.buf.len() {
+            self.buf.clear();
+        } else {
+            self.buf.drain(..self.pos);
+        }
+        self.pos = 0;
+    }
+
     /// 处理一行字段（已去行尾）。空行表示帧结束，由调用方处理。
-    fn feed_line(&mut self, line: &str) {
-        if line.is_empty() || line.starts_with(':') {
+    fn feed_line(&mut self, raw: &[u8]) {
+        let line = std::str::from_utf8(raw)
+            .unwrap_or("")
+            .trim_end_matches('\r');
+        if line.is_empty() {
+            if let Some(ev) = self.frame.take() {
+                self.ready.push(ev);
+            }
+            return;
+        }
+        if line.starts_with(':') {
             return;
         }
         let (field, value) = match line.split_once(':') {

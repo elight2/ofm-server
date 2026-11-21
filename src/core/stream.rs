@@ -45,6 +45,7 @@ where
         bytes: Box::pin(bytes),
         parse,
         decoder: SseDecoder::new(),
+        frames: Vec::new(),
         pending: VecDeque::new(),
         finished: false,
         saw_terminal: false,
@@ -55,6 +56,8 @@ struct Driver<S, F> {
     bytes: Pin<Box<S>>,
     parse: F,
     decoder: SseDecoder,
+    /// 解码出的帧缓冲（跨轮复用，避免每次 `push` 重新分配）。
+    frames: Vec<SseEvent>,
     /// 解析出的一批事件，逐条吐出。
     pending: VecDeque<Event>,
     /// 已产出终止事件，不再读流。
@@ -90,9 +93,10 @@ where
 
             match this.bytes.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
-                    for frame in this.decoder.push(&chunk) {
-                        let evs = (this.parse)(&frame);
-                        this.pending.extend(evs);
+                    this.frames.clear();
+                    this.decoder.push_into(&chunk, &mut this.frames);
+                    for frame in &this.frames {
+                        this.pending.extend((this.parse)(frame));
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -106,8 +110,7 @@ where
                 Poll::Ready(None) => {
                     // 流结束：先冲掉残余帧。
                     if let Some(frame) = this.decoder.finish() {
-                        let evs = (this.parse)(&frame);
-                        this.pending.extend(evs);
+                        this.pending.extend((this.parse)(&frame));
                     }
                     if this.pending.is_empty() {
                         this.finished = true;

@@ -64,6 +64,25 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
         std::fs::create_dir_all(dir)?;
     }
 
+    // 单行 JSON；`Entry` 字段都可序列化，理论上不会失败。
+    let line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
+    let line = format!("{line}\n");
+
+    // 常态是纯追加：一次 `write` 就够，不做「读全部 → 重写 → fsync → rename」。
+    // 只有超过上限（或上次压缩中途被打断留下多行超量）时，才整体压缩一次。
+    let over = match count_lines(&path) {
+        Ok(n) => n + 1 > KEEP,
+        Err(_) => true,
+    };
+    if !over {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        f.write_all(line.as_bytes())?;
+        return Ok(());
+    }
+
     let mut entries = load(root, provider);
     entries.push(entry);
     if entries.len() > KEEP {
@@ -73,9 +92,8 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
 
     let mut text = String::new();
     for e in &entries {
-        // 序列化单行 JSON；失败的行跳过（Entry 字段都可序列化，理论不失败）。
-        if let Ok(line) = serde_json::to_string(e) {
-            text.push_str(&line);
+        if let Ok(l) = serde_json::to_string(e) {
+            text.push_str(&l);
             text.push('\n');
         }
     }
@@ -86,6 +104,16 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
     f.sync_all()?;
     crate::core::atomicio::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// 统计现有行数（文件不存在时为 0）。用于判断是否需要压缩，不解析 JSON。
+fn count_lines(path: &Path) -> std::io::Result<usize> {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    Ok(BufReader::new(file).lines().count())
 }
 
 /// 最近一次**成功**签到的时间（RFC 3339），没有成功记录时返回 `None`。

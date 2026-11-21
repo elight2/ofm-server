@@ -2,13 +2,27 @@
 //!
 //! 供应商自己定义结构体，这里只负责路径、权限（0600）与原子替换。
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::core::paths::credential_path;
 use crate::core::provider::ProviderError;
+
+/// 进程内凭证缓存：`(root, provider)` → 已反序列化的凭证。
+///
+/// 所有写入都走 [`store`]（它会失效对应条目），故缓存不会读到陈旧内容；
+/// 代价是外部手工改 `credential.toml` 需重启才生效（与配置一致）。
+type Cache = Mutex<HashMap<(PathBuf, String), (TypeId, Box<dyn Any + Send + Sync>)>>;
+
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
@@ -40,7 +54,10 @@ pub enum CredentialError {
 ///
 /// 五家供应商原本各写一份完全相同的 `credential()`，提示文案也一字不差，
 /// 故上提到这里。
-pub fn require<T: DeserializeOwned>(root: &Path, provider: &str) -> Result<T, ProviderError> {
+pub fn require<T: DeserializeOwned + Clone + Send + Sync + 'static>(
+    root: &Path,
+    provider: &str,
+) -> Result<T, ProviderError> {
     match load(root, provider) {
         Ok(Some(c)) => Ok(c),
         Ok(None) => Err(ProviderError::NotLoggedIn(format!(
@@ -64,7 +81,7 @@ pub async fn renew_if_expired<T, E, R, Fut>(
     renew: R,
 ) -> Result<T, ProviderError>
 where
-    T: DeserializeOwned + Clone,
+    T: DeserializeOwned + Clone + Send + Sync + 'static,
     E: Fn(&T) -> bool,
     R: FnOnce(T) -> Fut,
     Fut: std::future::Future<Output = Result<T, ProviderError>>,
@@ -88,23 +105,54 @@ where
 }
 
 /// 读取并反序列化凭证。`Ok(None)` 表示文件不存在。
-pub fn load<T: DeserializeOwned>(
+///
+/// 首次读取后结果缓存在进程内，后续调用零文件 IO；
+/// [`store`] 会失效对应缓存，[`invalidate`] 提供手工失效。
+pub fn load<T: DeserializeOwned + Clone + Send + Sync + 'static>(
     root: &Path,
     provider: &str,
 ) -> Result<Option<T>, CredentialError> {
+    let key = (root.to_path_buf(), provider.to_string());
+
+    if let Ok(guard) = cache().lock()
+        && let Some((tid, val)) = guard.get(&key)
+        && *tid == TypeId::of::<T>()
+        && let Some(v) = val.downcast_ref::<T>()
+    {
+        return Ok(Some(v.clone()));
+    }
+
     let path = credential_path(root, provider);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(CredentialError::Read { path, source: e }),
     };
-    toml::from_str(&text)
-        .map(Some)
-        .map_err(|e| CredentialError::Parse { path, source: e })
+    let value: T = toml::from_str(&text).map_err(|e| CredentialError::Parse { path, source: e })?;
+
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(
+            key,
+            (
+                TypeId::of::<T>(),
+                Box::new(value.clone()) as Box<dyn Any + Send + Sync>,
+            ),
+        );
+    }
+    Ok(Some(value))
+}
+
+/// 丢弃某供应商的缓存（下次 [`load`] 重新读盘）。
+pub fn invalidate(root: &Path, provider: &str) {
+    if let Ok(mut guard) = cache().lock() {
+        guard.remove(&(root.to_path_buf(), provider.to_string()));
+    }
 }
 
 /// 原子写入凭证（先写临时文件再 rename），并设为 0600。
 pub fn store<T: Serialize>(root: &Path, provider: &str, value: &T) -> Result<(), CredentialError> {
+    // 先失效再写：即使下面写失败也不会继续用旧值。
+    invalidate(root, provider);
     let path = credential_path(root, provider);
     let dir = path.parent().expect("credential 路径必有父目录");
     std::fs::create_dir_all(dir).map_err(|e| CredentialError::Write {

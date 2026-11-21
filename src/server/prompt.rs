@@ -18,25 +18,18 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
 
 use crate::config;
 use crate::core::paths::prompt_path;
 use crate::core::provider as p;
 
-/// 一文件的最终解析结果，`(mtime, 内容)`。
+/// 提示词缓存：路径 → 最终内容（`None` = 不注入）。
 ///
-/// `mtime` 为 `None` 表示文件不存在（内容为内嵌默认）；
-/// 内容为 `None` 表示不注入（空文件覆盖、或该供应商没有默认提示词）。
-type Entry = (Option<SystemTime>, Option<String>);
+/// 进程内只加载一次（request hot path 不做任何文件 IO）；
+/// 改 `<root>/prompts/*.md` 后需重启服务生效。
+/// 缓存键含根目录，命令行工具与服务可能在同一进程先后用不同 root（测试）。
+type Cache = Mutex<HashMap<String, Option<String>>>;
 
-/// 提示词缓存：路径 → [`Entry`]。
-type Cache = Mutex<HashMap<String, Entry>>;
-
-/// 提示词缓存。
-///
-/// 稳态下每请求都要查一次，重复 `read` 同一文件的代价没必要付；
-/// 用 mtime 做失效判定，用户改文件后**下一次请求即生效**，无需重启。
 fn cache() -> &'static Cache {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -51,40 +44,36 @@ fn cache() -> &'static Cache {
 /// * 自定义文件存在但内容为空白 → **不注入**（空文件 = 把默认显式覆盖为空）；
 /// * 自定义文件读取失败 → 用内嵌默认 + `warn`（不阻断请求）。
 ///
-/// 返回 `None` 表示不注入（空文件覆盖，或该供应商没有默认提示词）。
+/// 结果缓存在进程内，**首次使用后不再读盘**。
 pub fn load(root: &Path, provider: &str) -> Option<String> {
     let path = prompt_path(root, provider);
     let key = path.to_string_lossy().into_owned();
 
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-
     if let Ok(guard) = cache().lock()
-        && let Some((cached_mtime, cached)) = guard.get(&key)
-        && *cached_mtime == mtime
+        && let Some(cached) = guard.get(&key)
     {
         return cached.clone();
     }
 
-    let content = if mtime.is_none() {
-        // 没有自定义文件：用该供应商的内嵌默认。
-        default_for(provider)
-    } else {
-        match std::fs::read_to_string(&path) {
-            // 空文件 = 用户显式把默认覆盖为空 ⇒ 不注入（关掉默认提示词的开关）。
-            Ok(text) if text.trim().is_empty() => None,
-            Ok(text) => Some(text),
-            Err(e) => {
-                tracing::warn!("[{provider}] 读取自定义提示词失败 {path:?}: {e}");
-                default_for(provider)
-            }
-        }
-    };
-
+    let content = read_from_disk(&path, provider);
     if let Ok(mut guard) = cache().lock() {
-        guard.insert(key, (mtime, content.clone()));
+        guard.insert(key, content.clone());
     }
-
     content
+}
+
+/// 真正读盘解析（只在缓存缺失时调用）。
+fn read_from_disk(path: &Path, provider: &str) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        // 空文件 = 用户显式把默认覆盖为空 ⇒ 不注入（关掉默认提示词的开关）。
+        Ok(text) if text.trim().is_empty() => None,
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => default_for(provider),
+        Err(e) => {
+            tracing::warn!("[{provider}] 读取自定义提示词失败 {path:?}: {e}");
+            default_for(provider)
+        }
+    }
 }
 
 /// 该供应商的内嵌默认提示词；没有或内容为空白时返回 `None`。
@@ -310,23 +299,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 文件存在 → 读到内容；内容改动后（mtime 变化）下次读到新内容。
+    /// 文件存在 → 读到内容；进程内缓存（不随文件变更重载）。
     #[test]
-    fn 提示词按mtime刷新() {
-        let dir = std::env::temp_dir().join("ofm-prompt-test-reload");
+    fn 提示词进程内只读一次() {
+        let dir = std::env::temp_dir().join("ofm-prompt-test-once");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("prompts")).unwrap();
         let path = dir.join("prompts").join("trae.md");
         std::fs::write(&path, "第一版").unwrap();
         assert_eq!(load(&dir, "trae").as_deref(), Some("第一版"));
 
-        // 改内容并把 mtime 明确推到未来，避免同秒内写入 mtime 不变。
+        // 首读后已缓存，改文件不影响本进程（需重启生效）。
         std::fs::write(&path, "第二版").unwrap();
-        let future = SystemTime::now() + std::time::Duration::from_secs(2);
-        let f = std::fs::File::options().write(true).open(&path).unwrap();
-        f.set_modified(future).unwrap();
-        drop(f);
-        assert_eq!(load(&dir, "trae").as_deref(), Some("第二版"));
+        assert_eq!(load(&dir, "trae").as_deref(), Some("第一版"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -347,9 +332,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 删掉空白文件后回到默认（开关可逆）。
+    /// 删掉空白文件后不再访问磁盘，故同一 root 下仍是不注入；
+    /// 换一个 root（进程重启后的等价场景）才恢复默认。
     #[test]
-    fn 删掉空文件恢复默认() {
+    fn 删掉空文件后需重启才恢复默认() {
         let dir = std::env::temp_dir().join("ofm-prompt-test-blank-revert");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("prompts")).unwrap();
@@ -357,7 +343,7 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         assert_eq!(load(&dir, "trae"), None);
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(load(&dir, "trae"), default_for("trae"));
+        assert_eq!(load(&dir, "trae"), None, "进程内已缓存");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -204,24 +204,7 @@ async fn chat_completions(State(app): State<AppState>, body: String) -> Response
 
     // 流式：SSE 编码。`[DONE]` 统一在流末尾发一次（含错误帧之后）。
     let out = translate::stream(ctx, first, rest);
-    let frames = out.map(|item| -> Result<bytes::Bytes, std::io::Error> {
-        let frame = match item {
-            translate::Out::Chunk(chunk) => {
-                let data = serde_json::to_string(&chunk).unwrap_or_else(|_| "{}".into());
-                format!("data: {data}\n\n")
-            }
-            translate::Out::Abort(body) => {
-                let data = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
-                format!("data: {data}\n\n")
-            }
-        };
-        Ok(bytes::Bytes::from(frame))
-    });
-
-    let tail = futures_util::stream::once(async {
-        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"data: [DONE]\n\n"))
-    });
-    let body = axum::body::Body::from_stream(frames.chain(tail));
+    let body = axum::body::Body::from_stream(frames_with_done(out));
 
     Response::builder()
         .status(StatusCode::OK)
@@ -234,6 +217,19 @@ async fn chat_completions(State(app): State<AppState>, body: String) -> Response
 
 fn status_from_u16(code: u16) -> StatusCode {
     StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY)
+}
+
+/// 在事件流末尾补一帧 `data: [DONE]`。
+fn frames_with_done<S>(
+    frames: S,
+) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>
+where
+    S: futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>,
+{
+    let tail = futures_util::stream::once(async {
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"data: [DONE]\n\n"))
+    });
+    frames.chain(tail)
 }
 
 /// 请求 id：`chatcmpl-` + 12 位十六进制随机串。

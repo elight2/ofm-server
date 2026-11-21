@@ -187,7 +187,13 @@ fn device_name() -> String {
         .unwrap_or_else(|_| "ofm-server".to_string())
 }
 
+/// 系统版本（进程内缓存：读 `/etc/os-release` 或起 `reg.exe` 的代价不该每请求付一次）。
 pub fn os_version() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(read_os_version).clone()
+}
+
+fn read_os_version() -> String {
     #[cfg(windows)]
     {
         // 注册表里的 ProductName / DisplayVersion 比 `std::env::consts::OS` 信息量大。
@@ -216,7 +222,13 @@ pub fn os_version() -> String {
     }
 }
 
+/// CPU 型号（进程内缓存，理由同 [`os_version`]）。
 pub fn cpu_model() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(read_cpu_model).clone()
+}
+
+fn read_cpu_model() -> String {
     #[cfg(windows)]
     {
         // CPU 型号在注册表 HARDWARE 描述里，WMI 在新系统上可能不可用。

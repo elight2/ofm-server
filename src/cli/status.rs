@@ -45,13 +45,21 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
     let registry = crate::providers::build_registry(&root)?;
 
     if provider_id == ALL {
-        let mut first = true;
-        for provider in registry.all() {
-            if !first {
+        // 先并发拉齐各家的余额与到期信息，再按注册顺序打印：
+        // 串行时总耗时是六家之和，而打印顺序必须稳定（对外输出不能变）。
+        let ids: Vec<&'static str> = registry.all().map(|p| p.id()).collect();
+        let details: Vec<(String, String)> = futures_util::future::join_all(
+            registry
+                .all()
+                .map(|p| async move { (expire_text(p.as_ref()), balance_text(p.as_ref()).await) }),
+        )
+        .await;
+
+        for (n, (id, (expire, balance))) in ids.into_iter().zip(details).enumerate() {
+            if n > 0 {
                 println!();
             }
-            first = false;
-            print_brief(&root, provider.as_ref()).await;
+            print_brief(&root, id, &expire, &balance);
         }
         return Ok(());
     }
@@ -97,13 +105,12 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
 /// 不拉模型目录（`all` 仅要求简要信息；串行拉六家目录太慢）。
 /// 登录状态看凭证文件是否存在（不联网），不依赖 `credential_expire_at`
 /// ——部分供应商没有到期字段，`None` 同时表示「未知」而非「未登录」。
-async fn print_brief(root: &std::path::Path, provider: &dyn Provider) {
-    let id = provider.id();
+fn print_brief(root: &std::path::Path, id: &str, expire: &str, balance: &str) {
     println!("===== {id} =====");
     let logged_in = crate::core::paths::credential_path(root, id).is_file();
     println!("登录状态: {}", if logged_in { "已登录" } else { "未登录" });
-    println!("登录凭证到期时间: {}", expire_text(provider));
-    println!("余额: {}", balance_text(provider).await);
+    println!("登录凭证到期时间: {expire}");
+    println!("余额: {balance}");
     println!("{}", last_increase_text(root, id));
     println!("{}", last_claim_success_text(root, id));
 }

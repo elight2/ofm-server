@@ -7,9 +7,10 @@
 //! 错误处理策略（`provider-info/trae.md` §7.2）：错误出现在任何内容帧之前时，
 //! 调用方仍可改 HTTP 状态码；一旦已产出内容，只能以流内 `error` 帧收尾。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
 
+use bytes::{BufMut, Bytes, BytesMut};
 use futures_util::{Stream, StreamExt};
 
 use crate::core::events::{self as ev, ErrorKind, Event, FinishReason};
@@ -30,6 +31,66 @@ pub struct Ctx {
     pub created: u64,
     pub model: String,
     pub include_usage: bool,
+}
+
+/// 每个 chunk（除首帧）都要重复的公共字段。
+///
+/// 帧形状固定为 `{"id","object","created","model","choices":[…],"usage":…}`，
+/// 故首帧完整序列化一次，把 `"choices"` 之前的部分与 `"usage"` 之后的收尾
+/// 拿来做模板，后续帧只需拼上 `"choices":…` 自身：
+/// 省掉每帧三四次 `String` 克隆与整个 chunk 的重排。
+struct Template {
+    /// `{"id":…,"model":…,`（含末尾逗号）。
+    head: String,
+    /// `}` 或 `,"usage":null}`（`include_usage` 关掉时该字段被省略）。
+    tail: &'static str,
+}
+
+impl Template {
+    fn new(ctx: &Ctx) -> Self {
+        let probe = ctx.chunk(wire::Delta::default(), None);
+        let full = serde_json::to_string(&probe).unwrap_or_default();
+        // 兜底（序列化失败）时 `head` 为空，逐帧退回完整序列化。
+        let (head, tail) = match full.find("\"choices\":") {
+            Some(idx) => (
+                full[..idx].to_string(),
+                if full.ends_with("\"usage\":null}") {
+                    ",\"usage\":null}"
+                } else {
+                    "}"
+                },
+            ),
+            None => (String::new(), "}"),
+        };
+        Self { head, tail }
+    }
+
+    /// 拼出一帧 SSE 字节（`data: {…}\n\n`）。
+    ///
+    /// `choices` 为已序列化的 choices 数组（如 `[{"index":0,…}]`），
+    /// `usage` 为 `null` 或已序列化的 usage 对象。
+    fn frame(&self, choices: &str, usage: &str) -> Bytes {
+        if self.head.is_empty() {
+            // 理论上不可达（序列化 `Chunk` 不会失败），保险起见退回逐帧全序列化。
+            return Bytes::from(format!(
+                "data: {{\"choices\":{choices},\"usage\":{usage}}}\n\n"
+            ));
+        }
+        let mut buf = BytesMut::with_capacity(self.head.len() + choices.len() + usage.len() + 32);
+        buf.put_slice(b"data: ");
+        buf.put_slice(self.head.as_bytes());
+        buf.put_slice(b"\"choices\":");
+        buf.put_slice(choices.as_bytes());
+        if usage == "null" {
+            buf.put_slice(self.tail.as_bytes());
+        } else {
+            buf.put_slice(b",\"usage\":");
+            buf.put_slice(usage.as_bytes());
+            buf.put_slice(b"}");
+        }
+        buf.put_slice(b"\n\n");
+        buf.freeze()
+    }
 }
 
 impl Ctx {
@@ -232,12 +293,16 @@ impl State {
     }
 }
 
-/// 流式转换。`first` 是提前 peek 的首个事件（已确认不是错误帧）。
+/// 流式转换，直接产出 SSE 字节（`data: {…}\n\n`，不含末尾的 `[DONE]`）。
+///
+/// 序列化在生成本帧时一次做完：重复字段走 [`Template`]，事件队列用
+/// `VecDeque`（`buf.remove(0)` 在 `Vec` 上是线性搬移）。
 pub fn stream(
     ctx: Ctx,
     first: Option<Event>,
     rest: ev::EventStream,
-) -> Pin<Box<dyn Stream<Item = Out> + Send>> {
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
+    let template = Template::new(&ctx);
     let state = State {
         ctx,
         role_sent: false,
@@ -248,20 +313,39 @@ pub fn stream(
     let all = rejoin(first, rest);
 
     Box::pin(futures_util::stream::unfold(
-        (all, state, Vec::<Out>::new()),
-        |(mut input, mut state, mut buf)| async move {
+        (all, state, template, VecDeque::<Out>::new()),
+        |(mut input, mut state, template, mut buf)| async move {
             loop {
-                if !buf.is_empty() {
-                    let item = buf.remove(0);
-                    return Some((item, (input, state, buf)));
+                if let Some(item) = buf.pop_front() {
+                    return Some((Ok(encode(&template, item)), (input, state, template, buf)));
                 }
                 match input.next().await {
-                    Some(event) => buf = state.map(event),
+                    Some(event) => buf.extend(state.map(event)),
                     None => return None,
                 }
             }
         },
     ))
+}
+
+/// 把一个输出项编码成 SSE 帧字节。
+///
+/// chunk 帧复用 [`Template`] 的公共头部；错误帧形状不同，单独序列化。
+fn encode(template: &Template, item: Out) -> Bytes {
+    match item {
+        Out::Chunk(chunk) => {
+            let choices = serde_json::to_string(&chunk.choices).unwrap_or_else(|_| "[]".into());
+            let usage = match &chunk.usage {
+                Some(u) => serde_json::to_string(u).unwrap_or_else(|_| "null".into()),
+                None => "null".to_string(),
+            };
+            template.frame(&choices, &usage)
+        }
+        Out::Abort(body) => {
+            let data = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+            Bytes::from(format!("data: {data}\n\n"))
+        }
+    }
 }
 
 /// 把「首个事件」和「余下流」重新拼成一个流。
@@ -418,6 +502,51 @@ mod tests {
             total_tokens: prompt + completion,
             cached_tokens: None,
             reasoning_tokens: None,
+        }
+    }
+
+    /// 模板拼接必须与「整个 chunk 交给 serde」逐字节一致（线上格式不能变）。
+    #[test]
+    fn 模板编码与整帧序列化一致() {
+        for include_usage in [false, true] {
+            let c = ctx(include_usage);
+            let tpl = Template::new(&c);
+
+            // 普通增量帧。
+            let chunk = c.chunk(
+                wire::Delta {
+                    content: Some("你好".into()),
+                    ..Default::default()
+                },
+                None,
+            );
+            assert_eq!(
+                encode(
+                    &tpl,
+                    Out::Chunk(Box::new(wire::Chunk {
+                        usage: chunk.usage.clone(),
+                        ..chunk.clone()
+                    }))
+                ),
+                Bytes::from(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&chunk).unwrap()
+                ))
+            );
+
+            // usage 帧（choices 为空）。
+            let u = c.usage_chunk(to_wire_usage(&usage(3, 5)));
+            assert_eq!(
+                encode(&tpl, Out::Chunk(Box::new(u.clone()))),
+                Bytes::from(format!("data: {}\n\n", serde_json::to_string(&u).unwrap()))
+            );
+
+            // 终止帧。
+            let f = c.chunk(wire::Delta::default(), Some("stop".into()));
+            assert_eq!(
+                encode(&tpl, Out::Chunk(Box::new(f.clone()))),
+                Bytes::from(format!("data: {}\n\n", serde_json::to_string(&f).unwrap()))
+            );
         }
     }
 

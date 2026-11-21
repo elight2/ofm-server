@@ -1,12 +1,24 @@
 //! 注册表：把 `供应商id/模型名` 路由到具体供应商。
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use super::provider::{ModelInfo, Provider};
 
+/// `/v1/models` 结果的缓存时长。
+///
+/// 每次请求都真打六家上游既慢又浪费配额，而模型目录变化极少，
+/// 故在进程内缓存一分钟（`ofm-server status` 走的是独立路径，不受影响）。
+const MODELS_TTL: Duration = Duration::from_secs(60);
+
+/// 全量模型目录快照（按供应商 id 顺序）。
+type ModelSnapshot = Vec<(&'static str, Vec<ModelInfo>)>;
+
 pub struct Registry {
     providers: BTreeMap<&'static str, Arc<dyn Provider>>,
+    /// 最近一次模型目录快照：`(抓取时刻, 结果)`。
+    models_cache: Mutex<Option<(Instant, Arc<ModelSnapshot>)>>,
 }
 
 /// 模型名拆分结果。
@@ -19,6 +31,7 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             providers: BTreeMap::new(),
+            models_cache: Mutex::new(None),
         }
     }
 
@@ -50,11 +63,25 @@ impl Registry {
     }
 
     /// 聚合全部供应商的模型列表（单个供应商失败不影响整体）。
-    pub async fn list_models(&self) -> Vec<(&'static str, Vec<ModelInfo>)> {
-        let mut out = Vec::new();
-        for provider in self.providers.values() {
-            let models = provider.models().await;
-            out.push((provider.id(), models));
+    ///
+    /// 各家并发拉取（串行时总耗时等于六家之和），结果按 [`MODELS_TTL`] 缓存。
+    pub async fn list_models(&self) -> ModelSnapshot {
+        if let Ok(guard) = self.models_cache.lock()
+            && let Some((at, cached)) = guard.as_ref()
+            && at.elapsed() < MODELS_TTL
+        {
+            return cached.as_ref().clone();
+        }
+
+        let out: ModelSnapshot = futures_util::future::join_all(
+            self.providers
+                .values()
+                .map(|p| async move { (p.id(), p.models().await) }),
+        )
+        .await;
+
+        if let Ok(mut guard) = self.models_cache.lock() {
+            *guard = Some((Instant::now(), Arc::new(out.clone())));
         }
         out
     }
