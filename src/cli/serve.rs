@@ -3,6 +3,10 @@
 //! 三项定时任务都是**每个供应商各一个独立计时循环**，间隔取全局配置：
 //! `claim_interval`（小时）、`refresh_interval`（小时）与
 //! `balance_record_interval`（分钟）。
+//!
+//! 刷新循环另受 `auto_refresh` 开关控制：关闭时**完全不启动**刷新循环，
+//! 但供应商用 token 前的「已过期则续期」（[`crate::core::credential::renew_if_expired`]）
+//! 与手动 `ofm-server refresh` 不受影响——否则关掉开关就会让凭证到期即失联。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,7 +30,12 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     let registry = Arc::new(providers::build_registry(&root)?);
 
     spawn_claim_loops(registry.clone(), claim_interval, root.clone());
-    spawn_refresh_loops(registry.clone(), refresh_interval);
+    // 自动刷新开关：关闭时不起循环（间隔已在上面校验过，配置写错仍会报错）。
+    if config.auto_refresh {
+        spawn_refresh_loops(registry.clone(), refresh_interval);
+    } else {
+        tracing::info!("自动刷新令牌已关闭（auto_refresh = false）");
+    }
     spawn_balance_loops(registry.clone(), balance_interval, root.clone());
 
     let state = AppState::new(registry, root, min_request_interval);

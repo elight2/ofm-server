@@ -82,6 +82,10 @@ fn default_claim_interval() -> u64 {
     example().claim_interval
 }
 
+fn default_auto_refresh() -> bool {
+    example().auto_refresh
+}
+
 fn default_refresh_interval() -> u64 {
     example().refresh_interval
 }
@@ -212,6 +216,11 @@ pub struct Config {
     /// 自动签到间隔（小时）。所有供应商共用这一份。
     #[serde(default = "default_claim_interval")]
     pub claim_interval: u64,
+    /// 自动刷新令牌开关。`false` 时 `serve` 完全不启动刷新循环。
+    ///
+    /// 只影响 `serve` 的定时任务；`ofm-server refresh` 手动刷新不受影响。
+    #[serde(default = "default_auto_refresh")]
+    pub auto_refresh: bool,
     /// 登录令牌自动刷新间隔（小时）。所有供应商共用这一份。
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval: u64,
@@ -364,6 +373,7 @@ mod tests {
         assert_eq!(c.refresh_interval, 36);
         assert_eq!(c.balance_record_interval, 30);
         assert_eq!(c.min_request_interval, 2000);
+        assert!(c.auto_refresh);
     }
 
     /// `Config::default()` 就是解析示例文件的结果，二者不得有分歧。
@@ -374,6 +384,7 @@ mod tests {
         assert_eq!(from_default.host, from_str.host);
         assert_eq!(from_default.port, from_str.port);
         assert_eq!(from_default.claim_interval, from_str.claim_interval);
+        assert_eq!(from_default.auto_refresh, from_str.auto_refresh);
         assert_eq!(from_default.refresh_interval, from_str.refresh_interval);
         assert_eq!(
             from_default.balance_record_interval,
@@ -419,6 +430,7 @@ mod tests {
         assert_eq!(c.claim_interval, 6);
         assert_eq!(c.refresh_interval, 36);
         assert_eq!(c.balance_record_interval, 30);
+        assert!(c.auto_refresh);
     }
 
     /// 全局间隔与供应商无关：任何一个 id 都取同一个值。
@@ -528,6 +540,29 @@ mod tests {
         assert_eq!(c.port, 3060);
         assert_eq!(c.claim_interval, 6);
         assert_eq!(c.refresh_interval, 36);
+        assert!(c.auto_refresh, "默认开启自动刷新");
+    }
+
+    /// 自动刷新开关：可关可开，与刷新间隔互不干扰。
+    ///
+    /// 关闭时仍要求 `refresh_interval` 合法（配置写错就该报错，不因为开关
+    /// 关着而放过）；只是 `serve` 不据此启动循环。
+    #[test]
+    fn 自动刷新开关() {
+        let c = parse("auto_refresh = false\n").unwrap();
+        assert!(!c.auto_refresh);
+        // 开关关闭不影响间隔解析
+        assert_eq!(
+            c.refresh_interval().unwrap(),
+            Duration::from_secs(36 * 3600)
+        );
+
+        let c = parse("auto_refresh = true\nrefresh_interval = 12\n").unwrap();
+        assert!(c.auto_refresh);
+        assert_eq!(
+            c.refresh_interval().unwrap(),
+            Duration::from_secs(12 * 3600)
+        );
     }
 
     /// 写错供应商名应报错（不是被当遗留表静默接受）。
