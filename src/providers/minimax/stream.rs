@@ -263,7 +263,7 @@ impl FrameParser {
         self.saw_stop
     }
 
-    /// 缓存创建量，仅用于日志（下游无对应位，§3.8）。
+    /// 缓存创建量，仅用于日志（下游无对应位，§3.4）。
     #[allow(dead_code)]
     pub fn cache_creation(&self) -> Option<u64> {
         self.cache_creation
@@ -276,7 +276,7 @@ impl Default for FrameParser {
     }
 }
 
-/// `stop_reason` → 统一枚举（§3.8）。
+/// `stop_reason` → 统一枚举（§3.3）。
 ///
 /// 出现过工具调用时一律 `ToolCalls`：上游 `stop_reason` 在工具轮是 `tool_use`，
 /// 但个别情况会给 `end_turn`，以下游语义为准更稳。

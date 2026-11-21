@@ -1,8 +1,8 @@
 //! WorkBuddy 供应商（腾讯 WorkBuddy 中国版）。
 //!
 //! 已实现：登录（`auth`，浏览器授权 + 轮询换令牌）、模型目录（`models`）、
-//! 对话（`chat` + `stream`）、思考强度映射、令牌续期（`refresh`）、
-//! 余额（`balance`）、每日签到（`claim`）。
+//! 对话（`chat` + `stream`）、令牌续期（`refresh`）、余额（`balance`）、
+//! 每日签到（`claim`）。
 //!
 //! 协议实况见 `provider-info/workbuddy.md`。
 

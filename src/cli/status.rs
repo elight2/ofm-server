@@ -24,7 +24,7 @@ use crate::core::fmt_amount;
 use crate::core::provider::rate_suffix;
 
 pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<()> {
-    let registry = crate::providers::build_registry(&root, &crate::config::Config::load(&root)?)?;
+    let registry = crate::providers::build_registry(&root)?;
     let provider = registry
         .get(provider_id)
         .with_context(|| format!("未知供应商 `{provider_id}`"))?;

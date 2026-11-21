@@ -1,7 +1,7 @@
 //! Loomy 供应商（讯飞 / iFlyTek）。
 //!
 //! 已实现：登录（`auth`，讯飞账号手机号 + 短信验证码）、模型目录（`catalog`）、
-//! 对话（`chat` + `stream`）、思考强度映射、余额（`balance`）、每日福利
+//! 对话（`chat` + `stream`）、余额（`balance`）、每日福利
 //! （`claim`，即「宠物打工奖励」）。
 //!
 //! 协议实况见 `provider-info/loomy.md`；登录签名见 `sign`，账号网关见 `account`。
@@ -21,7 +21,6 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use crate::core::claim::SkipReason;
 use crate::core::events::EventStream;
 use crate::core::provider::{ChatRequest, ClaimReport, ModelInfo, Provider, ProviderError};
 use crate::core::text::truncate_chars;
@@ -304,16 +303,6 @@ fn classify_auth_error(code: &str, desc: &str, alive: Option<bool>) -> ProviderE
         ))
     } else {
         ProviderError::Unauthorized(desc.to_string())
-    }
-}
-
-/// 签到未启用时的报告（供将来对齐 `Provider` 语义时使用）。
-#[allow(dead_code)]
-fn not_enabled() -> ClaimReport {
-    ClaimReport {
-        outcome: crate::core::claim::ClaimOutcome::skipped(SkipReason::NotEnabled, vec![]),
-        credits_delta: None,
-        balance: None,
     }
 }
 

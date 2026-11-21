@@ -102,7 +102,7 @@ impl CatalogModel {
 
     /// 是否可作为 chat 模型暴露。
     ///
-    /// 判定依据（§4.2）：没有 `maxInputTokens` 的条目不是对话模型
+    /// 判定依据（§4 解析规则）：没有 `maxInputTokens` 的条目不是对话模型
     /// （图像/视频/补全类），`maxOutputTokens` 极小的也排除。
     pub fn is_chat_model(&self) -> bool {
         let Some(ctx) = self.max_input_tokens else {
@@ -164,7 +164,7 @@ pub async fn fetch_catalog(
 
 /// 目录 → 对外模型列表。纯函数，便于单测。
 ///
-/// 过滤规则（§4.2）：
+/// 过滤规则（§4 解析规则）：
 /// 1. 必须是 `cli` agent 可选的模型（否则对话端点回 `code=11102`）；
 /// 2. 必须是对话模型（有 `maxInputTokens`，且输出上限 > 256）。
 ///
@@ -196,7 +196,7 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    /// 真实响应 `data` 节选（§4.1），覆盖两种 reasoning 声明形态。
+    /// 真实响应 `data` 节选（§4 主源），覆盖两种 reasoning 声明形态。
     const REAL: &str = r#"{
       "agents":[
         {"name":"cli","models":["auto","hy4std","hy4-preview","glm-5.3","deepseek-v4-pro"]},

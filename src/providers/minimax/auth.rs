@@ -20,7 +20,7 @@ use serde::Deserialize;
 use super::api::{self, HttpError};
 use super::credential::{self, Credential};
 
-/// 设备码响应（§1.2 抓包）。
+/// 设备码响应（§1 抓包）。
 #[derive(Debug, Deserialize)]
 pub struct DeviceCode {
     pub device_code: String,
@@ -45,7 +45,7 @@ fn default_interval() -> u64 {
     3
 }
 
-/// 令牌响应（设备码成功与 refresh 共用形状，§1.2/§2）。
+/// 令牌响应（设备码成功与 refresh 共用形状，§1/§2）。
 #[derive(Debug, Deserialize)]
 pub struct TokenGrant {
     pub access_token: String,
@@ -60,13 +60,13 @@ pub struct TokenGrant {
 }
 
 impl TokenGrant {
-    /// 换算到期时间戳（毫秒）。缺 `expires_in` 时退回 12h（§1.4 实测值）。
+    /// 换算到期时间戳（毫秒）。缺 `expires_in` 时退回 12h（§1 实测的 `expires_in`）。
     pub fn expires_at(&self) -> i64 {
         let secs = self.expires_in.unwrap_or(43_200);
         credential::now_millis() + secs * 1000
     }
 
-    /// 令牌校验，规则见 §1.5 `invalid_token_response`。
+    /// 令牌校验，规则见 §7.1 `invalid_token_response`。
     pub fn validate(&self) -> Result<(), String> {
         if self.access_token.trim().is_empty() {
             return Err("响应缺少 access_token".into());
@@ -143,7 +143,7 @@ impl Eq for PollOutcome {}
 
 /// 解析一次轮询的响应。
 ///
-/// 上游用 **HTTP 400 + `error`** 表示待授权（§1.2），另有兼容实现用
+/// 上游用 **HTTP 400 + `error`** 表示待授权（§1 轮询分支），另有兼容实现用
 /// **HTTP 200 + `status`**。两种都要认。
 pub fn classify(status: u16, body: &str) -> PollOutcome {
     let json: Option<serde_json::Value> = serde_json::from_str(body).ok();

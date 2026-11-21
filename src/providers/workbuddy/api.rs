@@ -74,7 +74,7 @@ pub const IDE_NAME: &str = "WorkBuddy";
 /// 产品标识（`X-Product`）。
 pub const PRODUCT: &str = "WorkBuddy";
 
-/// 对话侧的归属/风控请求头（§3.2）。
+/// 对话侧的归属/风控请求头（§3）。
 ///
 /// 这些头**不是功能必需**，但缺失可能触发上游的渠道校验（`code=11128`），
 /// 故照抄官方客户端。

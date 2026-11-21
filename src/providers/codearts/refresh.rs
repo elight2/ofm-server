@@ -24,7 +24,7 @@ use super::dpop;
 /// 华为 STS 实际用的是 `{"error_code":"STS5.1806","error_msg":"invalid refresh
 /// token: '<原因>'"}`，**不含** OAuth 标准的 `invalid_grant`；只认标准码会让
 /// 失效令牌被误判为可重试，进而回退 kernel 形态、最终报出误导性的
-/// `invalid client id`（§2.1）。
+/// `invalid client id`（§2）。
 const INVALID_GRANT: &[&str] = &[
     "invalid_grant",
     "invalid_token",

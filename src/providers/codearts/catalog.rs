@@ -41,7 +41,7 @@ pub struct BuiltinModel {
     #[serde(default)]
     pub credit: Vec<CreditSlot>,
     pub enable: Option<bool>,
-    /// 上下文/输出上限与图片能力（chat 实现时使用）。
+    /// 上下文/输出上限与图片能力：目录原样下发，本服务不使用。
     #[allow(dead_code)]
     pub context_window: Option<i64>,
     #[allow(dead_code)]

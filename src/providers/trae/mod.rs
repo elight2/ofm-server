@@ -1,7 +1,7 @@
 //! Trae 供应商。
 //!
-//! 已实现：登录（`auth`）、续期（`refresh`）、对话（`chat`/`stream`）。
-//! `models` / `claim` 仍为占位。
+//! 已实现：登录（`auth`）、续期（`refresh`）、模型目录（`catalog`）、
+//! 对话（`chat`/`stream`）、签到与余额（`checkin`）。
 //! 协议实况见 `provider-info/trae.md`。
 
 pub mod api;

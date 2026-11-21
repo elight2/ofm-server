@@ -35,7 +35,7 @@ pub const AUDIENCE: &str = "agent-backend";
 /// 设备码授权类型（设备码轮询用）。
 pub const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-/// `slow_down` 时轮询间隔的增量（秒），见 §1.2。
+/// `slow_down` 时轮询间隔的增量（秒），见 §1 轮询分支。
 pub const SLOW_DOWN_INCREMENT_SECS: u64 = 5;
 
 #[derive(Debug, thiserror::Error)]
@@ -115,7 +115,7 @@ pub async fn get_json<T: DeserializeOwned>(
 /// 生成 PKCE `(code_verifier, code_challenge)`。
 ///
 /// 32 字节随机 → base64url 无 padding（43 字符）作 verifier，
-/// challenge = base64url(sha256(verifier))（同样 43 字符），见 §1.1。
+/// challenge = base64url(sha256(verifier))（同样 43 字符），见 §1 PKCE 行。
 pub fn pkce_pair() -> (String, String) {
     use base64::Engine as _;
 
@@ -130,7 +130,7 @@ pub fn pkce_pair() -> (String, String) {
 /// 发 `application/x-www-form-urlencoded` POST 并解 JSON。
 ///
 /// 成功返回原文字节（调用方按端点自行反序列化），失败按 OAuth 错误体解析。
-/// 注意：OAuth 端点**不带** cookie、不带 `origin`（§1.3）。
+/// 注意：OAuth 端点**不带** cookie、不带 `origin`（§1）。
 pub async fn post_form(
     client: &reqwest::Client,
     url: &str,

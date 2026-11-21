@@ -20,7 +20,6 @@ pub mod raccoon;
 pub mod trae;
 pub mod workbuddy;
 
-use crate::config::Config;
 use crate::core::provider::Provider;
 use crate::core::registry::Registry;
 
@@ -31,12 +30,8 @@ use raccoon::RaccoonProvider;
 use trae::TraeProvider;
 use workbuddy::WorkBuddyProvider;
 
-/// 按配置构造全部供应商。
-///
-/// `config` 目前只用于签到间隔（不在此处读取），保留参数以便后续新增
-/// 供应商级设置时不必改签名。
-pub fn build_registry(root: &Path, config: &Config) -> anyhow::Result<Registry> {
-    let _ = config;
+/// 按运行目录构造全部供应商。
+pub fn build_registry(root: &Path) -> anyhow::Result<Registry> {
     let mut registry = Registry::new();
     registry.register(Arc::new(TraeProvider::new(root.to_path_buf())?) as Arc<dyn Provider>);
     registry.register(Arc::new(RaccoonProvider::new(root.to_path_buf())?) as Arc<dyn Provider>);

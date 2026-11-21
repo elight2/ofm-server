@@ -21,7 +21,7 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     let refresh_interval = config.refresh_interval()?;
     let balance_interval = config.balance_record_interval()?;
 
-    let registry = Arc::new(providers::build_registry(&root, &config)?);
+    let registry = Arc::new(providers::build_registry(&root)?);
 
     spawn_claim_loops(registry.clone(), claim_interval, root.clone());
     spawn_refresh_loops(registry.clone(), refresh_interval);

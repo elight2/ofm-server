@@ -4,7 +4,7 @@
 //! 响应约 2.7 MB，只需从中取 `function == "solo_agent"`、
 //! `usage == "chat_completion"` 且对用户可见的 `config_name`。
 //!
-//! **过滤 `is_invisible_to_user == true`**（§4.3）：该标志精确界定官方客户端 UI
+//! **过滤 `is_invisible_to_user == true`**（§4）：该标志精确界定官方客户端 UI
 //! 的展示集合 —— `solo_agent` 下 56 个可对话条目里 38 个为 true，剩余 18 个与
 //! 官方客户端实际列出的模型完全一致。为与官方客户端行为对齐，这里同样过滤。
 //! 注意：被过滤的条目在 API 层仍可调用（如 `glm-5.2` 实测可用），
@@ -16,12 +16,12 @@ use crate::core::provider::ModelInfo;
 
 pub const ENDPOINT_PATH: &str = "/api/ide/v1/batch_get_detail_param";
 
-/// 对话使用的 function，与 [`super::chat`] 保持一致（准入闸门，见 §4.3）。
+/// 对话使用的 function，与 [`super::chat`] 保持一致（准入闸门，见 §4）。
 const FUNCTION: &str = "solo_agent";
 /// 只保留可对话的条目；其余 usage 是嵌入/补全等非对话用途。
 const USAGE_CHAT: &str = "chat_completion";
 
-/// 请求体是固定常量（§4.1，`[抓包]` 358 字节）。
+/// 请求体是固定常量（§4，`[抓包]` 358 字节）。
 #[derive(Debug, Serialize)]
 pub struct CatalogBody {
     pub functions: [&'static str; 11],
@@ -95,13 +95,13 @@ pub struct ConfigInfo {
     pub config_name: String,
     #[serde(default)]
     pub usage: String,
-    /// `true` = 官方客户端 UI 不展示（§4.3）。缺省视为可见。
+    /// `true` = 官方客户端 UI 不展示（§4）。缺省视为可见。
     #[serde(default)]
     pub is_invisible_to_user: Option<bool>,
     /// 字符串化 JSON，仅在存在时才解析（2.7 MB 里大部分条目用不到）。
     #[serde(default)]
     pub display_config: Option<serde_json::Value>,
-    /// 字符串化 JSON：`access` / `consumption_rate` / `multimodal` / `reasoning`（§4.2）。
+    /// 字符串化 JSON：`access` / `consumption_rate` / `multimodal` / `reasoning`（§4）。
     #[serde(default)]
     pub display_contact_config: Option<serde_json::Value>,
 }
@@ -128,7 +128,7 @@ impl Catalog {
 /// 从目录里挑出可用于对话的模型。
 ///
 /// 顺序保持上游返回顺序，`config_name` 去重（实测无重复，防御性处理）。
-/// 只保留官方客户端 UI 可见的条目（`is_invisible_to_user != true`，§4.3）。
+/// 只保留官方客户端 UI 可见的条目（`is_invisible_to_user != true`，§4）。
 pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
     let Some(func) = catalog
         .function_configs
@@ -153,7 +153,7 @@ pub fn to_models(catalog: &Catalog) -> Vec<ModelInfo> {
         .collect()
 }
 
-/// `display_contact_config` 可能是对象也可能是字符串化 JSON（§4.2），两种都取。
+/// `display_contact_config` 可能是对象也可能是字符串化 JSON（§4），两种都取。
 fn contact_value(info: &ConfigInfo) -> Option<serde_json::Value> {
     match info.display_contact_config.as_ref()? {
         obj @ serde_json::Value::Object(_) => Some(obj.clone()),
@@ -162,7 +162,7 @@ fn contact_value(info: &ConfigInfo) -> Option<serde_json::Value> {
     }
 }
 
-/// 计费倍率：`display_contact_config.consumption_rate.data.rate`（§4.2）。
+/// 计费倍率：`display_contact_config.consumption_rate.data.rate`（§4）。
 ///
 /// `consumption_rate.enable == false` 时视为未提供。
 fn consumption_rate(info: &ConfigInfo) -> Option<f64> {
@@ -173,7 +173,7 @@ fn consumption_rate(info: &ConfigInfo) -> Option<f64> {
     cr.get("data")?.get("rate")?.as_f64()
 }
 
-/// `display_config` 可能是对象也可能是字符串化 JSON（§4.2），两种都取。
+/// `display_config` 可能是对象也可能是字符串化 JSON（§4），两种都取。
 fn display_name(info: &ConfigInfo) -> Option<String> {
     let value = match info.display_config.as_ref()? {
         obj @ serde_json::Value::Object(_) => obj,
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn 过滤_is_invisible_to_user() {
-        // 该标志精确界定官方客户端 UI 的展示集合（§4.3），为与官方行为对齐而过滤。
+        // 该标志精确界定官方客户端 UI 的展示集合（§4），为与官方行为对齐而过滤。
         // 缺省（字段缺失）视为可见。
         let c = catalog_with(
             r#"{"function_configs":[{"function":"solo_agent","config_info_list":[
@@ -341,9 +341,9 @@ mod tests {
         };
         let catalog: Catalog = serde_json::from_str(&body).expect("真实响应解析失败");
         let models = to_models(&catalog);
-        // §4.3：solo_agent 下 56 个可对话条目，过滤 `is_invisible_to_user == true`
+        // §4：solo_agent 下 56 个可对话条目，过滤 `is_invisible_to_user == true`
         // 后剩 18 个，与官方客户端 UI 实际展示的模型数一致。
-        assert_eq!(models.len(), 18, "§4.3 实测口径为 18 个可见模型");
+        assert_eq!(models.len(), 18, "§4 实测口径为 18 个可见模型");
         assert!(
             !models.iter().any(|m| m.model == "glm-5.2"),
             "glm-5.2 标 is_invisible_to_user=true，应被过滤（API 层仍可调用）"
@@ -364,7 +364,7 @@ mod tests {
         );
     }
 
-    /// 真实抓包：未过滤口径应为 56 条（保住 §4.3 的原始计数依据）。
+    /// 真实抓包：未过滤口径应为 56 条（保住 §4 的原始计数依据）。
     #[test]
     fn 真实抓包未过滤为_56_个可对话模型() {
         let Ok(text) = std::fs::read_to_string("tmp/trae-capture/flows.jsonl") else {
@@ -391,12 +391,12 @@ mod tests {
             .iter()
             .filter(|c| c.usage == "chat_completion" && !c.config_name.is_empty())
             .collect();
-        assert_eq!(chat.len(), 56, "§4.3 未过滤口径为 56 个可对话条目");
+        assert_eq!(chat.len(), 56, "§4 未过滤口径为 56 个可对话条目");
         let hidden = chat
             .iter()
             .filter(|c| c.is_invisible_to_user == Some(true))
             .count();
-        assert_eq!(hidden, 38, "§4.3 其中 38 个 is_invisible_to_user=true");
+        assert_eq!(hidden, 38, "§4 其中 38 个 is_invisible_to_user=true");
         assert_eq!(chat.len() - hidden, 18, "剩余 18 个与官方 UI 一致");
     }
 }

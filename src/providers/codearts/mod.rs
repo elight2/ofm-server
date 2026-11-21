@@ -159,7 +159,7 @@ fn refresh_error(e: HttpError) -> ProviderError {
                 || body.contains("invalid_grant")
                 || body.contains("invalid_token")
                 || body.contains("expired")
-                // 华为 STS 的失效形态（§2.1），不带 OAuth 标准码。
+                // 华为 STS 的失效形态（§2），不带 OAuth 标准码。
                 || body.contains("STS5.1806")
                 || body.contains("invalid refresh token") =>
         {

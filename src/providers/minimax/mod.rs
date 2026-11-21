@@ -1,7 +1,7 @@
 //! MiniMax（MiniMax Code）供应商。
 //!
 //! 已实现：登录（`auth`，OAuth 设备码 + PKCE）、模型目录（`models`）、
-//! 对话（`chat`，Chat Completions ↔ anthropic-messages）、思考强度映射、
+//! 对话（`chat`，Chat Completions ↔ anthropic-messages）、
 //! 令牌续期（被动自动 + `ofm-server refresh`）、每日签到（`claim`）、余额（`balance`）。
 //!
 //! 协议实况见 `provider-info/minimax.md`。关键约束：
@@ -236,7 +236,7 @@ impl Provider for MinimaxProvider {
 ///
 /// 上游用 `400 {"error":"invalid_grant","error_description":"this refresh token
 /// can no longer be used, start a new authorization"}` 表达「RT 已用掉/已失效」，
-/// 此时**没有**任何自动恢复路径（§1.4 末），只能重走登录。
+/// 此时**没有**任何自动恢复路径（§1 凭证存储末），只能重走登录。
 fn refresh_error(e: api::HttpError) -> ProviderError {
     match &e {
         api::HttpError::OAuth { error, .. }

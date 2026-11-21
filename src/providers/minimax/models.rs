@@ -60,8 +60,8 @@ pub struct ProviderConfig {
 
 /// 单个模型条目。
 ///
-/// 除 `name` 外，其余字段供后续步骤使用：`thinking_config`/`effort_options`
-/// 是思考强度映射（第 4 步）的输入，`modalities`/`limit` 决定图片与上下文能力。
+/// 对外只取 `name`；其余字段是上游目录原样下发的元数据（思考形态、上下文
+/// 与图片能力等），本服务不发送任何思考强度字段，这里保留解析仅为记录协议。
 #[derive(Debug, Deserialize)]
 pub struct ModelEntry {
     /// 展示名（`M3`/`M3.1-Flash`），对外 id 不用它。
@@ -119,10 +119,8 @@ pub struct ThinkingConfig {
 
 impl ModelEntry {
     /// 是否支持图片输入（`modalities.input` 含 `image`）。
-    ///
-    /// 第 3 步（对话）判断图片能否透传时启用。
-    #[allow(dead_code)]
-    pub fn supports_image(&self) -> bool {
+    #[cfg(test)]
+    fn supports_image(&self) -> bool {
         self.modalities
             .as_ref()
             .is_some_and(|m| m.input.iter().any(|s| s == "image"))
