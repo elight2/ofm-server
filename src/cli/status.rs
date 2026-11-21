@@ -6,7 +6,7 @@
 //! 状态: 正常(2个模型)        或  状态: 未接入
 //! 登录凭证到期时间: 2026-11-18 02:19:34
 //! 余额: 8437.46
-//! 最后一次余额增加: 2026-11-17 14:40:57 (+300.00=10839.00)
+//! 最后一次余额增加: 2026-11-17 14:40:57 (10680.00+54.00=10734.00)
 //! 模型列表:
 //! minimax/MiniMax-M3.1-Flash
 //! ```
@@ -14,8 +14,8 @@
 //! 时间一律 **UTC**（`fmt_ms` 与 `fmt_rfc3339` 同一口径，记录存的也是 UTC）。
 //! 余额与增量均按金额口径显示，固定小数点后 2 位。
 //! 「最后一次余额增加」取自 `balance.log`：余额相对紧邻前一条变多时展示
-//! `(+y=z)`（`y` 为增量、`z` 为当前余额）；无增加记录（纯消耗或尚无记录）显示
-//! `无记录`。
+//! `(x+y=z)`（`x` 为前一条余额、`y` 为增量、`z` 为当前余额）；无增加记录
+//! （纯消耗或尚无记录）显示 `无记录`。
 
 use anyhow::Context;
 
@@ -53,10 +53,11 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
     // 来自 balance.log，仅当余额相对紧邻前一条变多时展示。
     match balancelog::last_increase(&root, provider_id) {
         Some((time, prev, cur)) => {
-            let delta = fmt_amount(cur - prev);
             println!(
-                "最后一次余额增加: {} (+{delta}={})",
+                "最后一次余额增加: {} ({}+{}={})",
                 crate::core::fmt_rfc3339(&time),
+                fmt_amount(prev),
+                fmt_amount(cur - prev),
                 fmt_amount(cur)
             );
         }
