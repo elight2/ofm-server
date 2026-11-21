@@ -100,7 +100,7 @@ impl TraeProvider {
             ("x-device-type", std::env::consts::OS.to_string()),
             ("x-os-version", device::os_version()),
             // 模型目录接口靠这个头做准入：缺失时 HTTP 200 但每个 function 都回
-            // `error_code 2001 ... not found`（实测，见 provider-info/trae.md §4.1）。
+            // `error_code 2001 ... not found`（见 provider-info/trae.md §4）。
             // 对话接口同一值放 body `app_id`，两处都要与官方客户端一致。
             ("x-app-id", chat::APP_ID.to_string()),
             ("x-flow-traceparent", flow_traceparent()),

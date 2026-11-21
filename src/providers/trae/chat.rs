@@ -28,7 +28,7 @@ pub struct ChatBody {
     pub tools: Vec<ToolDef>,
     // ⚠️ 故意**不发送** `tool_choice`：上游 `LLMUtilsChatRequest` 虽有该字段（string 类型），
     // 但实测 `required` / `none` / 指定函数三者**均不生效**，行为与不传完全一致
-    // （见 `provider-info/trae.md` §3.2.2）。CC 侧语义在 trae 预设模型上无法表达。
+    // （见 `provider-info/trae.md` §0）。CC 侧语义在 trae 预设模型上无法表达。
     pub messages: Vec<UpMessage>,
 }
 

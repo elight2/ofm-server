@@ -1,7 +1,7 @@
 //! Trae HTTP 层：端点、UA、控制面响应信封。
 //!
-//! 分两套 UA（`provider-info/trae.md` §0）：对话用 `TraeClient/TTNet`，
-//! 控制面（登录/续期）用 Electron 桌面壳 UA，签到用 VSCode UA。
+//! 分三套 UA（`provider-info/trae.md` §0）：对话用 `TraeClient/TTNet`（UA 是准入标签，
+//! 换其他 UA 会按限流拒绝），控制面（登录/续期）用 Electron 桌面壳 UA，签到用 VSCode UA。
 
 use crate::core::text::truncate_chars;
 use serde::Deserialize;

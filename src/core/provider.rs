@@ -22,7 +22,7 @@ pub struct ChatRequest {
 /// CC `tool_choice` 的四种取值。
 ///
 /// 供应商支持程度不同：raccoon 逐项生效；trae 的上游接受该字段但**静默忽略**
-/// （实测见 `provider-info/trae.md` §3.2.2），故 trae 侧不发送。
+/// （见 `provider-info/trae.md` §0），故 trae 侧不发送。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ToolChoice {
     /// 未指定或显式 `"auto"`：有工具时由模型自行决定。不发送该字段。
