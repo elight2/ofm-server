@@ -35,13 +35,16 @@
 短信验证码登录, 三步:
 
 ```text
-POST /login/phone/sendMsgCode   {"mobile":"<11 位手机号>"}
+POST /login/phone/sendMsgCode   {"base":{...},"param":{"ccode":"86","phone":"...","expire":300}}
   → {"code":"000000","data":{"msgid":"<32 hex>"}}
-POST /login/phone/checkCode     {"mobile":"...","msgid":"...","code":"<验证码>"}
+POST /login/phone/checkCode     {"base":{...},"param":{"ccode":"86","phone":"...","mcode":"<验证码>","msgid":"...","expire":1209600}}
   → {"code":"000000","data":{"session":"<32 hex>","userid":"...","expireTime":<ms>}}
-GET  /userinfo/query/baseInfo   (带 session)
+POST /userinfo/query/baseInfo   (带 session)
   → {"code":"000000",...} 有效 ｜ {"code":"020002","desc":"session无效"} 失效
 ```
+
+`base` 固定为 `{appid, modelid:"Web", version:"1.0.0", devid:"web", ua:"Loomy|Desktop|Electron|macOS", traceid:<32 hex>}`。
+失效码为 `020002` 与 `100002` 两种(客户端 `AUTH_ERROR_CODES`), 均需重新登录。
 
 签名: `SDK-HMAC-SHA1`, `Authorization: SDK-HMAC-SHA1 Access=<AK>, SignedHeaders=<h1;h2;...>, Signature=<base64>`。
 
@@ -55,6 +58,27 @@ GET  /userinfo/query/baseInfo   (带 session)
 ## 2. 令牌续期方式
 
 **无**。`session` 固定 14 天有效, 过期只能重新登录。`Provider::refresh` 返回 `Unsupported`。
+
+### 依据(客户端 0.9.39 静态核对)
+
+账号网关的**全部** 18 个端点(`app.asar` 内 `electron/xfyun/account-service.js`)里没有任何
+刷新/续期/延期接口; 会话变更只有三个入口, 全部需要用户参与:
+
+| 入口 | 端点 | 拿到的 session |
+|-|-|-|
+| 短信登录 | `/login/phone/checkCode` | 新 session(`expire: 1209600`) |
+| 密码登录 | `/login/account/byPwd` | 新 session(`expire: 1209600`) |
+| 微信登录 | `/login/thirdAccount/bind/{auth,skip,checkCode}` | 新 session(`expire: 1209600`) |
+
+* `expire` 只在**登录**时作为「请求多久的会话」传给上游, 不存在用旧 session 换新 session 的调用。
+* 客户端里对 session 只有三种操作: 登录写入(`auth-session-controller.update`)、
+  启动读回(`restore`)、收到 `100002` 后清空(`clear` + 广播 `auth:session-invalidated`)。无定时续期逻辑。
+* 客户端对失效的**唯一**处理是清 session 并跳回登录页(文案「登录已过期，请重新登录」),
+  佐证服务端不提供续期能力。
+* 模型侧 `/api/v1` 的 59 个端点亦无 token/session 刷新接口;
+  唯一带 refresh 语义的是 `athena-connect` 的 `device_token`(设备绑定凭证), 与账号 session 无关。
+
+结论: 本项目对 loomy 只能做「失效探测 + 提示重新登录」, 不能做自动续期。
 
 ## 3. Chat Completions映射
 
