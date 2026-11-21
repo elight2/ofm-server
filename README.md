@@ -10,10 +10,12 @@
 ## 命令行参数
 * `ofm-server`: 启动服务
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
-* `ofm-server claim`: 签到所有供应商（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
+* `ofm-server claim 供应商id(写all签到所有)`: 签到（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
 * `ofm-server status 供应商id(写all输出全部供应商的简要信息)`: 获取供应商当前信息(输出接入状态, 当前余额, 最近一次成功签到的时间与增量, 凭证到期时间, 模型列表)
 * `ofm-server config`: 打印[默认配置文件](./config.example.toml)
 * `ofm-server refresh 供应商id(写all刷新全部)`: 刷新供应商登录令牌
+* `ofm-server clear log`: 清空所有log文件
+* `ofm-server clear credential`: 清空所有credential文件(需要全部重新登录)
 
 ## API配置
 * 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
