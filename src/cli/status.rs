@@ -9,6 +9,7 @@
 //! 登录凭证到期时间: 2026-11-18 02:19:34
 //! 余额: 8437.46
 //! 最后一次余额增加: 2026-11-17 14:40:57 (10680.00 + 54.00 = 10734.00)
+//! 最后成功签到: 2026-11-18 02:19:34
 //! ```
 //!
 //! 单个供应商的输出格式（固定顺序）：
@@ -18,6 +19,7 @@
 //! 登录凭证到期时间: 2026-11-18 02:19:34
 //! 余额: 8437.46
 //! 最后一次余额增加: 2026-11-17 14:40:57 (10680.00 + 54.00 = 10734.00)
+//! 最后成功签到: 2026-11-18 02:19:34
 //! 模型列表:
 //! minimax/MiniMax-M3.1-Flash
 //! ```
@@ -27,11 +29,15 @@
 //! 「最后一次余额增加」取自 `balance.log`：余额相对紧邻前一条变多时展示
 //! `(x + y = z)`（`x` 为前一条余额、`y` 为增量、`z` 为当前余额）；无增加记录
 //! （纯消耗或尚无记录）显示 `无记录`。
+//! 「最后成功签到」取自 `claim.log`，**只认 `success`**：`skipped`（今日已领等）
+//! 不算成功，否则该行永远显示今天；无成功记录显示 `无记录`。
+//! 两个日志都只保留最近 50 条，故最多只能回溯这 50 次。
 
 use anyhow::Context;
 
 use crate::cli::ALL;
 use crate::core::balancelog;
+use crate::core::claimlog;
 use crate::core::fmt_amount;
 use crate::core::provider::{Provider, rate_suffix};
 
@@ -67,8 +73,9 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
     // 余额。
     println!("余额: {}", balance_text(provider.as_ref()).await);
 
-    // 最后一次余额增加。时间与上面到期时间同格式。
+    // 最后一次余额增加、最后成功签到。时间与上面到期时间同格式。
     println!("{}", last_increase_text(&root, provider_id));
+    println!("{}", last_claim_success_text(&root, provider_id));
 
     // 模型列表：一行一个，格式与 `/v1/models` 的 id 一致。
     match models {
@@ -85,7 +92,7 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
     Ok(())
 }
 
-/// `status all` 的单供应商简要信息：标题行 + 登录状态/凭证到期/余额/最后一次余额增加。
+/// `status all` 的单供应商简要信息：标题行 + 登录状态/凭证到期/余额 + 最后两条。
 ///
 /// 不拉模型目录（`all` 仅要求简要信息；串行拉六家目录太慢）。
 /// 登录状态看凭证文件是否存在（不联网），不依赖 `credential_expire_at`
@@ -98,6 +105,7 @@ async fn print_brief(root: &std::path::Path, provider: &dyn Provider) {
     println!("登录凭证到期时间: {}", expire_text(provider));
     println!("余额: {}", balance_text(provider).await);
     println!("{}", last_increase_text(root, id));
+    println!("{}", last_claim_success_text(root, id));
 }
 
 /// 凭证到期时间文本（`未知` 兜底）。
@@ -132,5 +140,15 @@ fn last_increase_text(root: &std::path::Path, provider_id: &str) -> String {
             fmt_amount(cur)
         ),
         None => "最后一次余额增加: 无记录".to_string(),
+    }
+}
+
+/// 「最后成功签到」整行文本。
+///
+/// 来自 `claim.log`，只认 `success`；`skipped`（今日已领等）与 `failed` 都不算。
+fn last_claim_success_text(root: &std::path::Path, provider_id: &str) -> String {
+    match claimlog::last_success(root, provider_id) {
+        Some(time) => format!("最后成功签到: {}", crate::core::fmt_rfc3339(&time)),
+        None => "最后成功签到: 无记录".to_string(),
     }
 }

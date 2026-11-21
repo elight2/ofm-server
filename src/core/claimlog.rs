@@ -88,6 +88,18 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
     Ok(())
 }
 
+/// 最近一次**成功**签到的时间（RFC 3339），没有成功记录时返回 `None`。
+///
+/// `skipped` / `failed` 都不算成功：签到的「已领」是常态，
+/// 把 `skipped` 当成成功会让「最后成功签到」永远显示今天，失去意义。
+pub fn last_success(root: &Path, provider: &str) -> Option<String> {
+    load(root, provider)
+        .iter()
+        .rev()
+        .find(|e| e.result == "success")
+        .map(|e| e.time.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +153,25 @@ mod tests {
         // 首条应是第 10 条（0..KEEP+10 保留尾部）。
         assert_eq!(e[0].time, "t10");
         assert_eq!(e[KEEP - 1].time, format!("t{}", KEEP + 9));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 最后成功签到只认_success() {
+        let root = tmp_root("last-success");
+        append(&root, "p", entry("t1", "success", None)).unwrap();
+        append(&root, "p", entry("t2", "skipped: already claimed", None)).unwrap();
+        append(&root, "p", entry("t3", "failed: not logged in", None)).unwrap();
+        assert_eq!(last_success(&root, "p").as_deref(), Some("t1"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 无成功记录时最后成功签到为空() {
+        let root = tmp_root("last-success-none");
+        assert_eq!(last_success(&root, "p"), None);
+        append(&root, "p", entry("t1", "skipped: already claimed", None)).unwrap();
+        assert_eq!(last_success(&root, "p"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
