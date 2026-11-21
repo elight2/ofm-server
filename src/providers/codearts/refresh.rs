@@ -1,6 +1,6 @@
 //! CodeArts 续期：`refresh_token` 换新 AKSK。
 //!
-//! 官方有两条等价的续期形态（`provider-info/codearts.md` §2.1）：
+//! 官方有两条等价的续期形态（`provider-info/codearts.md` §2）：
 //!
 //! | 客户端 | body | 额外头 |
 //! |-|-|-|

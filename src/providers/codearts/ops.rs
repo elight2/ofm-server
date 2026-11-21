@@ -3,7 +3,7 @@
 //! 这才是 IDE 里「限时福利 → 每日签到领 100 积分」的真实协议，
 //! 与 [`super::benefit`]（benefit-service，福利模型额度）**完全无关**。
 //!
-//! # 端点（`provider-info/codearts.md` §7.2）
+//! # 端点（`provider-info/codearts.md` §7）
 //!
 //! ```text
 //! GET  {base}/v1/ops/delivery?channel=IDE            活动列表

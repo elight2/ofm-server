@@ -189,7 +189,7 @@ fn convert_message(m: &Message) -> serde_json::Value {
 /// 本账号 `gateway/config` 的 `result` 为 `null`（无福利模型），故永远不该加。
 ///
 /// 早期实现按模型名前缀猜测（`glm-5.3-flash`/`deepseek-v4.1-flash`）属误判，已删除。
-/// 见 `provider-info/codearts.md` §5.2。
+/// 见 `provider-info/codearts.md` §3.4。
 fn sha256_hex(bytes: &[u8]) -> String {
     crate::core::text::hex_lower(&Sha256::digest(bytes))
 }

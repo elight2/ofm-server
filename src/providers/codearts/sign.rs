@@ -52,7 +52,7 @@ pub fn sign(req: &Request<'_>, ak: &str, sk: &str) -> Result<Vec<(String, String
 }
 
 /// `signSimple` 变体：payload hash 固定 `UNSIGNED-PAYLOAD`，用于
-/// `/v1/model/builtin` 等只读接口（官方 `signSimple`，见 `provider-info/codearts.md` §4.5）。
+/// `/v1/model/builtin` 等只读接口（见 `provider-info/codearts.md` §4）。
 ///
 /// 调用方需把实际参与签名的业务头放进 `req.headers`，通常包括
 /// `content-type`、`x-security-token`；本函数会自动补 `x-sdk-content-sha256`。

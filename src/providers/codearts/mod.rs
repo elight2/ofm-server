@@ -121,7 +121,7 @@ impl Provider for CodeartsProvider {
     /// 注意与历史实现的区别：旧实现走 benefit-service
     /// （`/api/v1/benefit/claim`，福利模型额度渠道），那条路径对本账号恒返回
     /// `4000 invalid channel, group not found`，**不是**界面上的「每日签到」。
-    /// 见 `provider-info/codearts.md` §7.2。
+    /// 见 `provider-info/codearts.md` §7。
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
         let cred = self.valid_credential().await?;
         ops::claim(&self.client, &cred).await
