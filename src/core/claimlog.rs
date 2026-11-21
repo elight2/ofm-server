@@ -1,12 +1,14 @@
 //! 签到记录：`providers/<id>/claim.log`，JSONL，每行一条。
 //!
-//! 只保留最近 [`KEEP`] 条，追加超出后裁剪。记录字段只有时间、结果、当前余额。
+//! 只保留最近 [`KEEP`] 条，追加超出后裁剪。记录字段有时间、结果、当时余额、增量。
 //!
 //! **记录内容一律英文**：`result` 字段写 `success` / `skipped: already claimed` /
-//! `failed` 等英文串，便于 grep 与脚本处理；面向人的输出（控制台、`status`）由
-//! [`crate::core::claim`] 转回中文。
+//! `failed` 等英文串，便于 grep 与脚本处理。
 //!
 //! 失败的签到也会写一条（结果为 `failed: <原因>`），便于排查「今天为什么没签上」。
+//!
+//! 本模块只负责**记录**与**读取**，不参与展示：余额的时序曲线与「最后一次余额增加」
+//! 由 [`crate::core::balancelog`] 负责，`status` 读的是 `balance.log`。
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -32,15 +34,6 @@ pub struct Entry {
     /// 本次签到上游明确告知的增量（`None` 表示上游未告知，只能靠余额差分）。
     #[serde(default)]
     pub delta: Option<f64>,
-}
-
-impl Entry {
-    /// 「成功签到」条目（结果以 `success` 开头）。
-    ///
-    /// 兼容旧记录：改动前的文件写的是中文「成功」。
-    pub fn is_success(&self) -> bool {
-        self.result.starts_with("success") || self.result == "成功"
-    }
 }
 
 fn path(root: &Path, provider: &str) -> PathBuf {
@@ -93,27 +86,6 @@ pub fn append(root: &Path, provider: &str, entry: Entry) -> std::io::Result<()> 
     f.sync_all()?;
     crate::core::atomicio::rename(&tmp, &path)?;
     Ok(())
-}
-
-/// 最近一次成功签到的时间与增量（`status` 用）。
-///
-/// 增量 = 该条成功记录的余额 − 它之前最近一条记录的余额（无前一条时为 `None`）。
-pub fn last_success(root: &Path, provider: &str) -> Option<(String, Option<f64>)> {
-    let entries = load(root, provider);
-    let idx = entries.iter().rposition(Entry::is_success)?;
-    // 优先用上游明确告知的增量：余额差分受首次签到、中途失败等影响，不一定准。
-    if let Some(d) = entries[idx].delta {
-        return Some((entries[idx].time.clone(), Some(d)));
-    }
-    let cur = entries[idx].balance;
-    let prev = entries[..idx].iter().rev().find_map(|e| e.balance);
-    // 余额差分取整到 2 位：旧记录里可能存了多于 2 位的小数（本功能上线前的
-    // 历史行），浮点相减会留下冗长尾巴，统一与记录/展示口径一致。
-    let delta = match (cur, prev) {
-        (Some(a), Some(b)) => Some(crate::core::round2(a - b)),
-        _ => None,
-    };
-    Some((entries[idx].time.clone(), delta))
 }
 
 #[cfg(test)]
@@ -173,59 +145,9 @@ mod tests {
     }
 
     #[test]
-    fn 无记录时返回_none() {
+    fn 无记录时读回空表() {
         let root = tmp_root("none");
-        assert!(last_success(&root, "p").is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn 最近成功取时间与增量() {
-        let root = tmp_root("last");
-        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
-        append(
-            &root,
-            "p",
-            entry("t2", "skipped: already claimed", Some(100.0)),
-        )
-        .unwrap();
-        append(&root, "p", entry("t3", "success", Some(150.0))).unwrap();
-        let (time, delta) = last_success(&root, "p").unwrap();
-        assert_eq!(time, "t3");
-        // 增量相对 t2 的余额 100 → +50
-        assert_eq!(delta, Some(50.0));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn 首次成功无前值则增量为_none() {
-        let root = tmp_root("first");
-        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
-        let (time, delta) = last_success(&root, "p").unwrap();
-        assert_eq!(time, "t1");
-        assert_eq!(delta, None);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn 上游告知的增量优先于余额差分() {
-        let root = tmp_root("delta-preferred");
-        append(&root, "p", entry("t1", "success", Some(100.0))).unwrap();
-        // t2 余额差分应为 +50，但上游明确告知 300（中间可能有过消耗）。
-        let mut e = entry("t2", "success", Some(400.0));
-        e.delta = Some(300.0);
-        append(&root, "p", e).unwrap();
-        let (time, delta) = last_success(&root, "p").unwrap();
-        assert_eq!(time, "t2");
-        assert_eq!(delta, Some(300.0));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn 失败记录不算成功() {
-        let root = tmp_root("fail");
-        append(&root, "p", entry("t1", "failed: network error", None)).unwrap();
-        assert!(last_success(&root, "p").is_none());
+        assert!(load(&root, "p").is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

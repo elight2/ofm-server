@@ -51,6 +51,16 @@ pub const MIN_INTERVAL_HOURS: u64 = 1;
 /// 真要一年以上不签到，改代码比改配置更合适。
 pub const MAX_INTERVAL_HOURS: u64 = 24 * 365;
 
+/// 间隔类配置允许的下限（分钟）。低于此值视为配置错误。
+///
+/// 余额记录是分钟级任务（用户要「每过一段时间」记录），故下限比签到的小时级更细。
+pub const MIN_BALANCE_INTERVAL_MINUTES: u64 = 1;
+
+/// 余额记录间隔允许的上限（分钟，约一年）。
+///
+/// 与 [`MAX_INTERVAL_HOURS`] 同理：只为挡住溢出与明显的笔误。
+pub const MAX_BALANCE_INTERVAL_MINUTES: u64 = 60 * 24 * 365;
+
 /// 字段级默认：分别从示例文件读取，**不走** `Config::default()`。
 ///
 /// 不能用容器级 `#[serde(default)]`：那样缺字段会调 `Config::default()`，
@@ -69,6 +79,10 @@ fn default_claim_interval() -> u64 {
 
 fn default_refresh_interval() -> u64 {
     example().refresh_interval
+}
+
+fn default_balance_record_interval() -> u64 {
+    example().balance_record_interval
 }
 
 /// 用户配置模板 = 内嵌示例文件去掉遗留键后的文本。
@@ -192,6 +206,11 @@ pub struct Config {
     /// 登录令牌自动刷新间隔（小时）。所有供应商共用这一份。
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval: u64,
+    /// 余额记录间隔（分钟）。所有供应商共用这一份。
+    ///
+    /// 定时任务与签到后都会按此节奏记录余额，供 `status` 展示最后一次余额增加。
+    #[serde(default = "default_balance_record_interval")]
+    pub balance_record_interval: u64,
 }
 
 impl Default for Config {
@@ -234,6 +253,13 @@ impl Config {
     pub fn refresh_interval(&self) -> Result<Duration, ConfigError> {
         interval("refresh_interval", self.refresh_interval)
     }
+
+    /// 余额记录间隔。全局一份，所有供应商共用。
+    ///
+    /// 单位分钟；超出范围视为配置错误。
+    pub fn balance_record_interval(&self) -> Result<Duration, ConfigError> {
+        interval_minutes("balance_record_interval", self.balance_record_interval)
+    }
 }
 
 /// 小时 → 时长的统一校验。
@@ -249,6 +275,19 @@ fn interval(key: &'static str, hours: u64) -> Result<Duration, ConfigError> {
         });
     }
     Ok(Duration::from_secs(hours * 3600))
+}
+
+/// 分钟 → 时长的统一校验。余额记录间隔专用。
+fn interval_minutes(key: &'static str, minutes: u64) -> Result<Duration, ConfigError> {
+    if !(MIN_BALANCE_INTERVAL_MINUTES..=MAX_BALANCE_INTERVAL_MINUTES).contains(&minutes) {
+        return Err(ConfigError::IntervalOutOfRange {
+            key,
+            hours: minutes,
+            min: MIN_BALANCE_INTERVAL_MINUTES,
+            max: MAX_BALANCE_INTERVAL_MINUTES,
+        });
+    }
+    Ok(Duration::from_secs(minutes * 60))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -291,6 +330,7 @@ mod tests {
         assert_eq!(c.host.to_string(), "127.0.0.1");
         assert_eq!(c.claim_interval, 6);
         assert_eq!(c.refresh_interval, 36);
+        assert_eq!(c.balance_record_interval, 30);
     }
 
     /// `Config::default()` 就是解析示例文件的结果，二者不得有分歧。
@@ -302,6 +342,10 @@ mod tests {
         assert_eq!(from_default.port, from_str.port);
         assert_eq!(from_default.claim_interval, from_str.claim_interval);
         assert_eq!(from_default.refresh_interval, from_str.refresh_interval);
+        assert_eq!(
+            from_default.balance_record_interval,
+            from_str.balance_record_interval
+        );
     }
 
     /// 旧版配置（每家一张表、秒为单位、带思考强度）必须继续可用。
@@ -330,11 +374,13 @@ mod tests {
         // 新键仍在
         assert!(t.contains("claim_interval = 6"));
         assert!(t.contains("refresh_interval = 36"));
+        assert!(t.contains("balance_record_interval = 30"));
         // 模板本身可解析
         let c = parse(&t).unwrap();
         assert_eq!(c.port, 3060);
         assert_eq!(c.claim_interval, 6);
         assert_eq!(c.refresh_interval, 36);
+        assert_eq!(c.balance_record_interval, 30);
     }
 
     /// 全局间隔与供应商无关：任何一个 id 都取同一个值。
@@ -372,6 +418,28 @@ mod tests {
         assert_eq!(
             c.refresh_interval().unwrap(),
             Duration::from_secs(8760 * 3600)
+        );
+    }
+
+    /// 余额记录间隔以分钟计，单位与小时级间隔不同。
+    #[test]
+    fn 余额记录间隔以分钟计() {
+        let c = parse("balance_record_interval = 30\n").unwrap();
+        assert_eq!(
+            c.balance_record_interval().unwrap(),
+            Duration::from_secs(30 * 60)
+        );
+        // 默认 30 分钟
+        assert_eq!(Config::default().balance_record_interval, 30);
+    }
+
+    /// 余额记录间隔过小必须报错，不静默纠正。
+    #[test]
+    fn 余额记录间隔过小报错() {
+        let c = parse("balance_record_interval = 0\n").unwrap();
+        let err = c.balance_record_interval().unwrap_err();
+        assert!(
+            err.to_string().contains("balance_record_interval") && err.to_string().contains('0')
         );
     }
 

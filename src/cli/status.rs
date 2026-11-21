@@ -6,18 +6,20 @@
 //! 状态: 正常(2个模型)        或  状态: 未接入
 //! 登录凭证到期时间: 2026-11-18 02:19:34
 //! 余额: 8437.46
-//! 最近成功签到: 2026-11-17 14:40:57 (+400.00)
+//! 最后一次余额增加: 2026-11-17 14:40:57 (+300.00=10839.00)
 //! 模型列表:
 //! minimax/MiniMax-M3.1-Flash
 //! ```
 //!
-//! 时间一律 **UTC**（`fmt_ms` 与 `fmt_rfc3339` 同一口径，`claim.log` 存的也是 UTC）。
-//! 增量只在有值时显示：正数 ` (+400)`、负数 ` (-25.50)`、零 ` (0.00)`、无值不显示。
+//! 时间一律 **UTC**（`fmt_ms` 与 `fmt_rfc3339` 同一口径，记录存的也是 UTC）。
 //! 余额与增量均按金额口径显示，固定小数点后 2 位。
+//! 「最后一次余额增加」取自 `balance.log`：余额相对紧邻前一条变多时展示
+//! `(+y=z)`（`y` 为增量、`z` 为当前余额）；无增加记录（纯消耗或尚无记录）显示
+//! `无记录`。
 
 use anyhow::Context;
 
-use crate::core::claimlog;
+use crate::core::balancelog;
 use crate::core::fmt_amount;
 use crate::core::provider::rate_suffix;
 
@@ -47,19 +49,18 @@ pub async fn run(root: std::path::PathBuf, provider_id: &str) -> anyhow::Result<
         Err(e) => println!("余额: 获取失败（{e}）"),
     }
 
-    // 最近一次成功签到。时间与上面到期时间同格式。
-    match claimlog::last_success(&root, provider_id) {
-        Some((time, delta)) => {
-            // 正数带 `+`，负数自带 `-`，零不戴符号。金额口径固定 2 位小数。
-            let delta = match delta {
-                Some(d) if d > 0.0 => format!(" (+{})", fmt_amount(d)),
-                Some(d) if d < 0.0 => format!(" ({})", fmt_amount(d)),
-                Some(_) => " (0.00)".to_string(),
-                None => String::new(),
-            };
-            println!("最近成功签到: {}{delta}", crate::core::fmt_rfc3339(&time));
+    // 最后一次余额增加。时间与上面到期时间同格式。
+    // 来自 balance.log，仅当余额相对紧邻前一条变多时展示。
+    match balancelog::last_increase(&root, provider_id) {
+        Some((time, prev, cur)) => {
+            let delta = fmt_amount(cur - prev);
+            println!(
+                "最后一次余额增加: {} (+{delta}={})",
+                crate::core::fmt_rfc3339(&time),
+                fmt_amount(cur)
+            );
         }
-        None => println!("最近成功签到: 无记录"),
+        None => println!("最后一次余额增加: 无记录"),
     }
 
     // 模型列表：一行一个，格式与 `/v1/models` 的 id 一致。

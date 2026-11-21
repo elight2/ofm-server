@@ -41,7 +41,10 @@ pub async fn claim_all(registry: &Registry, root: &Path) {
 
 /// 签到单个供应商。结果均写一条 `claim.log`。
 ///
-/// 自动签到按供应商独立计时，直接调本函数。
+/// 签到后无论成功/跳过/失败，都补记一条余额到 `balance.log`（只记时间+余额，
+/// 不记签到结果），捕捉签到前后的余额跳动。
+///
+/// 自动签到与手动 `claim` 都走本函数，故两条路径都会记录余额。
 pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
     {
         let id = provider.id();
@@ -69,6 +72,9 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
 
         record(root, id, result_en, balance, delta);
     }
+
+    // 签到后补记余额：只记时间+余额，与签到结果无关，失败也不影响签到本身。
+    crate::core::balancelog::record(provider.as_ref(), root).await;
 }
 
 /// 追加一条签到记录；写盘失败只记日志，不影响签到本身。
@@ -77,7 +83,7 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
 /// 与 `status` 展示口径一致，日志里不残留多余小数。
 fn record(root: &Path, provider: &str, result: String, balance: Option<f64>, delta: Option<f64>) {
     let entry = Entry {
-        time: now_rfc3339(),
+        time: crate::core::clock::now_rfc3339(),
         result,
         balance: balance.map(crate::core::round2),
         delta: delta.map(crate::core::round2),
@@ -85,13 +91,4 @@ fn record(root: &Path, provider: &str, result: String, balance: Option<f64>, del
     if let Err(e) = claimlog::append(root, provider, entry) {
         tracing::warn!("[{provider}] 写签到记录失败: {e}");
     }
-}
-
-/// UTC 时间 RFC 3339（`2026-11-15T09:44:19Z`）。
-///
-/// 用 UTC 而非本地时间：`time` crate 未启用 `local-offset` feature（须改依赖）。
-fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| String::from("unknown"))
 }

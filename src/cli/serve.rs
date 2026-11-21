@@ -1,7 +1,8 @@
-//! `ofm-server`：启动服务 + 自动签到 / 自动刷新令牌。
+//! `ofm-server`：启动服务 + 自动签到 / 自动刷新令牌 / 自动记录余额。
 //!
-//! 两项定时任务都是**每个供应商各一个独立计时循环**，间隔取全局配置：
-//! `claim_interval`（小时）与 `refresh_interval`（小时）。
+//! 三项定时任务都是**每个供应商各一个独立计时循环**，间隔取全局配置：
+//! `claim_interval`（小时）、`refresh_interval`（小时）与
+//! `balance_record_interval`（分钟）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,11 +19,13 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     // 间隔先校验：非法配置在启动时就报错，不进入「服务已起、定时任务没跑」的半状态。
     let claim_interval = config.claim_interval()?;
     let refresh_interval = config.refresh_interval()?;
+    let balance_interval = config.balance_record_interval()?;
 
     let registry = Arc::new(providers::build_registry(&root, &config)?);
 
     spawn_claim_loops(registry.clone(), claim_interval, root.clone());
     spawn_refresh_loops(registry.clone(), refresh_interval);
+    spawn_balance_loops(registry.clone(), balance_interval, root.clone());
 
     let state = AppState { registry, root };
     server::run(state, &config).await?;
@@ -50,6 +53,31 @@ fn spawn_claim_loops(registry: Arc<Registry>, interval: Duration, root: PathBuf)
             loop {
                 ticker.tick().await;
                 crate::cli::claim::claim_one(&provider, &root).await;
+            }
+        });
+    }
+}
+
+/// 给每个供应商起一个**独立计时**的余额记录循环，间隔统一取全局
+/// `balance_record_interval`（分钟）。
+///
+/// 独立计时，与签到、刷新互不干扰。首轮 `tick()` 立即就绪，故启动时先记录一次
+/// 当前余额，之后每间隔记录一次，长期跑出一条余额曲线，供 `status` 展示
+/// 「最后一次余额增加」。
+///
+/// 间隔非法时 [`Config::balance_record_interval`] 已在启动前报错，故这里不再
+/// 返回错误。
+fn spawn_balance_loops(registry: Arc<Registry>, interval: Duration, root: PathBuf) {
+    tracing::info!("余额记录间隔 {} 分钟", interval.as_secs() / 60);
+    for provider in registry.all() {
+        let provider = provider.clone();
+        let root = root.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                crate::core::balancelog::record(provider.as_ref(), &root).await;
             }
         });
     }

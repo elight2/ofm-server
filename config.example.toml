@@ -6,3 +6,5 @@ port = 3060
 claim_interval = 6
 # 登录令牌刷新间隔(h)
 refresh_interval = 36
+# 余额记录间隔(min)
+balance_record_interval = 30
