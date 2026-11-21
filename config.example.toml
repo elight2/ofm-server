@@ -8,3 +8,5 @@ claim_interval = 6
 refresh_interval = 36
 # 余额记录间隔(min)
 balance_record_interval = 30
+# 最小请求间隔(ms)
+min_request_interval = 2000

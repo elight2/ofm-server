@@ -11,9 +11,9 @@
 * `ofm-server`: 启动服务
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim`: 签到所有供应商（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
-* `ofm-server status 供应商id`: 获取供应商当前信息(输出接入状态, 当前余额, 最近一次成功签到的时间与增量, 凭证到期时间, 模型列表)
+* `ofm-server status 供应商id(写all输出全部供应商的简要信息)`: 获取供应商当前信息(输出接入状态, 当前余额, 最近一次成功签到的时间与增量, 凭证到期时间, 模型列表)
 * `ofm-server config`: 打印[默认配置文件](./config.example.toml)
-* `ofm-server refresh 供应商id`: 刷新供应商登录令牌
+* `ofm-server refresh 供应商id(写all刷新全部)`: 刷新供应商登录令牌
 
 ## API配置
 * 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
@@ -24,6 +24,7 @@
 * 配置文件: `运行目录/config.toml`, [默认配置](./config.example.toml)
 * 登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 签到记录: `运行目录/providers/供应商id/claim.log`
+* 限速功能: 两次请求之间的最小间隔(默认2s), 下游客户端请求频率过高则等待, 防止风控
 * 需要Microsoft Visual C++ 2015-2022 Redistributable([全家桶安装](https://github.com/abbodi1406/vcredist))
 
 ### 局限性
