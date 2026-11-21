@@ -1,12 +1,13 @@
 # 商汤小浣熊(Raccoon Work)客户端协议
 
-> 客户端版本: 桌面 1.2.0 / 移动 1.1.0 ｜ 分析方式: 静态读解包 JS(主进程 `build/electron/main/` + 渲染层 chunk) + 抓包实测
+> 客户端版本: 桌面 1.2.2 / 移动 1.1.0 ｜ 分析方式: 静态读解包 JS(主进程 `build/electron/main/` + 渲染层 chunk) + 抓包实测
 
 ## 0. 总结
 
 * 对话走 **标准 OpenAI Chat Completions**, 上游 `POST /api/web/llm/v2/chat/completions`。
 * 身份靠请求头而非 UA(上述端点不校验 UA)。
 * 登录可用 **loopback 兼容登录**(1.2.0 新增), 服务器可复用。
+* 令牌可刷新: `POST /api/web/auth/v1/refresh` 存在, 但服务端对 IAM token **原样返还**, 不延长期限(见 §2)。
 
 ### 本协议不支持, 但Chat Completions有的功能
 
@@ -30,6 +31,7 @@
 |-|-|
 |`https://xiaohuanxiong.com`|主站与全部 API 基址|
 |`/api/web/auth/v1/*`|登录、刷新、用户信息|
+|`/api/iam/v1/*`|IAM 会话(`iam/confirm`、`iam/logout`、`account`), 均不下发新 token|
 |`/api/web/llm/v2/chat/completions`|对话(OpenAI 兼容)|
 |`/api/web/llm/v2/model_catalog`|模型目录|
 |`/api/web/points/v1/balance`|积分余额|
@@ -73,11 +75,43 @@ POST https://xiaohuanxiong.com/api/web/auth/v1/refresh  body {"refresh_token":"<
   → {code:0, data:{access_token, refresh_token}}
 ```
 
-* 提前量 300s。
+* 提前量 300s(`TOKEN_REFRESH_WINDOW_SECONDS`)。
 * **响应可能原样返还同一 token**(未临近过期时 `exp`/`jti` 不变), 故**不可用"token 是否变化"
   判断续期是否成功**, 只按 `exp` 判断。
-* IAM token(`iss` 以 `/iam` 结尾)同样可调 `/refresh`, 该端点不区分类型。
 * `refresh_token` 自身过期只能重新登录。
+
+### 客户端 1.2.2 静态核对的增量结论
+
+客户端里 refresh 的调用点有 **3 处**, 但按 token 类型分了叉:
+
+| 调用方 | 文件 | 对 IAM token 的处理 |
+|-|-|-|
+| 主进程账号模块 | `build/electron/main/client/account/accountRequests.js` | `isIamToken()` → 直接 `throw unauthorized`, **不请求** |
+| schedule / box-agent | `build/electron/main/schedules/scheduleAuth.js` | 照常调 `/refresh`(无 IAM 分支) |
+| 渲染层 HTTP 客户端 | `out/_next/.../96813-*.js` | `refreshBeforeExpireSeconds:300`, `refreshEndpoint:"/refresh"`, 不区分类型 |
+
+关键差异: `accountRequests.js::tokens()` 在签发时就把 IAM token 的 `refresh_token` **丢掉**
+(`isIamToken(access_token) ? {} : {refreshToken}`), `boxAgentAuthFile.js` 写盘时也同样剥除,
+所以走主进程账号模块的 IAM 登录**磁盘上根本没有 `refresh_token`**。
+
+`iam/confirm` 不是续期接口: 它在 `user_info` 回 `code:200901` 时被调一次, 用于确认
+「设备/会话仍需二次确认」, 返回 `{code:0}` 但**不返回任何 token**, 会话 token 不变。
+
+### 实测(2026-11-21, 测试凭证)
+
+```text
+当前 token: iss=xiaohuanxiong.com/iam, exp=2026-12-21 11:05:54 (剩余 30 天)
+POST /api/web/auth/v1/refresh  {"refresh_token":"<同一个 JWT>"}
+  → HTTP 200 {code:0, message:"success", data:{access_token, refresh_token}}
+  两个返回串与请求时**完全一致**, exp 未变
+```
+
+结论: 端点对 IAM token **也不报错**, 但服务端**不会重新签发**(至少 30 天有效期内不会),
+与此前实测一致。因此:
+
+* 本项目仍应继续调 `/refresh`(将来若服务端改为真轮换, 能自动受益), 但不要指望它延长期限。
+* **不可**推出「续期成功 = 有效期延长」; 只能按 `exp` 判断。
+* `Provider::refresh` 返回 `Unsupported`, 不对外暴露独立刷新命令; 内部用前自动续期保留。
 
 ## 3. Chat Completions映射
 

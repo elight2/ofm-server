@@ -1,9 +1,13 @@
 //! Raccoon 令牌续期：`POST /api/web/auth/v1/refresh`。
 //!
-//! 见 `provider-info/raccoon.md` §2。实测（2025-11）该端点对 IAM token 同样有效：
-//! 回 `code:0` 且带 `access_token`/`refresh_token`。注意本客户端签发的
-//! `access_token` 与 `refresh_token` **字符串完全相同**（同一个 `jti`），
-//! 且未临近过期时续期会**原样返还**（`exp` 不变）。
+//! 见 `provider-info/raccoon.md` §2。三个关键事实（静态核对客户端 1.2.2 + 实测）：
+//!
+//! 1. 端点对 IAM token（`iss` 以 `/iam` 结尾）**不报错**，回 `code:0` 并带两个 token；
+//! 2. 但服务端**不会重新签发**：响应与请求时的两个串完全一致，`exp` 不变，
+//!    即调用本函数**不会延长期限**。所以只能按 `exp` 判断是否可用；
+//! 3. 官方主进程账号模块虽对 IAM token 直接 `throw unauthorized`，但其
+//!    `scheduleAuth.js` / 渲染层客户端都会照常调 `/refresh`，故本项目保留此调用，
+//!    将来服务端若改为真轮换可自动受益。
 //!
 //! `refresh_token` 可能轮换：响应带了新的才替换，否则沿用旧值。
 
@@ -31,8 +35,8 @@ pub async fn refresh(client: &reqwest::Client, cred: &Credential) -> Result<Cred
     let body = serde_json::json!({ "refresh_token": cred.refresh_token });
     let data: RefreshData = api::post_envelope(client, &url, None, &body).await?;
 
-    // 实测：未临近过期时服务端原样返还同一 token。记录下来，
-    // 否则过期前反复刷新会毫无效果却看不出异常。
+    // 实测：服务端原样返还同一 token（IAM token 不会重新签发）。
+    // 记录下来，否则过期前反复刷新会毫无效果却看不出异常。
     if data.access_token == cred.access_token {
         tracing::debug!("[raccoon] 续期返回与原 token 相同（服务端未重新签发）");
     }

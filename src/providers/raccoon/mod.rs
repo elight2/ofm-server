@@ -1,7 +1,9 @@
 //! Raccoon（商汤小浣熊 / Raccoon Work）供应商。
 //!
 //! 已实现：登录（`auth`）、`models`、`balance`、`chat`、`claim`。
-//! `refresh` 不支持：官方客户端对 IAM token 直接拒绝续期，详见 [`RaccoonProvider::refresh`]。
+//! `refresh` 不对外暴露：服务端虽接受 `/refresh`，但对 IAM token 只原样返还、
+//! 不延长期限（客户端 1.2.2 核对 + 实测，见 `provider-info/raccoon.md` §2）；
+//! 内部用前自动续期保留。详见 [`RaccoonProvider::refresh`]。
 //!
 //! 协议实况见 `provider-info/raccoon.md`。
 
@@ -163,13 +165,14 @@ impl Provider for RaccoonProvider {
         claim::claim(&self.client, &cred).await
     }
 
-    /// raccoon 不支持主动刷新令牌。
+    /// raccoon 不对外暴露主动刷新令牌。
     ///
-    /// 官方客户端拿到 IAM token 时**直接拒绝续期**
+    /// 官方主进程账号模块拿到 IAM token 时**直接拒绝续期**
     /// （`accountRequests.js`: `isIamToken(access) → throw unauthorized`），
-    /// 即使遗留的 refresh_token 仍在磁盘。实测该端点虽回 `code:0`，
-    /// 但未临近过期时只会原样返还同一 token，且偏离官方行为，
-    /// 故不对外暴露该能力（内部 `access_token` 的自动续期仍保留）。
+    /// 但它自己的 `scheduleAuth.js` 和渲染层 HTTP 客户端都会照常调 `/refresh`。
+    /// 实测（2026-11）：该端点回 `code:0`，但两个 token 均**原样返还**，`exp` 不变，
+    /// 即调用它并不能延长期限。故不对外暴露该能力（内部 `access_token` 的自动续期仍保留，
+    /// 将来服务端若改为真轮换可自动受益）。
     async fn refresh(&self) -> Result<String, ProviderError> {
         Err(ProviderError::Unsupported(ID))
     }
