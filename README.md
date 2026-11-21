@@ -18,7 +18,8 @@
 * `ofm-server clear credential`: 清空所有credential文件(需要全部重新登录)
 
 ## API配置
-* 导出api使用`OpenAI Chat Completions`格式, 但无需填写key
+* 导出api使用`OpenAI Chat Completions`格式
+* 默认不检查api key, 可以使用配置文件手动开启
 * 服务端口: 默认`3060`
 * 转发出的模型名称: `供应商id/模型名 (x供应商标的倍率)`
 

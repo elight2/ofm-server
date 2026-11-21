@@ -2,11 +2,18 @@
 host = "127.0.0.1"
 # 监听端口。
 port = 3060
-# 签到间隔(h)
-claim_interval = 6
+
+# 自动刷新令牌开关
+auto_refresh = true
 # 登录令牌刷新间隔(h)
 refresh_interval = 36
+# 签到间隔(h)
+claim_interval = 6
 # 余额记录间隔(min)
 balance_record_interval = 30
+
 # 最小请求间隔(ms)
 min_request_interval = 2000
+
+# 允许的api keys(空则不检查)
+api_keys = []
