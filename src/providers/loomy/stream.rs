@@ -1,6 +1,6 @@
 //! 上游 SSE 帧 → 内部事件。
 //!
-//! 帧是**标准 OpenAI chunk**（实测见 `provider-info/loomy.md` §3.7）：
+//! 帧是**标准 OpenAI chunk**（实测见 `provider-info/loomy.md` §3）：
 //! ```text
 //! data: {"choices":[{"delta":{"reasoning_content":"..."},"index":0}],...}
 //! data: {"choices":[{"delta":{"tool_calls":[{...,"index":0}]}}]}
