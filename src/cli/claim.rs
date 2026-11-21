@@ -1,6 +1,6 @@
-//! `ofm-server claim [供应商id]`：签到。
+//! `ofm-server claim [供应商id|all]`：签到。
 //!
-//! 不带参数时串行签到所有供应商；带参数只签该供应商（便于单测与排障）。
+//! 不带参数或写 `all` 时串行签到所有供应商；带参数只签该供应商（便于单测与排障）。
 //!
 //! codearts 的签到走「限时福利 / 每日签到」协议（`/v1/ops/*`，见
 //! `providers::codearts::ops`），不是 benefit-service 的福利渠道检查。
@@ -20,14 +20,15 @@ use crate::core::registry::Registry;
 
 pub async fn run(root: std::path::PathBuf, provider_id: Option<&str>) -> anyhow::Result<()> {
     let registry = crate::providers::build_registry(&root)?;
+    // 不带参数或写 `all` 都视为签到全部供应商。
     match provider_id {
-        Some(id) => {
+        Some(id) if id != crate::cli::ALL => {
             let provider = registry
                 .get(id)
                 .ok_or_else(|| anyhow::anyhow!("未知供应商 `{id}`"))?;
             claim_one(&provider, &root).await;
         }
-        None => claim_all(&registry, &root).await,
+        _ => claim_all(&registry, &root).await,
     }
     Ok(())
 }

@@ -10,7 +10,7 @@ mod tls;
 
 use clap::Parser;
 
-use cli::{Cli, Command};
+use cli::{ClearTarget, Cli, Command};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,6 +26,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Claim { provider } => cli::claim::run(root, provider.as_deref()).await,
         Command::Status { provider } => cli::status::run(root, &provider).await,
         Command::Refresh { provider } => cli::refresh::run(root, &provider).await,
+        Command::Clear { target } => match target {
+            ClearTarget::Log => cli::clear::logs(root),
+            ClearTarget::Credential => cli::clear::credentials(root),
+        },
         Command::Config => {
             // 原样输出内嵌文本，保留注释。不写盘，由 shell 重定向决定去向。
             //
