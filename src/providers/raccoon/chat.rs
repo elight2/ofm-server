@@ -22,7 +22,7 @@ pub struct ChatBody {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<UpTool>,
     /// `tool_choice` 透传。上游是标准 OpenAI 语义，四种取值均实测生效
-    /// （见 `provider-info/raccoon.md` §3.6）。`Auto` 时不发送该字段。
+    /// （见 `provider-info/raccoon.md` §3）。`Auto` 时不发送该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
 }
