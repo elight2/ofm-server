@@ -1,9 +1,9 @@
 //! MiniMax 凭证（`providers/minimax/credential.toml`）。
 //!
-//! 字段见 `provider-info/minimax.md` §1.4。`access_token` / `refresh_token` 都是
+//! 字段见 `provider-info/minimax.md` §1。`access_token` / `refresh_token` 都是
 //! **不透明串**（`mmoat_` / `mmort_` 前缀，各 60 字符，非 JWT，无法解出到期时间），
 //! 故到期判断一律用响应里的 `expires_in` 换算的 `expires_at`（毫秒）。
-//! 客户端租约策略是剩余有效期 ≥ 30s（§1.4）。
+//! 客户端租约策略是剩余有效期 ≥ 30s（§1）。
 
 use std::path::Path;
 

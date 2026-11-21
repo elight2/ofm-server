@@ -1,6 +1,6 @@
 //! 上游 anthropic-messages SSE → 中间事件。
 //!
-//! 帧结构为**本次实测**（`provider-info/minimax.md` §3.6，早期抓包未存流，
+//! 帧结构为**本次实测**（`provider-info/minimax.md` §3.3，早期抓包未存流，
 //! 本节由真实请求实测补全）：
 //!
 //! ```text
