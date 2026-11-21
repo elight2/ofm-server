@@ -1,6 +1,6 @@
 //! WorkBuddy 凭证（`providers/workbuddy/credential.toml`）。
 //!
-//! 字段见 `provider-info/workbuddy.md` §1.3。`access_token` / `refresh_token`
+//! 字段见 `provider-info/workbuddy.md` §1。`access_token` / `refresh_token`
 //! 都是**不透明串**（上游不给 JWT，也不保证能解出 `exp`），故到期时间一律
 //! 用响应里的 `expires_in` / `refresh_expires_in` 换算成 `expires_at`
 //! （官方客户端 `calculateExpiresAt` 同款做法）。

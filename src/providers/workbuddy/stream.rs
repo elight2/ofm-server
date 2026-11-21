@@ -1,6 +1,6 @@
 //! 上游 SSE 帧 → 内部事件。
 //!
-//! 帧是**标准 OpenAI chunk**（协议见 `provider-info/workbuddy.md` §3.4）：
+//! 帧是**标准 OpenAI chunk**（协议见 `provider-info/workbuddy.md` §3）：
 //! ```text
 //! data: {"choices":[{"delta":{"reasoning_content":"..."},"index":0}]}
 //! data: {"choices":[{"delta":{"content":"..."}}]}
