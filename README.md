@@ -24,6 +24,7 @@
 * 配置文件: `运行目录/config.toml`, [默认配置](./config.example.toml)
 * 登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 签到记录: `运行目录/providers/供应商id/claim.log`
+* 需要Microsoft Visual C++ 2015-2022 Redistributable([全家桶安装](https://github.com/abbodi1406/vcredist))
 
 ### 局限性
 * 由于每个供应商接口差异大, 没有实现对上下文限制的获取和思考强度的修改
