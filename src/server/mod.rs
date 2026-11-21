@@ -1,6 +1,8 @@
 //! HTTP 服务：`/v1/chat/completions`、`/v1/models`、`/health`。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
@@ -16,6 +18,7 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::core::registry::Registry;
+use crate::core::throttle::Throttle;
 use crate::server::openai::{request as reqconv, translate, types};
 
 #[derive(Clone)]
@@ -23,6 +26,25 @@ pub struct AppState {
     pub registry: Arc<Registry>,
     /// 运行目录，用于定位 `<root>/prompts/<供应商id>.md`。
     pub root: PathBuf,
+    /// 每供应商一份对话请求节流器，见 [`crate::core::throttle`]。
+    pub throttles: Arc<BTreeMap<&'static str, Throttle>>,
+}
+
+impl AppState {
+    /// 按配置为每个供应商建一份节流器（同一个 `min_interval`）。
+    ///
+    /// 各供应商独立计时：trae 的间隔不会拖慢 codearts。
+    pub fn new(registry: Arc<Registry>, root: PathBuf, min_interval: Duration) -> Self {
+        let throttles = registry
+            .all()
+            .map(|p| (p.id(), Throttle::new(min_interval)))
+            .collect();
+        Self {
+            registry,
+            root,
+            throttles: Arc::new(throttles),
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -121,6 +143,12 @@ async fn chat_completions(State(app): State<AppState>, body: String) -> Response
         model: requested_model,
         include_usage,
     };
+
+    // 节流：同一供应商两次请求的发出时刻至少相隔配置的间隔。
+    // 只延迟「发出」这一个动作，拿到许可后请求即发出并各自跑完，不构成串行。
+    if let Some(throttle) = app.throttles.get(provider_id.as_str()) {
+        throttle.acquire().await;
+    }
 
     // 拿流；供应商层整体失败（未进入事件流）时直接映射 HTTP 错误。
     let events = match provider.chat(preq).await {

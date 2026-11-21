@@ -20,6 +20,8 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     let claim_interval = config.claim_interval()?;
     let refresh_interval = config.refresh_interval()?;
     let balance_interval = config.balance_record_interval()?;
+    // 对话请求的最小发出间隔（0 = 不限）。
+    let min_request_interval = config.min_request_interval()?;
 
     let registry = Arc::new(providers::build_registry(&root)?);
 
@@ -27,7 +29,15 @@ pub async fn run(root: PathBuf) -> anyhow::Result<()> {
     spawn_refresh_loops(registry.clone(), refresh_interval);
     spawn_balance_loops(registry.clone(), balance_interval, root.clone());
 
-    let state = AppState { registry, root };
+    let state = AppState::new(registry, root, min_request_interval);
+    if min_request_interval.is_zero() {
+        tracing::info!("对话请求不限速");
+    } else {
+        tracing::info!(
+            "对话请求最小发出间隔 {}ms（每供应商独立计时）",
+            min_request_interval.as_millis()
+        );
+    }
     server::run(state, &config).await?;
     Ok(())
 }

@@ -56,6 +56,11 @@ pub const MAX_INTERVAL_HOURS: u64 = 24 * 365;
 /// 余额记录是分钟级任务（用户要「每过一段时间」记录），故下限比签到的小时级更细。
 pub const MIN_BALANCE_INTERVAL_MINUTES: u64 = 1;
 
+/// 最小请求间隔允许的上限（毫秒，10 分钟）。
+///
+/// 再大就等于「几乎不能用」，多半是把毫秒当秒写了，故视为配置错误。
+pub const MAX_REQUEST_INTERVAL_MS: u64 = 10 * 60 * 1000;
+
 /// 余额记录间隔允许的上限（分钟，约一年）。
 ///
 /// 与 [`MAX_INTERVAL_HOURS`] 同理：只为挡住溢出与明显的笔误。
@@ -83,6 +88,10 @@ fn default_refresh_interval() -> u64 {
 
 fn default_balance_record_interval() -> u64 {
     example().balance_record_interval
+}
+
+fn default_min_request_interval() -> u64 {
+    example().min_request_interval
 }
 
 /// 用户配置模板 = 内嵌示例文件去掉遗留键后的文本。
@@ -211,6 +220,13 @@ pub struct Config {
     /// 定时任务与签到后都会按此节奏记录余额，供 `status` 展示最后一次余额增加。
     #[serde(default = "default_balance_record_interval")]
     pub balance_record_interval: u64,
+    /// 同一供应商两次对话请求的**最小发出间隔**（毫秒）。0 = 不限。
+    ///
+    /// 基准是「请求发出的时刻」，**不是**「上一个请求结束的时刻」：两个请求
+    /// 相隔该间隔先后发出，之后各自并行跑完，彼此不阻塞（见
+    /// [`crate::core::throttle`]）。只影响 `/v1/chat/completions`。
+    #[serde(default = "default_min_request_interval")]
+    pub min_request_interval: u64,
 }
 
 impl Default for Config {
@@ -259,6 +275,20 @@ impl Config {
     /// 单位分钟；超出范围视为配置错误。
     pub fn balance_record_interval(&self) -> Result<Duration, ConfigError> {
         interval_minutes("balance_record_interval", self.balance_record_interval)
+    }
+
+    /// 同一供应商对话请求的最小发出间隔。
+    ///
+    /// 单位毫秒，0 表示不限制。上限只为挡住明显的笔误（如把毫秒当秒写成
+    /// `2000000`），不是业务约束。
+    pub fn min_request_interval(&self) -> Result<Duration, ConfigError> {
+        if self.min_request_interval > MAX_REQUEST_INTERVAL_MS {
+            return Err(ConfigError::RequestIntervalOutOfRange {
+                ms: self.min_request_interval,
+                max: MAX_REQUEST_INTERVAL_MS,
+            });
+        }
+        Ok(Duration::from_millis(self.min_request_interval))
     }
 }
 
@@ -309,6 +339,8 @@ pub enum ConfigError {
         min: u64,
         max: u64,
     },
+    #[error("配置项 `min_request_interval` 的 {ms}ms 超出上限（最大 {max}ms）")]
+    RequestIntervalOutOfRange { ms: u64, max: u64 },
 }
 
 #[cfg(test)]
@@ -331,6 +363,7 @@ mod tests {
         assert_eq!(c.claim_interval, 6);
         assert_eq!(c.refresh_interval, 36);
         assert_eq!(c.balance_record_interval, 30);
+        assert_eq!(c.min_request_interval, 2000);
     }
 
     /// `Config::default()` 就是解析示例文件的结果，二者不得有分歧。
@@ -345,6 +378,10 @@ mod tests {
         assert_eq!(
             from_default.balance_record_interval,
             from_str.balance_record_interval
+        );
+        assert_eq!(
+            from_default.min_request_interval,
+            from_str.min_request_interval
         );
     }
 
@@ -375,6 +412,7 @@ mod tests {
         assert!(t.contains("claim_interval = 6"));
         assert!(t.contains("refresh_interval = 36"));
         assert!(t.contains("balance_record_interval = 30"));
+        assert!(t.contains("min_request_interval = 2000"));
         // 模板本身可解析
         let c = parse(&t).unwrap();
         assert_eq!(c.port, 3060);
@@ -441,6 +479,32 @@ mod tests {
         assert!(
             err.to_string().contains("balance_record_interval") && err.to_string().contains('0')
         );
+    }
+
+    /// 最小请求间隔：0 合法（不限），超上限报错。
+    #[test]
+    fn 最小请求间隔() {
+        // 未写时取示例文件的默认值。
+        assert_eq!(
+            Config::default().min_request_interval().unwrap(),
+            Duration::from_millis(2000)
+        );
+        // 0 = 不限。
+        let c = parse("min_request_interval = 0\n").unwrap();
+        assert_eq!(c.min_request_interval().unwrap(), Duration::ZERO);
+        // 任意合法值原样生效（毫秒）。
+        let c = parse("min_request_interval = 500\n").unwrap();
+        assert_eq!(
+            c.min_request_interval().unwrap(),
+            Duration::from_millis(500)
+        );
+        // 超上限：多半是把毫秒当秒写了，不静默纠正。
+        let c = parse("min_request_interval = 2000000\n").unwrap();
+        let err = c.min_request_interval().unwrap_err();
+        assert!(err.to_string().contains("min_request_interval"));
+        // 边界值可用。
+        let c = parse("min_request_interval = 600000\n").unwrap();
+        assert_eq!(c.min_request_interval().unwrap(), Duration::from_secs(600));
     }
 
     #[test]

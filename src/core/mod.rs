@@ -15,6 +15,7 @@ pub mod registry;
 pub mod sse;
 pub mod stream;
 pub mod text;
+pub mod throttle;
 
 /// 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS`（UTC）。
 ///
