@@ -4,7 +4,7 @@
 * 未经允许, **禁止修改项目目录外文件**
 
 # 资料文件
-* 项目内, 临时目录使用`./tmp/`
+* 工作时, 临时目录使用`/tmp/ofm-server/`, **禁止使用/tmp下其他位置**, 并且在工作结束后**清空**
 * 供应商官方客户端：`~/tools/docs/agent-clients/`
 * openai api完整文档: `~/tools/docs/openai-openapi/`
 * `./testdata/`: 本项目的测试目录, 其中测试用登录凭证由用户预置, 完成工作后清空
