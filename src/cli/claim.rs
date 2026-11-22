@@ -70,11 +70,16 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
             }
             Err(e) => {
                 tracing::warn!("[{id}] 签到失败: {e}");
-                // 文件里只留英文原因（错误详情可能含中文，进控制台即可）。
+                // 文件里只留英文原因 + 上游业务码（错误详情可能含中文，进控制台即可）。
+                let mut detail = crate::core::claim::failure_reason(&e).to_string();
+                if let Some(code) = crate::core::claim::failure_code(&e) {
+                    detail.push_str(" code=");
+                    detail.push_str(&code);
+                }
                 (
                     ClaimCode::Failed.en().to_string(),
                     None,
-                    Some(crate::core::claim::failure_reason(&e).to_string()),
+                    Some(detail),
                     None,
                     None,
                 )

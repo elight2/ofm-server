@@ -231,6 +231,8 @@ fn join(code: &str, details: &[String]) -> String {
 /// 签到失败原因（英文，写 `claim.log`）。
 ///
 /// 错误详情（多为中文）只进控制台日志，文件里只留英文原因，便于 grep。
+/// 但上游业务码（`code=9074` 这类）是排查关键且全 ASCII，另由
+/// [`failure_code`] 单独提取。
 pub fn failure_reason(e: &crate::core::provider::ProviderError) -> &'static str {
     use crate::core::provider::ProviderError;
     match e {
@@ -242,6 +244,20 @@ pub fn failure_reason(e: &crate::core::provider::ProviderError) -> &'static str 
         ProviderError::Unsupported(_) => "not supported by provider",
         ProviderError::Other(_) => "internal error",
     }
+}
+
+/// 从错误消息里抽出上游业务码（`code=9074` → `9074`）。
+///
+/// 只收纯数字，避免把中文 message 写进日志文件。
+pub fn failure_code(e: &crate::core::provider::ProviderError) -> Option<String> {
+    use crate::core::provider::ProviderError;
+    let msg = match e {
+        ProviderError::Protocol(m) | ProviderError::Other(m) => m,
+        _ => return None,
+    };
+    let rest = msg.split_once("code=")?.1;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then_some(digits)
 }
 
 #[cfg(test)]
@@ -295,5 +311,20 @@ mod tests {
         assert_eq!(o.skip_reason_en(), Some("check-in not enabled"));
         assert_eq!(o.result_zh(), "签到活动未开启");
         assert_eq!(o.message_zh(), "签到活动未开启");
+    }
+
+    #[test]
+    fn 失败时提取上游业务码() {
+        use crate::core::provider::ProviderError;
+        let e =
+            ProviderError::Protocol("code=9074 message=当前参与用户太多，请稍后再试".to_string());
+        assert_eq!(failure_reason(&e), "unexpected upstream response");
+        assert_eq!(failure_code(&e).as_deref(), Some("9074"));
+
+        // 无码 / 非协议类错误不产生码。
+        let e = ProviderError::Other("boom".to_string());
+        assert_eq!(failure_code(&e), None);
+        let e = ProviderError::Protocol("缺少字段".to_string());
+        assert_eq!(failure_code(&e), None);
     }
 }

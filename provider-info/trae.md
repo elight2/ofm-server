@@ -269,56 +269,62 @@ POST /trae/api/v2/ug/checkin_credits/claim    {"req_source":1}
 字段语义(与直觉相反): `checked_in:true` = 今日已签到; `did_checked_in` **不是**「今日是否签过」,
 疑为「本次请求是否触发签到」。
 
-### 6.1 status 的 `code` 不能当失败判据
+### 6.1 `9074`（参与用户太多）是瞬时拥挤, 应重试而非忽略
 
-⚠️ 上游高峰期会对 `checkin_credits/status` 回业务码, 但 **`enable` / `checked_in` 字段照常返回**:
+实测(2026-11-22) 本轮故障的真实链路:
 
-```json
-{"code":9074,"message":"当前参与用户太多，请稍后再试","enable":true,"checked_in":false}
-```
+| 时间(UTC) | 余额 | 结果 |
+|-|-|-|
+| 00:46:29 | 3364.39 | `claim` 回 `{"code":9074,"message":"当前参与用户太多，请稍后再试"}` |
+| 00:49:18 | **3464.39** (+100) | 用户在官方客户端手动点击, 成功 |
 
-官方客户端此时**完全忽略 `code`**, 照常渲染为「可签到」并允许点击
-(见 `main.js` 中 `CheckinCredits` 的两处判定):
+即: **同一分钟里 `status` 说可领取, `claim` 却回 9074**。客户端靠用户看到弹窗后
+再点一次, 命令行无人可点, 所以会一直失败。
+
+官方客户端的判定口径(`main.js`):
 
 ```js
-// refreshCheckinCreditsStatus: 只校验两个布尔字段存在
-if (o.status !== 200 || typeof o.data?.enable != "boolean" || typeof o.data.checked_in != "boolean")
-    throw new Error("Invalid checkin status response");
+// o1e(): 能否领取 —— 第一行就把任何非 0 code 判成 unknown（不给签到）
+function o1e(t){ if(E0(t)) return "unknown";
+    return e?.checked_in===!0||e?.did_checked_in===!0 ? "signed"
+         : e?.enable===!1 ? "disabled"
+         : e?.enable===!0 && e.checked_in===!1 ? "not_signed" : "unknown"; }
 
-// mb(): 失败分类器 —— 只有 checkin_claim 才看 code
-w.status !== 200 ? f = "http"
-: s === "checkin_status" ? ((typeof w.data?.enable != "boolean" || typeof w.data.checked_in != "boolean") && (f = "protocol"))
-: /* 其余(含 checkin_claim) 才把 code != 0 判为 business */
+// E0(): 业务码分类（status 与 claim 都生效）
+code===9000? … : code!==0 → {kind:"business", code, reason:
+    9090 unavailable / 9102 not_signed / 1002 auth / 4001 parameters / 其它 unknown}
+
+// a1e(): claim 成功 = HTTP 200 且无 E0 错误（即 code===0）
+// fetchWithHeaders: retry ?? 0 —— 默认不重试, claim 亦显式 retry:0
 ```
 
-故本实现的判定规则 —— 只在**已知拥挤码**上忽略 `code`, 其余码仍当失败:
+结论: **`9074` 不能当「可领取」绕过**（客户端也不给签到）, 正确做法是**重试**。
 
-| 响应 | 判定 |
+本实现的处理:
+
+| 响应 | 处理 |
 |-|-|
-| HTTP 200 + `enable`/`checked_in` 齐全 + `code=0` | 正常 |
-| HTTP 200 + 两字段齐全 + `code=9074` | **照常签到**, 只记一条提示日志 |
-| HTTP 200 + 两字段齐全 + `code=1001`(凭证失效) | 失败 → `Unauthorized`, 触发续期 |
-| HTTP 200 + 缺 `enable`/`checked_in` | 真协议异常 |
+| `code=0` | 正常 |
+| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s), 耗尽仍失败 |
+| `code=1001`(凭证失效) | → `Unauthorized`, 触发续期/重登, **不重试** |
+| `code=1002`(客户端认定的鉴权码) | 同上, `Unauthorized` |
+| 其它非 0 `code` | 失败, 不重试 |
 
-⚠️ 不能把「字段齐全」当成「可忽略」: 凭证失效时上游同样会在 HTTP 200 下回
-`{"code":1001,"enable":false,"checked_in":false}`, 若一律忽略 `code` 就会把
-「凭证过期」误报成「签到活动未开启」。故只白名单 `9074`。
+另: `o1e` 把 **`did_checked_in === true` 也算已签到**, 本实现一并判断,
+避免在上游已发放的情况重复调 `claim`。
 
-历史 bug(已修): 旧实现直接 `code != 0` 即报「上游响应异常」, 导致高峰期整天签不上,
-而官方客户端同一时刻点击能签成功。
+历史 bug(已修):
 
-重试: `status` 只在**拥挤码**或传输失败时重试 1 次(间隔 1s), 与客户端默认重试一致;
-凭证失效等错误不重试; `claim` 仍为 `retry: 0`(客户端显式置 0, 避免重复领取)。
+1. 旧实现 `status.check()` 见 `code != 0` 即报「上游响应异常」——方向对但**没区分**码,
+   且 `claim` 的 9074 同样直接失败、不重试。
+2. 早期版本曾把 9074 当作「忽略即可」——错, 客户端也不给签到。
 
-已知 status 业务码:
-
-| `code` | message | 处理 |
-|-|-|-|
-| `9074` | 当前参与用户太多, 请稍后再试 | 忽略, 照常签到(先重试 1 次) |
-| `1001` | not able to authenticate you | 当作凭证失效, 触发续期/重登 |
+`claim.log` 的失败 `detail` 现会附上游业务码(`unexpected upstream response code=9074`),
+此前只记静态英文原因, 导致无法从日志判断真实错误码。
 
 请求头补充: 客户端在签到请求上额外带 `x-device-brand`(设备型号 `device_model`,
-非 CPU 型号); 本实现无可靠设备型号来源, 故不发该头(可选, 缺失不影响)。
+不是 CPU 型号); 本实现无可靠设备型号来源, 故不发该头(实测缺失不影响, 已用同一凭证
+带/不带该头各打一次, 均回 `{"code":0,"message":"success"}`)。
 
 ## 7. 上游异常响应
 
