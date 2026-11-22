@@ -535,11 +535,8 @@ mod tests {
         .unwrap();
         let o = skip_outcome(&items);
         assert!(o.result_zh().contains("今日已签到"), "{}", o.result_zh());
-        assert!(
-            o.result_en().starts_with("skipped: already claimed"),
-            "{}",
-            o.result_en()
-        );
+        assert_eq!(o.code_en(), "skipped");
+        assert_eq!(o.skip_reason_en(), Some("already claimed"));
     }
 
     /// 没有签到活动时退化为「待领/待用」说明。
@@ -551,7 +548,8 @@ mod tests {
         )
         .unwrap();
         let o = skip_outcome(&items);
-        assert_eq!(o.result_en(), "skipped: no benefit available");
+        assert_eq!(o.code_en(), "skipped");
+        assert_eq!(o.skip_reason_en(), Some("no benefit available"));
         assert_eq!(o.result_zh(), "今日无可领取福利");
     }
 

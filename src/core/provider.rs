@@ -159,11 +159,6 @@ impl ClaimReport {
         self.outcome.code.is_skipped()
     }
 
-    /// 写入 `claim.log` 的英文结果串。
-    pub fn result_en(&self) -> String {
-        self.outcome.result_en()
-    }
-
     /// 展示用的一句话（中文）。
     pub fn message_zh(&self) -> String {
         self.outcome.message_zh()

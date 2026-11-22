@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::core::claim::ClaimCode;
 use crate::core::claimlog::{self, Entry};
 use crate::core::provider::Provider;
 use crate::core::registry::Registry;
@@ -49,7 +50,7 @@ pub async fn claim_all(registry: &Registry, root: &Path) {
 pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
     {
         let id = provider.id();
-        let (result_en, balance, delta) = match provider.claim().await {
+        let (code, reason, detail, balance, delta) = match provider.claim().await {
             Ok(report) => {
                 // `skipped` 覆盖两种「本次没领到」：今日已领、渠道未开通；
                 // 具体原因在明细里，不要一概记成「成功」。
@@ -58,20 +59,29 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
                 } else {
                     tracing::info!("[{id}] 签到完成: {}", report.message_zh());
                 }
-                (report.result_en(), report.balance, report.credits_delta)
+                let o = &report.outcome;
+                (
+                    o.code_en().to_string(),
+                    o.skip_reason_en().map(str::to_string),
+                    o.detail_en(),
+                    report.balance,
+                    report.credits_delta,
+                )
             }
             Err(e) => {
                 tracing::warn!("[{id}] 签到失败: {e}");
                 // 文件里只留英文原因（错误详情可能含中文，进控制台即可）。
                 (
-                    format!("failed: {}", crate::core::claim::failure_reason(&e)),
+                    ClaimCode::Failed.en().to_string(),
+                    None,
+                    Some(crate::core::claim::failure_reason(&e).to_string()),
                     None,
                     None,
                 )
             }
         };
 
-        record(root, id, result_en, balance, delta);
+        record(root, id, code, reason, detail, balance, delta);
     }
 
     // 签到后补记余额：只记时间+余额，与签到结果无关，失败也不影响签到本身。
@@ -80,12 +90,25 @@ pub async fn claim_one(provider: &Arc<dyn Provider>, root: &Path) {
 
 /// 追加一条签到记录；写盘失败只记日志，不影响签到本身。
 ///
+/// 结果分 `code` / `reason` / `detail` 三个字段存，不拼成一个串：拼接后判断
+/// 「是否成功」只能靠字符串匹配，改文案会静默弄坏判断。
+///
 /// 余额与增量在写盘前经 [`crate::core::round2`] 取整到小数点后 2 位，
 /// 与 `status` 展示口径一致，日志里不残留多余小数。
-fn record(root: &Path, provider: &str, result: String, balance: Option<f64>, delta: Option<f64>) {
+fn record(
+    root: &Path,
+    provider: &str,
+    code: String,
+    reason: Option<String>,
+    detail: Option<String>,
+    balance: Option<f64>,
+    delta: Option<f64>,
+) {
     let entry = Entry {
         time: crate::core::clock::now_rfc3339(),
-        result,
+        code,
+        reason,
+        detail,
         balance: balance.map(crate::core::round2),
         delta: delta.map(crate::core::round2),
     };

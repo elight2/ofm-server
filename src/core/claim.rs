@@ -2,9 +2,12 @@
 //!
 //! # 为什么区分「英文记录」与「中文展示」
 //!
-//! `providers/<id>/claim.log` 是**机器可读**的记录：其中的 `result` 与 `detail`
-//! 一律使用英文（`success` / `skipped: already claimed` / `failed`），便于 grep、
-//! 脚本统计与跨语言工具处理。
+//! `providers/<id>/claim.log` 是**机器可读**的记录：其中的 `code` / `reason` /
+//! `detail` 一律使用英文，便于 grep、脚本统计与跨语言工具处理。
+//!
+//! 记录里 `code` 与 `reason` 是**分开的两个字段**（`success` / `skipped` +
+//! `already claimed`），不拼成一个 `"skipped: already claimed"` 串：拼接后想判断
+//! 「这次是不是成功」只能靠字符串匹配，改文案就会悄悄破坏判断。
 //!
 //! 而面向人的输出（控制台日志、`status` 命令）仍是中文：同一个结果码在展示时
 //! 通过 [`ClaimCode::zh`] / [`ClaimDetail::zh`] 还原成中文文案。
@@ -35,16 +38,35 @@ pub enum SkipReason {
     NoBenefit,
 }
 
+impl SkipReason {
+    /// 英文原因（写入 `claim.log` 的 `reason` 字段）。
+    pub fn en(&self) -> &'static str {
+        match self {
+            SkipReason::AlreadyClaimed => "already claimed",
+            SkipReason::NotEnabled => "check-in not enabled",
+            SkipReason::NotClaimable => "not claimable today",
+            SkipReason::NoBenefit => "no benefit available",
+        }
+    }
+}
+
 impl ClaimCode {
-    /// 英文结果串（写入 `claim.log`）。
+    /// 英文结果码（写入 `claim.log` 的 `code` 字段）。
+    ///
+    /// 只取「成功 / 跳过 / 失败」三态，跳过原因另由 [`SkipReason::en`] 记录。
     pub fn en(&self) -> &'static str {
         match self {
             ClaimCode::Success => "success",
-            ClaimCode::Skipped(SkipReason::AlreadyClaimed) => "skipped: already claimed",
-            ClaimCode::Skipped(SkipReason::NotEnabled) => "skipped: check-in not enabled",
-            ClaimCode::Skipped(SkipReason::NotClaimable) => "skipped: not claimable today",
-            ClaimCode::Skipped(SkipReason::NoBenefit) => "skipped: no benefit available",
+            ClaimCode::Skipped(_) => "skipped",
             ClaimCode::Failed => "failed",
+        }
+    }
+
+    /// 跳过原因（`claim.log` 的 `reason` 字段）；非跳过时为 `None`。
+    pub fn skip_reason_en(&self) -> Option<&'static str> {
+        match self {
+            ClaimCode::Skipped(r) => Some(r.en()),
+            _ => None,
         }
     }
 
@@ -158,11 +180,27 @@ impl ClaimOutcome {
         }
     }
 
-    /// 写入 `claim.log` 的英文结果串（含明细）。
-    pub fn result_en(&self) -> String {
-        join(
-            self.code.en(),
-            &self.details.iter().map(|d| d.en()).collect::<Vec<_>>(),
+    /// 写入 `claim.log` 的 `code` 字段（`success` / `skipped` / `failed`）。
+    pub fn code_en(&self) -> &'static str {
+        self.code.en()
+    }
+
+    /// 写入 `claim.log` 的 `reason` 字段；非跳过时为 `None`。
+    pub fn skip_reason_en(&self) -> Option<&'static str> {
+        self.code.skip_reason_en()
+    }
+
+    /// 写入 `claim.log` 的 `detail` 字段（明细，逗号分隔；无明细时为 `None`）。
+    pub fn detail_en(&self) -> Option<String> {
+        if self.details.is_empty() {
+            return None;
+        }
+        Some(
+            self.details
+                .iter()
+                .map(|d| d.en())
+                .collect::<Vec<_>>()
+                .join(", "),
         )
     }
 
@@ -211,7 +249,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 英文结果串不含中文() {
+    fn 英文记录分字段不含中文() {
         let o = ClaimOutcome::success(vec![
             ClaimDetail::Day(3),
             ClaimDetail::Points(1000.0),
@@ -221,9 +259,13 @@ mod tests {
                 total: 7,
             },
         ]);
-        let s = o.result_en();
-        assert_eq!(s, "success: day 3, 1000 points, streak 3 days, cycle 3/7");
-        assert!(!s.chars().any(|c| c as u32 > 0x2FFF));
+        // 码就是裸 `success`，明细在另一个字段（不拼串）。
+        assert_eq!(o.code_en(), "success");
+        assert_eq!(o.skip_reason_en(), None);
+        let detail = o.detail_en().unwrap();
+        assert_eq!(detail, "day 3, 1000 points, streak 3 days, cycle 3/7");
+        let all = format!("{}{detail}", o.code_en());
+        assert!(!all.chars().any(|c| c as u32 > 0x2FFF));
     }
 
     #[test]
@@ -231,13 +273,26 @@ mod tests {
         let o = ClaimOutcome::skipped(SkipReason::AlreadyClaimed, vec![ClaimDetail::Day(2)]);
         assert_eq!(o.result_zh(), "今日已签到: 第 2 天");
         assert_eq!(o.message_zh(), "今日已签到: 第 2 天");
-        assert_eq!(o.result_en(), "skipped: already claimed: day 2");
+        assert_eq!(o.code_en(), "skipped");
+        assert_eq!(o.skip_reason_en(), Some("already claimed"));
+        assert_eq!(o.detail_en().as_deref(), Some("day 2"));
     }
 
     #[test]
-    fn 无明细时不加冒号() {
+    fn 无明细时_detail_为空() {
         let o = ClaimOutcome::skipped(SkipReason::NotEnabled, vec![]);
-        assert_eq!(o.result_en(), "skipped: check-in not enabled");
+        assert_eq!(o.code_en(), "skipped");
+        assert_eq!(o.skip_reason_en(), Some("check-in not enabled"));
+        assert_eq!(o.detail_en(), None);
+        assert_eq!(ClaimOutcome::failed().detail_en(), None);
+        assert_eq!(ClaimOutcome::failed().code_en(), "failed");
+    }
+
+    #[test]
+    fn 跳过原因与码分开() {
+        let o = ClaimOutcome::skipped(SkipReason::NotEnabled, vec![]);
+        assert_eq!(o.code_en(), "skipped");
+        assert_eq!(o.skip_reason_en(), Some("check-in not enabled"));
         assert_eq!(o.result_zh(), "签到活动未开启");
         assert_eq!(o.message_zh(), "签到活动未开启");
     }

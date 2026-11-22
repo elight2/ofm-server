@@ -29,8 +29,10 @@
 //! 「最后一次余额增加」取自 `balance.log`：余额相对紧邻前一条变多时展示
 //! `(x + y = z)`（`x` 为前一条余额、`y` 为增量、`z` 为当前余额）；无增加记录
 //! （纯消耗或尚无记录）显示 `无记录`。
-//! 「最后成功签到」取自 `claim.log`，**只认 `success`**：`skipped`（今日已领等）
-//! 不算成功，否则该行永远显示今天；无成功记录显示 `无记录`。
+//! 「最后成功签到」取自 `claim.log`，看的是 `code` 字段是否为 `success`：
+//! `skipped`（今日已领等）与 `failed` 都不算成功，否则该行永远显示今天；
+//! 无成功记录显示 `无记录`。`code` 是封闭取值的枚举词，与 `detail`/`reason` 分字段存，
+//! 所以此处判定不受明细文案影响。
 //! 两个日志都只保留最近 50 条，故最多只能回溯这 50 次。
 
 use anyhow::Context;
@@ -152,7 +154,8 @@ fn last_increase_text(root: &std::path::Path, provider_id: &str) -> String {
 
 /// 「最后成功签到」整行文本。
 ///
-/// 来自 `claim.log`，只认 `success`；`skipped`（今日已领等）与 `failed` 都不算。
+/// 来自 `claim.log`，看 `code` 字段是否为 `success`；`skipped`（今日已领等）与
+/// `failed` 都不算。
 fn last_claim_success_text(root: &std::path::Path, provider_id: &str) -> String {
     match claimlog::last_success(root, provider_id) {
         Some(time) => format!("最后成功签到: {}", crate::core::fmt_rfc3339(&time)),

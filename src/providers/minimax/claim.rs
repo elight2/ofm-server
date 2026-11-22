@@ -418,9 +418,10 @@ mod tests {
         };
         let r = verdict(&data);
         assert!(!r.code.is_skipped());
+        assert_eq!(r.code_en(), "success");
         assert_eq!(
-            r.result_en(),
-            "success: day 3, 1000 points, streak 3 days, cycle 3/7"
+            r.detail_en().as_deref(),
+            Some("day 3, 1000 points, streak 3 days, cycle 3/7")
         );
         assert!(r.result_zh().contains("第 3 天"), "{}", r.result_zh());
         assert!(r.result_zh().contains("1000 积分"), "{}", r.result_zh());
@@ -437,11 +438,8 @@ mod tests {
         };
         let r = verdict(&data);
         assert!(r.code.is_skipped(), "已领应跳过而不是成功");
-        assert!(
-            r.result_en().starts_with("skipped: already claimed"),
-            "{}",
-            r.result_en()
-        );
+        assert_eq!(r.code_en(), "skipped");
+        assert_eq!(r.skip_reason_en(), Some("already claimed"));
         assert!(r.result_zh().contains("今日已签到"), "{}", r.result_zh());
     }
 
