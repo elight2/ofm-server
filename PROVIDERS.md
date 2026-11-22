@@ -7,4 +7,3 @@
 |MiniMax Code|minimax|MiniMax|MiniMax-M2.7不可用|
 |Loomy|loomy|讯飞|限流稍严重|
 |WorkBuddy中国版|workbuddy|腾讯|小心被封|
-|豆包电脑版|doubao|字节| |
