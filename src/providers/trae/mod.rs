@@ -127,18 +127,33 @@ impl TraeProvider {
     }
 
     /// `POST /trae/api/v2/ug/checkin_credits/status`
+    ///
+    /// 带一次重试：上游高峰期会回 `code=9074`（参与用户太多），官方客户端对
+    /// `status` 也走默认重试（只有 `claim` 显式 `retry:0`）。
+    /// 只有**拥挤码**与传输失败才重试；凭证失效/字段缺失是真错误，立即返回。
     async fn checkin_status(
         &self,
         token: &str,
         cred: &Credential,
     ) -> Result<checkin::Status, ProviderError> {
-        self.checkin_post(
-            checkin::PATH_STATUS,
-            &serde_json::json!({ "req_source": checkin::REQ_SOURCE }),
-            token,
-            cred,
-        )
-        .await
+        const ATTEMPTS: u32 = 2;
+        let body = serde_json::json!({ "req_source": checkin::REQ_SOURCE });
+        for n in 1..=ATTEMPTS {
+            match self
+                .checkin_post::<checkin::Status>(checkin::PATH_STATUS, &body, token, cred)
+                .await
+            {
+                // 拥挤码：首次重试，末次原样交给调用方（调用方仍会继续签到）。
+                Ok(s) if s.is_busy() && n < ATTEMPTS => {}
+                Ok(s) => return Ok(s),
+                // 传输/解析失败可重试；末次直接报错。
+                Err(e) if n == ATTEMPTS => return Err(e),
+                Err(_) => {}
+            }
+            // 与客户端 `retryDelay` 同量级的递增间隔。
+            tokio::time::sleep(std::time::Duration::from_secs(u64::from(n))).await;
+        }
+        unreachable!("循环在末次迭代必返回")
     }
 
     /// `POST /trae/api/v2/ug/checkin_credits/claim`
@@ -316,10 +331,20 @@ impl Provider for TraeProvider {
         let cred = self.credential()?;
         let token = self.access_token().await?;
 
+        // `status` 的 `code=9074`（参与用户太多）不作失败判据：上游此时仍回
+        // `enable`/`checked_in`，官方客户端也照样允许签到（见 `checkin` 模块头注释）。
+        // 但其它非 0 `code`（如凭证失效 1001）仍是真失败，不可当「活动未开启」。
         let status = self.checkin_status(&token, &cred).await?;
-        status.check().map_err(ProviderError::Protocol)?;
+        status.usable().map_err(ProviderError::Protocol)?;
+        if let Some(err) = status.hard_error() {
+            return Err(map_status_code(&status, &err));
+        }
+        if let Some(w) = status.soft_error() {
+            // 带拥挤码但字段可用：照常往下走，仅提示（已在上游重试过一次）。
+            tracing::info!("[trae] status 拥挤，继续签到: {w}");
+        }
 
-        if !status.enable {
+        if !status.enabled() {
             let balance = self.fetch_balance(&token, &cred).await.ok();
             return Ok(ClaimReport {
                 outcome: ClaimOutcome::skipped(SkipReason::NotEnabled, vec![]),
@@ -327,7 +352,7 @@ impl Provider for TraeProvider {
                 balance,
             });
         }
-        if status.checked_in {
+        if status.is_checked_in() {
             // 已签到就不调 claim：上游对重复领取也回 success，会把「已签到」
             // 误报成「本次领到」（实测余额不变、无副作用）。
             let balance = self.fetch_balance(&token, &cred).await.ok();
@@ -344,9 +369,10 @@ impl Provider for TraeProvider {
         self.checkin_claim(&token, &cred).await?;
 
         // claim 的返回值无法区分「真领到」与「今日已签过」，只能复读 status 复核。
+        // 复核只关心 `checked_in` 是否翻为 true；拥挤码照常忽略。
         let after = self.checkin_status(&token, &cred).await?;
-        after.check().map_err(ProviderError::Protocol)?;
-        if !after.checked_in {
+        after.usable().map_err(ProviderError::Protocol)?;
+        if !after.is_checked_in() {
             return Err(ProviderError::Protocol(
                 "claim 返回成功，但复核 status 仍显示未签到".to_string(),
             ));
@@ -375,6 +401,17 @@ fn map_http_error(status: u16, body: &str) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Unauthorized(body.to_string()),
         _ => ProviderError::Other(format!("上游 HTTP {status}: {body}")),
+    }
+}
+
+/// `status` 响应里的失败业务码 → [`ProviderError`]。
+///
+/// 凭证类 `code`（`1001`）上游常以 HTTP 200 下发，必须映射成 `Unauthorized`
+/// 以便触发续期/登出，而不是被当成协议异常或「活动未开启」。
+fn map_status_code(status: &checkin::Status, text: &str) -> ProviderError {
+    match status.code {
+        checkin::CODE_AUTH => ProviderError::Unauthorized(text.to_string()),
+        _ => ProviderError::Protocol(text.to_string()),
     }
 }
 
