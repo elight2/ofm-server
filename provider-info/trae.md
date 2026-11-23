@@ -249,29 +249,51 @@ Host `api.trae.cn`, 头: `user-agent: VSCode 1.107.1 (Trae CN)`、`authorization
 `x-app-version: 3.4.18`、`x-device-id`、`x-device-type: linux`、`x-os-version`。
 
 ```text
-POST /trae/api/v2/ug/checkin_credits/status   {"req_source":1}
+POST /trae/api/v2/ug/checkin_credits/status   {"data":{"req_source":1}}
   → {"checked_in":true,"code":0,"credits":100,"did_checked_in":false,
      "enable":true,"extra_credits":100,"message":"success"}
 
-POST /trae/api/v2/ug/checkin_credits/claim    {"req_source":1}
+POST /trae/api/v2/ug/checkin_credits/claim    {"data":{"req_source":1}}
   → HTTP 200 {"code":0,"message":"success"}
 ```
+
+⚠️ **body 多一层 `{"data": …}`**: 客户端走 TTNet 的 `fetchWithHeaders({data})`,
+TTNet 序列化时统一加 `data` 外壳。`~/.config/Trae CN/monitor/parfait` 的
+`sent_body_bytes` 可精确验证:
+
+| 接口 | 客户端字节 | `{"data":{…}}` | 裸 `{…}` |
+|-|-|-|-|
+| `checkin_credits/status` | 25 | **25** | 16 |
+| `pay/ide_user_ent_usage` | 46 | **46** | 37 |
+| `ug/activity/info` | 49 | **49** | 40 |
+
+裸 body 上游也接受(实测两者都回 `code:0`), 但既然要与客户端对齐就按客户端形态发包。
+
+`req_source` = `ii(client) ? 2 : 1`, `ii()` 判 `packageType ∈ {SOLO_CN, SOLO_I18N,
+SOLO_CN_ENTERPRISE}`。IDE 版为 `1`; 传 `3`(web) 与缺 `x-device-id` 都会回 `9004`。
 
 ⚠️ **claim 语义陷阱**: 当日已签到时再调 `claim`, 仍返回 `200 {"code":0,"message":"success"}`,
 **与领取成功无法区分**。故不能靠返回值判断成败, 只能:
 
 1. `status` 判 `enable && !checked_in`
 2. `claim`
-3. 复读 `status` / `ide_user_ent_usage` 确认余额变化
+3. 复读 `status` / `ide_user_ent_usage` 确认
 
-已实测重复调用无副作用(不扣款、不重复发分)。本实现在 `checked_in == true` 时**直接跳过、不调 claim**。
+已实测重复调用无副作用(不扣款、不重复发分; 25 次连打全回 `code:0`)。本实现在
+`checked_in == true` 时**直接跳过、不调 claim**。
 
-字段语义(与直觉相反): `checked_in:true` = 今日已签到; `did_checked_in` **不是**「今日是否签过」,
-疑为「本次请求是否触发签到」。
+字段语义: `checked_in:true` = 今日已签到(账号级); `did_checked_in:true` = **该设备**
+今日参与过(设备级, 客户端 `o1e` 也把它当已签到)。实测(2026-11-23, 同一 token):
 
-### 6.1 `9074`（参与用户太多）是瞬时拥挤, 应重试而非忽略
+- 官方客户端 did `1694826430742544` → `did_checked_in:true`
+- 工具 did 与随机 16 位数字 did → `did_checked_in:false`
+- 对任意 did 单发一次 `claim`(回 `code:0`) **不会**把 `did_checked_in` 改成 true
 
-实测(2026-11-22) 本轮故障的真实链路:
+故 `did_checked_in` 由服务端按该设备**真实的签到参与记录**写, 伪造 did 拿不到。
+
+## 6.1 `9074`（参与用户太多）: 重试 + 以复读 status 为准
+
+实测(2026-11-22) 本轮故障的链路:
 
 | 时间(UTC) | 余额 | 结果 |
 |-|-|-|
@@ -298,17 +320,23 @@ code===9000? … : code!==0 → {kind:"business", code, reason:
 // fetchWithHeaders: retry ?? 0 —— 默认不重试, claim 亦显式 retry:0
 ```
 
-结论: **`9074` 不能当「可领取」绕过**（客户端也不给签到）, 正确做法是**重试**。
+结论: **`9074` 不能当「可领取」绕过**（客户端也不给签到）, 正确做法是**重试**,
+且**重试耗尽也不能只凭 `claim` 的错误码判失败**——必须复读 `status`。
 
 本实现的处理:
 
 | 响应 | 处理 |
 |-|-|
 | `code=0` | 正常 |
-| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s), 耗尽仍失败 |
+| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s) |
 | `code=1001`(凭证失效) | → `Unauthorized`, 触发续期/重登, **不重试** |
 | `code=1002`(客户端认定的鉴权码) | 同上, `Unauthorized` |
-| 其它非 0 `code` | 失败, 不重试 |
+| 其它非 0 `code` | 不重试 |
+
+不论 `claim` 成功、失败还是重试耗尽, **最后一步都是复读 `status`**:
+只要它变成已签到就算本次成功(`claim` 的码只用来组装错误文案), 否则才报失败。
+理由:`claim` 的返回值与真实结果无关(见上节陷阱), 按错误码直接判失败会误杀——
+上游可能已经发过了(或同一账号在客户端刚领过)。
 
 另: `o1e` 把 **`did_checked_in === true` 也算已签到**, 本实现一并判断,
 避免在上游已发放的情况重复调 `claim`。
@@ -318,6 +346,7 @@ code===9000? … : code!==0 → {kind:"business", code, reason:
 1. 旧实现 `status.check()` 见 `code != 0` 即报「上游响应异常」——方向对但**没区分**码,
    且 `claim` 的 9074 同样直接失败、不重试。
 2. 早期版本曾把 9074 当作「忽略即可」——错, 客户端也不给签到。
+3. 旧实现 `claim` 一报错就 `?` 直接返回, **不复读 status**——已改为以 status 为准。
 
 `claim.log` 的失败 `detail` 现会附上游业务码(`unexpected upstream response code=9074`),
 此前只记静态英文原因, 导致无法从日志判断真实错误码。

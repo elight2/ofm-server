@@ -15,12 +15,12 @@
 //!
 //! 重试：客户端 `fetchWithHeaders` 的 `retry` 默认 0（claim 也显式传 `retry:0`），
 //! 碰到 `9074` 靠用户看到弹窗后再点一次。命令行无人可点，故本实现对 `9074`
-//! （参与用户太多）在 `status`/`claim` 两处都退避重试几次——它是**真实的瞬时拥挤**，
-//! 已实测同一分钟 `status` 说可领取、`claim` 却回 9074，隔几秒重试即成功。
+//! （参与用户太多）在 `status`/`claim` 两处都退避重试几次。
 //!
 //! **陷阱一**：`code=9074` 与其它非 0 `code` 一样，**不能**当成“可领取”而忽略：
 //! 客户端 `o1e` 判到此码会给 `unknown`（不让签到）；`a1e` 也判 claim 失败。
-//! 本实现靠重试消化，重试耗尽后仍按失败上报。
+//! 但重试耗尽后**也不能**只凭 `claim` 的错误码判失败——上游可能已经发过了，
+//! 真实结果要看复读的 `status`（调用方负责，见 `mod.rs::claim`）。
 //!
 //! **陷阱二**：当日已签到时再调 `claim`，上游仍回
 //! `HTTP 200 {"code":0,"message":"success"}`，与真正领取成功**无法区分**。
@@ -29,6 +29,8 @@
 //!
 //! 余额（`pay/ide_user_ent_usage`）仅用于报告增量，不作为成败判据——
 //! 期间若有对话消耗，差额并不等于签到所得。
+//!
+//! 请求体形态见 [`body`]：与客户端一致，业务字段包在 `{"data": …}` 里。
 
 use serde::Deserialize;
 
@@ -39,7 +41,28 @@ pub const PATH_CLAIM: &str = "/trae/api/v2/ug/checkin_credits/claim";
 pub const PATH_USAGE: &str = "/trae/api/v2/pay/ide_user_ent_usage";
 
 /// 桌面客户端为 `1`，web 为 `3`（§6）。SOLO 系列客户端会传 `2`。
+///
+/// 客户端的取值是 `ii(this.X) ? 2 : 1`，而 `ii()` 判的是 `packageType` 是否属于
+/// SOLO 系列（`SOLO_CN` / `SOLO_I18N` / `SOLO_CN_ENTERPRISE`）。本实现面向 IDE 版
+/// Trae CN，故固定 `1`。
 pub const REQ_SOURCE: u8 = 1;
+
+/// 把业务字段包进 `{"data": …}`。
+///
+/// 客户端走 TTNet 的 `fetchWithHeaders({data})`，TTNet 在序列化时统一加一层
+/// `data` 外壳。`.config/Trae CN/monitor/parfait` 的 `sent_body_bytes` 可验证：
+///
+/// | 接口 | 客户端字节数 | `{"data":{…}}` | 裸 `{…}` |
+/// |-|-|-|-|
+/// | `checkin_credits/status` | 25 | **25** | 16 |
+/// | `pay/ide_user_ent_usage` | 46 | **46** | 37 |
+/// | `ug/activity/info` | 49 | **49** | 40 |
+///
+/// 裸 body 上游同样接受（实测两者都回 `code:0`），但既有 `claim` 被回 `9074`
+/// 的历史，凡是能与客户端对齐的地方都应对齐，故按客户端形态发包。
+pub fn body(fields: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "data": fields })
+}
 
 /// 凭证失效的业务码。不在客户端 `E0` 分类表里，但上游会以 HTTP 200 下发，
 /// 本实现额外把它当鉴权失败（触发续期/重登）。
@@ -320,6 +343,22 @@ mod tests {
         assert_eq!(CodeKind::from_code(CODE_BUSY), CodeKind::Other);
         assert_eq!(CODE_BUSY, 9074);
         assert_eq!(CODE_AUTH, 1001);
+    }
+
+    /// 客户端 body 多一层 `{"data": …}`（TTNet 统一包装），字节数须与
+    /// `.config/Trae CN/monitor/parfait` 记录的 `sent_body_bytes` 一致。
+    #[test]
+    fn 请求体与客户端字节数一致() {
+        let status = body(serde_json::json!({ "req_source": REQ_SOURCE })).to_string();
+        assert_eq!(status, r#"{"data":{"req_source":1}}"#);
+        assert_eq!(status.len(), 25, "客户端 status 为 25 字节");
+
+        let usage = body(serde_json::json!({
+            "require_usage": true,
+            "req_source": REQ_SOURCE
+        }))
+        .to_string();
+        assert_eq!(usage.len(), 46, "客户端 usage 为 46 字节");
     }
 
     #[test]

@@ -136,7 +136,7 @@ impl TraeProvider {
         cred: &Credential,
     ) -> Result<checkin::Status, ProviderError> {
         const ATTEMPTS: u32 = 3;
-        let body = serde_json::json!({ "req_source": checkin::REQ_SOURCE });
+        let body = checkin::body(serde_json::json!({ "req_source": checkin::REQ_SOURCE }));
         for n in 1..=ATTEMPTS {
             let s = self
                 .checkin_post::<checkin::Status>(checkin::PATH_STATUS, &body, token, cred)
@@ -169,7 +169,7 @@ impl TraeProvider {
         cred: &Credential,
     ) -> Result<checkin::ClaimResult, ProviderError> {
         const ATTEMPTS: u32 = 4;
-        let body = serde_json::json!({ "req_source": checkin::REQ_SOURCE });
+        let body = checkin::body(serde_json::json!({ "req_source": checkin::REQ_SOURCE }));
         for n in 1..=ATTEMPTS {
             let r = self
                 .checkin_post::<checkin::ClaimResult>(checkin::PATH_CLAIM, &body, token, cred)
@@ -193,7 +193,10 @@ impl TraeProvider {
         let u: checkin::Usage = self
             .checkin_post(
                 checkin::PATH_USAGE,
-                &serde_json::json!({ "require_usage": true, "req_source": checkin::REQ_SOURCE }),
+                &checkin::body(serde_json::json!({
+                    "require_usage": true,
+                    "req_source": checkin::REQ_SOURCE
+                })),
                 token,
                 cred,
             )
@@ -374,17 +377,27 @@ impl Provider for TraeProvider {
 
         // 领取前记一次余额，仅用于报告增量（不参与成败判定）。
         let before = self.fetch_balance(&token, &cred).await.ok();
-        self.checkin_claim(&token, &cred).await?;
+        let claimed = self.checkin_claim(&token, &cred).await;
 
         // claim 的返回值无法区分「真领到」与「今日已签过」，只能复读 status 复核。
+        // 这一步对**失败**同样适用：claim 回 9074 时上游可能已经发过了（或别的路径
+        // 刚发过），按 `claim` 的错误码直接报失败会误杀。故先复读 status，只要
+        // 它变成已签到就算成功，否则才把 claim 的错误抛出去。
         let after = self.checkin_status(&token, &cred).await?;
         if let Some(e) = after.code_error() {
-            return Err(map_code_error(&e));
+            // status 自己也失败：优先报 claim 的业务码（更能说明问题），其次报 status 的。
+            return Err(match claimed {
+                Err(e) => e,
+                Ok(_) => map_code_error(&e),
+            });
         }
         if !after.is_checked_in() {
-            return Err(ProviderError::Protocol(
-                "claim 返回成功，但复核 status 仍显示未签到".to_string(),
-            ));
+            return Err(match claimed {
+                Err(e) => e,
+                Ok(_) => ProviderError::Protocol(
+                    "claim 返回成功，但复核 status 仍显示未签到".to_string(),
+                ),
+            });
         }
 
         let after_balance = self.fetch_balance(&token, &cred).await.ok();
