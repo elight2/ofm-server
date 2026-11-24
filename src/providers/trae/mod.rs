@@ -9,6 +9,7 @@ pub mod auth;
 pub mod catalog;
 pub mod chat;
 pub mod checkin;
+pub mod client_device;
 pub mod credential;
 pub mod device;
 pub mod pkce;
@@ -119,7 +120,10 @@ impl TraeProvider {
             ("user-agent", UA_VSCODE.to_string()),
             ("authorization", format!("Cloud-IDE-JWT {token}")),
             ("x-app-version", APP_VERSION.to_string()),
-            ("x-device-id", cred.device_id.clone()),
+            // 签到后台按设备号做风控：随机设备号会被回 `9074`，官方客户端的 aha
+            // 设备号才放行（§6.1）。故这里用 [`Credential::checkin_device_id`]，
+            // 而不是对话用的 `cred.device_id`。
+            ("x-device-id", cred.checkin_device_id()),
             ("x-device-type", std::env::consts::OS.to_string()),
             ("x-os-version", device::os_version()),
             ("content-type", "application/json".to_string()),
@@ -347,6 +351,21 @@ impl Provider for TraeProvider {
     async fn claim(&self) -> Result<ClaimReport, ProviderError> {
         let cred = self.credential()?;
         let token = self.access_token().await?;
+        tracing::info!(
+            "[trae] 签到设备号 {}（{}）",
+            cred.checkin_device_id(),
+            if cred
+                .checkin_device_id
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+            {
+                "credential.toml 指定"
+            } else if cred.checkin_device_id() != cred.device_id {
+                "取自本机官方客户端"
+            } else {
+                "本工具登录设备，可能被风控回 9074"
+            }
+        );
 
         // 判定口径对齐客户端 `o1e`/`E0`：`status` 带非 0 `code` 即失败（客户端也判
         // `unknown`、不给签到），不做特例放行；错误文案保留原始 code/message。
@@ -467,6 +486,7 @@ mod tests {
             device_private_key_pem: String::new(),
             bound_device_id: None,
             device_bind_status: None,
+            checkin_device_id: None,
         };
         assert!(!token_expired(&cred));
         cred.token_expire_at = Some(0);

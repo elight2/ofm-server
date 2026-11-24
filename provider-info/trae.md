@@ -103,7 +103,8 @@
 * `Token` 是 RS256 JWT, 载荷 `{"data":{…}}`, 有效期 **14 天**; `RefreshExpireAt - iat` ≈ 180 天。
 
 存储: `token` / `refresh_token` / `refresh_expire_at` / `machine_id` / `device_id` /
-`device_private_key_pem`(须与已绑定公钥配对, 续期要用)。
+`device_private_key_pem`(须与已绑定公钥配对, 续期要用) / `checkin_device_id`
+(签到专用设备号, 见 §6.1, 缺省即自动探测)。
 
 ## 2. 令牌续期方式
 
@@ -291,17 +292,60 @@ SOLO_CN_ENTERPRISE}`。IDE 版为 `1`; 传 `3`(web) 与缺 `x-device-id` 都会�
 
 故 `did_checked_in` 由服务端按该设备**真实的签到参与记录**写, 伪造 did 拿不到。
 
-## 6.1 `9074`（参与用户太多）: 重试 + 以复读 status 为准
+## 6.1 `9074`（参与用户太多）的真实成因: `x-device-id` 不是官方客户端的 aha 设备号
 
-实测(2026-11-22) 本轮故障的链路:
+`9074` 的文案是「当前参与用户太多」, 但它**不是**瞬时拥挤——它是签到后台按设备号
+做的风控回执, 只是借了这句文案。客户端源码里根本没有 `9074` 这个串
+(`jDs()` 的业务码表只有 1002/2001/9004/9090/9093/9095), 所以点击只会落到
+default 文案「Unable to check in. Please try again later.」。
 
-| 时间(UTC) | 余额 | 结果 |
+### 受控对照实验
+
+2026-11-23T04:22:22Z, 同一 JWT、同一 body(`{"req_source":1}` 裸体)、同一套头,
+两次请求相隔约 250 ms, **只换 `x-device-id`**:
+
+| `x-device-id` | claim 响应 |
+|-|-|
+| `8067955002856749`（本工具 `random_digits(16)` 生成） | `{"code":9074,...}` |
+| `1694826430742544`（官方客户端 aha did） | `{"code":0,"message":"success"}` |
+
+紧接着 04:22:27 复读 `status` 变成 `checked_in:true`, 且之后用工具 did 再打 claim
+也回 `code:0`——即**真正领到的那次是官方 did**。隔天(2026-11-24 08:08 +0800)
+自动签到仍用工具 did, 依旧 `9074` 退避四次全失败。
+
+`did_checked_in` 也印证同一件事: 只有官方 did 读到 `true`, 工具 did 与随机 16 位
+数字恒为 `false`——服务端按设备记录参与情况, 不认未注册的设备号。
+
+### 两个设备号的区别
+
+| | 官方客户端 did | 本工具的 `device.rs` 设备号 |
 |-|-|-|
-| 00:46:29 | 3364.39 | `claim` 回 `{"code":9074,"message":"当前参与用户太多，请稍后再试"}` |
-| 00:49:18 | **3464.39** (+100) | 用户在官方客户端手动点击, 成功 |
+| 来源 | aha SDK (`@aha-kit` / 原生 perf sdk) 向上游 `log.snssdk.com/service/2/desktop/device_register/` 注册后下发 | 本地 `random_digits(16)` 随机生成 |
+| 与账号的关系 | 长期在该账号的请求里出现, 服务端有设备档案 | 只在 `ExchangeToken` 的 `DeviceInfo.DeviceID` 里报过一次 |
+| 签到 claim | 放行 | `9074` |
 
-即: **同一分钟里 `status` 说可领取, `claim` 却回 9074**。客户端靠用户看到弹窗后
-再点一次, 命令行无人可点, 所以会一直失败。
+`BoundDeviceID`(base36, 如 `28j7pl18l6wkyk`) 与 did 不同源, 客户端 `main.js` 里
+`grep BoundDeviceID` = 0 次—**客户端从不解析该字段**, 不是签到判据。
+
+### 本实现的做法
+
+`src/providers/trae/client_device.rs` 在本机装过官方客户端时直接复用它的 did
+(同一台机器、同一账号, 本就是同一个设备), 全部只读、纯本地:
+
+1. `User/globalStorage/storage.json` 的 `iCubeAuthInfo://icube-dc:<did>` 键名;
+2. `logs/aha_log/aha_electron_*.log` 的 `device_id: <did>` / `did: <did>` 打点。
+
+优先级: `credential.toml` 的 `checkin_device_id`(手工覆盖) → 本机探测 → 回退到
+登录上报的 `device_id`。取不到(如服务器上没装客户端)时行为与旧版一致, 会退化成
+「大概率 9074」, 此时可在 `credential.toml` 里手工填官方 did。
+
+⚠️ **仅签到用这个设备号**: 对话/目录请求仍用 `device_id`, 因为 `x-device-id` 与
+登录时上报的 `DeviceInfo.DeviceID` 绑在一起, 混用会牵连其他接口。
+
+### 重试与判定口径
+
+`9074` 仍按瞬时拥挤退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s), 因为即便设备号
+正确, 上游偶发也会回它; 但**重试不是根因修复**, 设备号不对时重试必然全败。
 
 官方客户端的判定口径(`main.js`):
 
@@ -320,23 +364,23 @@ code===9000? … : code!==0 → {kind:"business", code, reason:
 // fetchWithHeaders: retry ?? 0 —— 默认不重试, claim 亦显式 retry:0
 ```
 
-结论: **`9074` 不能当「可领取」绕过**（客户端也不给签到）, 正确做法是**重试**,
-且**重试耗尽也不能只凭 `claim` 的错误码判失败**——必须复读 `status`。
+结论: **`9074` 不能当「可领取」绕过**（客户端也不给签到）, 且**重试耗尽也不能只凭
+`claim` 的错误码判失败**——必须复读 `status`。
 
 本实现的处理:
 
 | 响应 | 处理 |
 |-|-|
 | `code=0` | 正常 |
-| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s) |
+| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s); 根因见上 |
 | `code=1001`(凭证失效) | → `Unauthorized`, 触发续期/重登, **不重试** |
 | `code=1002`(客户端认定的鉴权码) | 同上, `Unauthorized` |
 | 其它非 0 `code` | 不重试 |
 
 不论 `claim` 成功、失败还是重试耗尽, **最后一步都是复读 `status`**:
 只要它变成已签到就算本次成功(`claim` 的码只用来组装错误文案), 否则才报失败。
-理由:`claim` 的返回值与真实结果无关(见上节陷阱), 按错误码直接判失败会误杀——
-上游可能已经发过了(或同一账号在客户端刚领过)。
+理由:`claim` 的返回值与真实结果无关(当日已签到时它也回 `code:0`), 按错误码直接判
+失败会误杀——上游可能已经发过了(或同一账号在客户端刚领过)。
 
 另: `o1e` 把 **`did_checked_in === true` 也算已签到**, 本实现一并判断,
 避免在上游已发放的情况重复调 `claim`。
@@ -347,6 +391,7 @@ code===9000? … : code!==0 → {kind:"business", code, reason:
    且 `claim` 的 9074 同样直接失败、不重试。
 2. 早期版本曾把 9074 当作「忽略即可」——错, 客户端也不给签到。
 3. 旧实现 `claim` 一报错就 `?` 直接返回, **不复读 status**——已改为以 status 为准。
+4. **根因**(2026-11-24 修): `x-device-id` 用随机设备号, 被签到风控回 `9074`。
 
 `claim.log` 的失败 `detail` 现会附上游业务码(`unexpected upstream response code=9074`),
 此前只记静态英文原因, 导致无法从日志判断真实错误码。
