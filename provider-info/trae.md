@@ -246,29 +246,55 @@ POST https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage
 
 ## 6. 签到协议
 
-Host `api.trae.cn`, 头: `user-agent: VSCode 1.107.1 (Trae CN)`、`authorization: Cloud-IDE-JWT <jwt>`、
-`x-app-version: 3.4.18`、`x-device-id`、`x-device-type: linux`、`x-os-version`。
+Host `api.trae.cn`。以下头为必需: `user-agent: VSCode 1.107.1 (Trae CN)`、
+`authorization: Cloud-IDE-JWT <jwt>`、`x-app-version`、`x-device-id`、`x-device-type`、`x-os-version`。
+
+2026-11-24 用 mitmproxy 抓 Windows 客户端(`Trae CN 3.4.24`)明文, 完整头为:
 
 ```text
-POST /trae/api/v2/ug/checkin_credits/status   {"data":{"req_source":1}}
+user-agent: VSCode 1.107.1 (Trae CN)
+authorization: Cloud-IDE-JWT <jwt>
+content-type: application/json
+x-app-version: 3.4.24        x-os-version: Windows 10 Enterprise
+x-device-id: 929500238458201 x-device-type: windows
+x-device-brand: 20216        x-user-region: CN
+vscode-sessionid: <machine_id>          x-market-client-id: VSCode 1.107.1
+x-market-user-id: <uuid>                x-lgw-req-sdk-type: 3
+package-type: stable_cn      x-lscbd-aid: 787976   x-lscbd-platform: windows
+x-request-id: <uuid>         x-tt-trace-id: <trace>
+x-helios / x-medusa / x-neptune: <三方 SDK 生成的密钥材料>
+```
+
+其中 `x-helios` / `x-medusa` / `x-neptune` 三个头**可以不发**(本实现从不发它们,
+2026-11-24 签到成功), 说明它们不参与签到校验。`x-device-brand` 也没有必填要求
+(见下)。
+
+```text
+POST /trae/api/v2/ug/checkin_credits/status   {"req_source":1}     (16 字节)
   → {"checked_in":true,"code":0,"credits":100,"did_checked_in":false,
      "enable":true,"extra_credits":100,"message":"success"}
 
-POST /trae/api/v2/ug/checkin_credits/claim    {"data":{"req_source":1}}
+POST /trae/api/v2/ug/checkin_credits/claim    {"req_source":1}     (16 字节)
   → HTTP 200 {"code":0,"message":"success"}
 ```
 
-⚠️ **body 多一层 `{"data": …}`**: 客户端走 TTNet 的 `fetchWithHeaders({data})`,
-TTNet 序列化时统一加 `data` 外壳。`~/.config/Trae CN/monitor/parfait` 的
-`sent_body_bytes` 可精确验证:
+⚠️ **body 是裸 JSON, 没有 `{"data": …}` 外壳**。这一条曾被写反过, 记在这里避免重犯:
 
-| 接口 | 客户端字节 | `{"data":{…}}` | 裸 `{…}` |
+早期版本用 `~/.config/Trae CN/monitor/parfait` 的 `sent_body_bytes` 反推客户端载荷,
+看到 `status` 25 字节、`usage` 46 字节、`activity/info` 49 字节, 恰好等于
+`{"data":{…}}` 的长度, 于是判定客户端包了 `data` 外壳并在 `73cc43a` 里照做。
+**该推断是错的**: `sent_body_bytes` 量的是 TTNet 加密压缩后的载荷, 不是 JSON 明文。
+
+2026-11-24 用 mitmproxy 直接抓 Windows 客户端(`Trae CN 3.4.24`)明文, 实际是:
+
+| 接口 | 抓到的明文 | 字节 | 曾误判的 `{"data":{…}}` |
 |-|-|-|-|
-| `checkin_credits/status` | 25 | **25** | 16 |
-| `pay/ide_user_ent_usage` | 46 | **46** | 37 |
-| `ug/activity/info` | 49 | **49** | 40 |
+| `checkin_credits/status` | `{"req_source":1}` | **16** | 25 |
+| `checkin_credits/claim` | `{"req_source":1}` | **16** | 25 |
+| `pay/ide_user_ent_usage` | `{"require_usage":true,"req_source":1}` | **37** | 46 |
+| `ug/activity/info` | `{"version_code":"3.4.24","req_source":1}` | **40** | 49 |
 
-裸 body 上游也接受(实测两者都回 `code:0`), 但既然要与客户端对齐就按客户端形态发包。
+两种形态上游都接受(都能回 `code:0`), 但**以客户端为准, 发裸体**。
 
 `req_source` = `ii(client) ? 2 : 1`, `ii()` 判 `packageType ∈ {SOLO_CN, SOLO_I18N,
 SOLO_CN_ENTERPRISE}`。IDE 版为 `1`; 传 `3`(web) 与缺 `x-device-id` 都会回 `9004`。
@@ -292,40 +318,75 @@ SOLO_CN_ENTERPRISE}`。IDE 版为 `1`; 传 `3`(web) 与缺 `x-device-id` 都会�
 
 故 `did_checked_in` 由服务端按该设备**真实的签到参与记录**写, 伪造 did 拿不到。
 
-## 6.1 `9074`（参与用户太多）的真实成因: `x-device-id` 不是官方客户端的 aha 设备号
+## 6.1 `9074`（参与用户太多）
 
-`9074` 的文案是「当前参与用户太多」, 但它**不是**瞬时拥挤——它是签到后台按设备号
-做的风控回执, 只是借了这句文案。客户端源码里根本没有 `9074` 这个串
-(`jDs()` 的业务码表只有 1002/2001/9004/9090/9093/9095), 所以点击只会落到
-default 文案「Unable to check in. Please try again later.」。
+### 已知事实
 
-### 受控对照实验
-
-2026-11-23T04:22:22Z, 同一 JWT、同一 body(`{"req_source":1}` 裸体)、同一套头,
-两次请求相隔约 250 ms, **只换 `x-device-id`**:
-
-| `x-device-id` | claim 响应 |
-|-|-|
-| `8067955002856749`（本工具 `random_digits(16)` 生成） | `{"code":9074,...}` |
-| `1694826430742544`（官方客户端 aha did） | `{"code":0,"message":"success"}` |
-
-紧接着 04:22:27 复读 `status` 变成 `checked_in:true`, 且之后用工具 did 再打 claim
-也回 `code:0`——即**真正领到的那次是官方 did**。隔天(2026-11-24 08:08 +0800)
-自动签到仍用工具 did, 依旧 `9074` 退避四次全失败。
-
-`did_checked_in` 也印证同一件事: 只有官方 did 读到 `true`, 工具 did 与随机 16 位
-数字恒为 `false`——服务端按设备记录参与情况, 不认未注册的设备号。
-
-### 两个设备号的区别
-
-| | 官方客户端 did | 本工具的 `device.rs` 设备号 |
+| 时间 | 场景 | 结果 |
 |-|-|-|
-| 来源 | aha SDK (`@aha-kit` / 原生 perf sdk) 向上游 `log.snssdk.com/service/2/desktop/device_register/` 注册后下发 | 本地 `random_digits(16)` 随机生成 |
-| 与账号的关系 | 长期在该账号的请求里出现, 服务端有设备档案 | 只在 `ExchangeToken` 的 `DeviceInfo.DeviceID` 里报过一次 |
-| 签到 claim | 放行 | `9074` |
+| 2026-11-22 00:46:29Z | 工具用自己生成的 did claim | `{"code":9074,...}` |
+| 2026-11-22 00:49:18Z | 用户在官方客户端手动点 | 余额 +100, 成功 |
+| 2026-11-23 04:22:22Z | 同一 JWT、同一 body, 间隔 250ms 只换 did | 工具 did `8067955002856749` → `9074`; 官方 did `1694826430742544` → `code:0` |
+| 2026-11-23 05:15 | 工具(仍用工具 did) | `9074` |
+| 2026-11-24 01:22 | 工具改用本机客户端探测到的 did | **成功, 余额 +100, `claim.log` 首次 `success`** |
+| 2026-11-24 11:18 | Windows 客户端全新设备 claim 未参与 | `status` 正常, `did_checked_in:false` (当日已签, 未测 claim) |
 
-`BoundDeviceID`(base36, 如 `28j7pl18l6wkyk`) 与 did 不同源, 客户端 `main.js` 里
-`grep BoundDeviceID` = 0 次—**客户端从不解析该字段**, 不是签到判据。
+`9074` 不在客户端业务码表里(`jDs()` 只有 1002/2001/9004/9090/9093/9095),
+`nls.messages.json[9074]` 是无关的 `"Manage"`, 客户端碰到它只会落到 default 文案
+「Unable to check in. Please try again later.」。故客户端**不知道**这个码的语义。
+
+### 归因: 设备号相关, 但机制未定
+
+能确定: **换成「本机官方客户端在用的 did」后立刻成功**, 而同一 token、同一时刻用
+本实现 `random_digits(16)` 生成的 did 会回 `9074`。
+
+不能确定: 究竟是"did 必须由 aha 注册过", 还是"该 did 在该账号下有过真实参与记录",
+或仅仅是设备号维度上的限流。已知的反对证据:
+
+- 2026-11-23 那次 4×2 矩阵里, **失败的恰好是整串第一条**(`req_source=1` + 工具 did),
+  其后 5 条全成功 —— "首请求被限流"同样能解释全部现象, 设备号与顺序共线。
+- 2026-11-24 抓到的 Windows 设备 did `929500238458201` 是全新设备
+  (`did_checked_in:false`), `status` 与 `activity/info` 都正常, 说明新 did 并不被
+  一律拒绝。但该设备当日已签到, 没机会测 claim, 所以也不能反证。
+
+结论: **保留"用本机官方客户端 did"这个做法**(它已被真实成功验证), 但不要再声称
+已找到精确机制。`9074` 仍按瞬时拥挤退避重试, 因为即便 did 正确上游偶发也会回它。
+
+### 关于 did 的形状（曾误判）
+
+曾据 `1694826430742544 = 1694826430742 × 1000 + 544` 推断 did 是「毫秒时间戳 +
+序号」、由服务端签发。**该推断不成立**:
+
+| did | 来源 | 按"×1000"解出的日期 |
+|-|-|-|
+| `1694826430742544` | 官方客户端 (Linux 本机) | 2023-09-16 |
+| `929500238458201` | 官方客户端 (Windows) | 1999-06-16 |
+| `8067955002856749` | 本工具 `random_digits(16)` | 2225-08-31 |
+
+三个日期毫无规律, 连纯随机生成的数也能套进这个"格式"。故 did 只是一串 16 位十进制
+数字, 不要从形状反推来源。
+
+### `BoundDeviceID` 不是判据
+
+`BoundDeviceID`(base36, 如 `28j7pl18l6wkyk`) 与 did 不同源; 客户端 `main.js` 里
+`grep BoundDeviceID` = 0 次, **客户端从不解析该字段**, 与签到无关。
+
+### 设备注册（`device_register`）不能自己造 did
+
+理想方案是服务器上不装客户端也能自助取 did, 但实测不可行:
+
+- 端点 `https://log-klink.zijieapi.com/service/2/device_register/`
+  (旧名 `log.snssdk.com/service/2/desktop/device_register/`)。
+- 请求为 `content-type: application/octet-stream;tt-data=a`, **550 字节二进制密文**
+  (加密 + 签名的 protobuf), 全部参数在 query 上:
+  `os_version, cdid, channel, aid, device_platform, device_id, iid, tt_data=a`。
+- 手工用明文 JSON 打各种参数组合, 一律回 `{"device_id":0,"install_id":0}` ——
+  服务端只认那套加密载荷。
+- 该端点跟签到域(`api.trae.cn`)无关, appId 是 `776330`(aha_doctor) / `787976`(Trae CN)。
+
+故要"凭空发号"必须逆向那套加密 protobuf, 成本高且未验证。现实做法:
+**装了官方客户端就自动探测, 没装就在 `credential.toml` 手填一个真客户端的 did**
+(`checkin_device_id`, 见下)。
 
 ### 本实现的做法
 
@@ -343,9 +404,6 @@ default 文案「Unable to check in. Please try again later.」。
 登录时上报的 `DeviceInfo.DeviceID` 绑在一起, 混用会牵连其他接口。
 
 ### 重试与判定口径
-
-`9074` 仍按瞬时拥挤退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s), 因为即便设备号
-正确, 上游偶发也会回它; 但**重试不是根因修复**, 设备号不对时重试必然全败。
 
 官方客户端的判定口径(`main.js`):
 
@@ -372,7 +430,7 @@ code===9000? … : code!==0 → {kind:"business", code, reason:
 | 响应 | 处理 |
 |-|-|
 | `code=0` | 正常 |
-| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s); 根因见上 |
+| `code=9074` | 退避重试(`status` 2 次 / `claim` 3 次, 2s/4s/8s) |
 | `code=1001`(凭证失效) | → `Unauthorized`, 触发续期/重登, **不重试** |
 | `code=1002`(客户端认定的鉴权码) | 同上, `Unauthorized` |
 | 其它非 0 `code` | 不重试 |
@@ -391,14 +449,8 @@ code===9000? … : code!==0 → {kind:"business", code, reason:
    且 `claim` 的 9074 同样直接失败、不重试。
 2. 早期版本曾把 9074 当作「忽略即可」——错, 客户端也不给签到。
 3. 旧实现 `claim` 一报错就 `?` 直接返回, **不复读 status**——已改为以 status 为准。
-4. **根因**(2026-11-24 修): `x-device-id` 用随机设备号, 被签到风控回 `9074`。
-
-`claim.log` 的失败 `detail` 现会附上游业务码(`unexpected upstream response code=9074`),
-此前只记静态英文原因, 导致无法从日志判断真实错误码。
-
-请求头补充: 客户端在签到请求上额外带 `x-device-brand`(设备型号 `device_model`,
-不是 CPU 型号); 本实现无可靠设备型号来源, 故不发该头(实测缺失不影响, 已用同一凭证
-带/不带该头各打一次, 均回 `{"code":0,"message":"success"}`)。
+4. `73cc43a` 曾把 body 包成 `{"data":{…}}`——**推断错误, 已回滚**(见 §6)。
+5. `x-device-id` 用随机设备号会被回 `9074`——改用本机官方客户端 did 后成功。
 
 ## 7. 上游异常响应
 

@@ -140,7 +140,7 @@ impl TraeProvider {
         cred: &Credential,
     ) -> Result<checkin::Status, ProviderError> {
         const ATTEMPTS: u32 = 3;
-        let body = checkin::body(serde_json::json!({ "req_source": checkin::REQ_SOURCE }));
+        let body = serde_json::json!({ "req_source": checkin::REQ_SOURCE });
         for n in 1..=ATTEMPTS {
             let s = self
                 .checkin_post::<checkin::Status>(checkin::PATH_STATUS, &body, token, cred)
@@ -173,7 +173,7 @@ impl TraeProvider {
         cred: &Credential,
     ) -> Result<checkin::ClaimResult, ProviderError> {
         const ATTEMPTS: u32 = 4;
-        let body = checkin::body(serde_json::json!({ "req_source": checkin::REQ_SOURCE }));
+        let body = serde_json::json!({ "req_source": checkin::REQ_SOURCE });
         for n in 1..=ATTEMPTS {
             let r = self
                 .checkin_post::<checkin::ClaimResult>(checkin::PATH_CLAIM, &body, token, cred)
@@ -197,10 +197,10 @@ impl TraeProvider {
         let u: checkin::Usage = self
             .checkin_post(
                 checkin::PATH_USAGE,
-                &checkin::body(serde_json::json!({
+                &serde_json::json!({
                     "require_usage": true,
                     "req_source": checkin::REQ_SOURCE
-                })),
+                }),
                 token,
                 cred,
             )
