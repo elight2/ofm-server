@@ -1,8 +1,11 @@
 /**
  * ofm-server 模型列表注入插件
  *
- * 启动 pi 时连接 ofm-server（默认 127.0.0.1:3060）拉取一次模型列表，
- * 之后每 1 分钟刷新一次，并通过动态 provider 注入 pi 的模型列表。
+ * 连接 ofm-server（默认 127.0.0.1:3060），每 1 分钟拉取一次模型列表，
+ * 并通过动态 provider 注入 pi 的模型列表。
+ *
+ * 本插件不在启动阶段请求网络：模型列表只由 1 分钟定时刷新（以及
+ * `/ofm-refresh` 手动刷新）填充。
  *
  * 环境变量：
  * - `OFM_BASE_URL`   OpenAI 兼容 base url，默认 `http://127.0.0.1:3060/v1`
@@ -96,20 +99,13 @@ async function fetchModelIdsUncached(signal: AbortSignal): Promise<string[]> {
 }
 
 export default async function (pi: ExtensionAPI) {
-  // 启动时先拉一次，保证 `pi --list-models` 与会话初始模型列表可用。
-  let initialModels: ModelConfig[] = [];
-  try {
-    initialModels = (await fetchModelIds(new AbortController().signal)).map(toModelConfig);
-  } catch (error) {
-    console.warn(`[ofm] 启动时获取模型列表失败: ${errorMessage(error)}`);
-  }
-
+  // 启动阶段不拉取模型列表：`models` 省略，列表完全由 `refreshModels`
+  // （1 分钟定时刷新 / `/ofm-refresh`）填充。
   pi.registerProvider(PROVIDER_ID, {
     name: "OFM Server",
     baseUrl: baseUrl(),
     apiKey: apiKey(),
     api: "openai-completions",
-    models: initialModels,
     // pi 的模型刷新（含本插件的定时刷新）会走这里，返回值替换当前模型列表。
     async refreshModels({ signal }) {
       const ids = await fetchModelIds(signal);
@@ -153,8 +149,7 @@ export default async function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    // 每次会话启动立即同步一次，然后按间隔刷新。
-    await refresh(ctx, true);
+    // 不在会话启动时立即同步，避免启动阶段请求网络；只按间隔刷新。
     stopTimer();
     timer = setInterval(() => void refresh(ctx, false), refreshInterval());
   });
