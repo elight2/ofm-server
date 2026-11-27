@@ -56,11 +56,22 @@ impl AppState {
     }
 }
 
+/// 下游请求体上限：64 MiB。
+///
+/// axum 对 `String`/`Bytes`/`Json` 等提取器默认只接受 2 MiB，图片经 base64
+/// 后体积膨胀约 4/3，稍大的截图就会在入口被 `413 Failed to buffer the request body`
+/// 拒掉。这里放宽到 64 MiB；图片内容本身不做任何转码，原样透传给上游。
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 pub fn router(state: AppState) -> Router {
     // `/health` 不校验 key（探活用），其余出口接口受 `api_keys` 保护。
+    // `DefaultBodyLimit` 必须挂在路由方法上或 Router 上，普通 `.layer()` 不生效。
     let guarded = Router::new()
         .route("/v1/models", get(list_models))
-        .route("/v1/chat/completions", post(chat_completions))
+        .route(
+            "/v1/chat/completions",
+            post(chat_completions).layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_key,
