@@ -87,15 +87,22 @@ async fn health() -> impl IntoResponse {
     axum::Json(serde_json::json!({"status": "ok"}))
 }
 
+/// 下游可见的模型 id：恒为 `供应商id/模型名`，不含 ` (x倍率)` 后缀。
+///
+/// 倍率（`ModelInfo::rate`）仍然完整保留在模型目录中，仅供 `ofm-server status`
+/// 展示，**不下发给下游**：README 规定对外模型名不带倍率，以免模型名称随
+/// 倍率变动而变（客户端侧配置的模型名因此保持稳定）。
+fn downstream_model_id(provider_id: &str, model: &str) -> String {
+    format!("{provider_id}/{model}")
+}
+
 async fn list_models(State(app): State<AppState>) -> Response {
     let created = crate::core::clock::now_secs() as u64;
     let mut data = Vec::new();
     for (provider_id, models) in app.registry.list_models().await {
         for m in models {
-            // 格式见 README：`供应商id/模型名 (x倍率)`；无倍率时省略后缀。
-            let suffix = crate::core::provider::rate_suffix(m.rate);
             data.push(types::ModelCard {
-                id: format!("{provider_id}/{}{suffix}", m.model),
+                id: downstream_model_id(provider_id, &m.model),
                 object: "model",
                 created,
                 owned_by: provider_id.to_string(),
@@ -281,4 +288,26 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("收到退出信号，正在关闭");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::downstream_model_id;
+
+    #[test]
+    fn 下游模型id不含倍率后缀() {
+        assert_eq!(downstream_model_id("trae", "glm-5.2"), "trae/glm-5.2");
+        assert_eq!(
+            downstream_model_id("raccoon", "sn-glm-5-3"),
+            "raccoon/sn-glm-5-3"
+        );
+    }
+
+    #[test]
+    fn 模型名自带的括号不被误改() {
+        assert_eq!(
+            downstream_model_id("trae", "model (beta)"),
+            "trae/model (beta)"
+        );
+    }
 }
