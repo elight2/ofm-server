@@ -12,7 +12,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const PROVIDER_ID = "ofm";
+const PROVIDER_ID = "ofm-server";
 const DEFAULT_BASE_URL = "http://127.0.0.1:3060/v1";
 const DEFAULT_REFRESH_MS = 60_000;
 const FETCH_TIMEOUT_MS = 10_000;

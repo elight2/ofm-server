@@ -1,6 +1,6 @@
 # ofm 模型注入插件
 
-启动 pi 时从 ofm-server 拉取一次模型列表，之后每 1 分钟刷新一次，并把列表动态注入 pi 的模型列表（provider id `ofm`）。
+启动 pi 时从 ofm-server 拉取一次模型列表，之后每 1 分钟刷新一次，并把列表动态注入 pi 的模型列表（provider id `ofm-server`）。
 
 所有模型统一声明为支持文本 + 图片输入。
 
@@ -14,7 +14,7 @@ pi 只自动发现 `<agent目录>/extensions/` 与项目内 `.pi/extensions/`，
   { "extensions": ["/home/main/working/ofm-server/extensions/pi"] }
   ```
 
-> 注意：若已加载 `~/.pi/agent/extensions/ofm-provider.ts`（provider id `ofm-server`），两份配置会同时出现，建议只保留其一。
+> 注意：若已加载 `~/.pi/agent/extensions/ofm-provider.ts`（provider id 同为 `ofm-server`），后加载者会覆盖前者，建议删掉旧的只保留本次插件。
 
 ## 配置（环境变量）
 
@@ -28,7 +28,7 @@ pi 只自动发现 `<agent目录>/extensions/` 与项目内 `.pi/extensions/`，
 
 - 扩展工厂里启动时拉取一次（带 5s 缓存，避免 pi 启动阶段多次刷新重复请求）。
 - `session_start` 时立即刷新一次并启动 60s 定时刷新；`session_shutdown` 清理定时器。
-- 刷新通过 `ctx.modelRegistry.refresh({ providers: ["ofm"], force: true })` 走 pi 官方的 `refreshModels` 通道，结果直接替换 pi 的模型列表。
+- 刷新通过 `ctx.modelRegistry.refresh({ providers: ["ofm-server"], force: true })` 走 pi 官方的 `refreshModels` 通道，结果直接替换 pi 的模型列表。
 - 刷新失败（服务未启动）只提示一次告警，保留旧列表。
 - `/ofm-refresh` 命令可手动触发一次刷新。
 - 模型上下文窗口/输出上限取保守默认值 128K / 16K（ofm-server 的 `/v1/models` 不提供这些字段）。
