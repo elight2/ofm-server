@@ -1,5 +1,6 @@
 # ofm-server
 
+## 简介
 * [ofm插件](https://github.com/Ebony-Vinyl/dsh-our-free-model)的服务器重写版本, 部分逻辑参考其代码
 * 聚合免费大模型
 * 自动签到: 定时检查签到, 领取每日积分
@@ -7,7 +8,14 @@
 * [领鸡蛋2](https://jidan.si/)
 * 供应商信息: PROVIDERS.md
 
-## 命令行参数
+## 使用方法
+
+### 简要说明
+1. 执行`ofm-server login 供应商id`登录需要的供应商
+2. 无参数启动程序, 进入服务模式
+3. 在客户端里填写API配置
+
+### 命令行参数
 * `ofm-server`: 启动服务
 * `ofm-server login 供应商id`: 获取供应商的登录凭证并保存
 * `ofm-server claim 供应商id(写all签到所有)`: 签到（每次签到写入 `运行目录/providers/供应商id/claim.log`，保留最近 50 条）
@@ -17,13 +25,18 @@
 * `ofm-server clear log`: 清空所有log文件
 * `ofm-server clear credential`: 清空所有credential文件(需要全部重新登录)
 
-## API配置
+### 插件
+* 用于把本项目集成到不同客户端
+* 目录: `./extensions/`
+* 部分客户端可以直接填写API配置, 不需要插件
+
+### API配置
 * 导出api使用`OpenAI Chat Completions`格式
 * 默认不检查api key, 可以使用配置文件手动开启
 * 服务端口: 默认`3060`
 * 转发出的模型名称: `供应商id/模型名 (x供应商标的倍率)`
 
-## 功能说明
+### 其他
 * 配置文件: `运行目录/config.toml`, [默认配置](./config.example.toml)
 * 登录凭证存储目录: `运行目录/providers/供应商id/credential.toml`
 * 签到记录: `运行目录/providers/供应商id/claim.log`

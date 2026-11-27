@@ -7,7 +7,7 @@
 * 工作时, 临时目录使用`/tmp/ofm-server/`, **禁止使用/tmp下其他位置**, 并且在工作结束后**清空**
 * 供应商官方客户端：`~/tools/docs/agent-clients/`
 * openai api完整文档: `~/tools/docs/openai-openapi/`
-* `./testdata/`: 本项目的测试目录, 其中测试用登录凭证由用户预置, 完成工作后清空
+* `./testdata/`: 本项目的测试目录, 其中测试用凭证由用户提供, **完成工作后清空**
 * `./provider-info/`: 供应商的协议分析及编写模板
 
 # 工作记录
